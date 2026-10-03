@@ -1,0 +1,22 @@
+{
+    "port": 8765,
+    "host": "127.0.0.1",
+    "apiKey": "",
+    "executor": "mock",
+    "comfyuiUrl": "http://127.0.0.1:8188",
+    "pollIntervalMs": 1000,
+    "timeoutMinutes": 30,
+    "mockDelayMs": 3000,
+    "mockVideoPath": "",
+    "defaultNegativePrompt": "",
+    "defaultWidth": 1280,
+    "defaultHeight": 720,
+    "defaultModel": "minimax-h3",
+    "workflows": {
+        "text": "workflows/text-to-video.template.json",
+        "image": "workflows/image-to-video.template.json"
+    },
+    "modelWorkflows": {},
+    "jobsDir": "jobs",
+    "jobTtlHours": 24
+}

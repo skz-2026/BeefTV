@@ -1,0 +1,114 @@
+# ComfyUI 视频网关（BeefTV 本地视频接入）
+
+把 BeefTV 的视频生成请求接到**本机 ComfyUI**（MiniMax-H3、Wan、HunyuanVideo 等任意本地视频工作流），不修改 BeefTV 的任何官方代码。
+
+```text
+BeefTV 画布（浏览器）
+   │  视频渠道：OpenAI Videos 协议
+   ▼
+BeefTV 本地后端  /api/ai/custom 中转
+   │  CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=127.0.0.1 放行本机上游
+   ▼
+本网关（gateway.ts，零依赖）
+   │  翻译成 ComfyUI API：/upload/image → /prompt → /history → /view
+   ▼
+ComfyUI + 本地视频模型权重（GPU）
+```
+
+本目录全部是**新增文件**，与官方仓库零耦合：`git pull` 官方更新不会产生任何冲突，也不会影响官方代码路径。
+
+## 目录结构
+
+| 文件 | 作用 |
+| --- | --- |
+| `gateway.ts` | 网关本体，零第三方依赖，`node gateway.ts` 或 `bun gateway.ts` 运行 |
+| `config.example.json` | 配置样例；复制为 `config.json` 使用（`config.json` 与 `jobs/` 已 git-ignore） |
+| `workflows/*.template.json` | 工作流模板占位文件，用你从 ComfyUI 导出的工作流替换 |
+| `jobs/` | 运行时任务产物（自动清理，默认保留 24 小时） |
+
+## 工作原理
+
+网关实现 BeefTV 已内置的 **OpenAI Videos 协议**（Sora 风格），BeefTV 侧只需把一个视频渠道指向它：
+
+| BeefTV 请求 | 网关行为 |
+| --- | --- |
+| `POST /v1/videos`（multipart：`model`、`prompt`、`seconds`、`size`、`input_reference[]` 图片文件） | 选模板 → 参考图上传到 ComfyUI `input` 目录 → 占位符替换 → `POST /prompt` 提交工作流 |
+| `GET /v1/videos/{id}` | 轮询 ComfyUI `/history/{prompt_id}`，映射为 `queued / in_progress / completed / failed` |
+| `GET /v1/videos/{id}/content` | 从 ComfyUI `/view` 拉取成片并回传 mp4 |
+
+带参考图走 `workflows.image` 模板（图生视频），不带则走 `workflows.text` 模板（文生视频）。
+
+## 接入步骤
+
+### 1. 跑通 ComfyUI 本地工作流
+
+先在 ComfyUI 里手动跑通目标模型（例如 MiniMax-H3：安装模型发布方提供的 ComfyUI 节点包与量化权重）。注意 ComfyUI 官方模板里带 `api_` 前缀的 MiniMax 工作流调用的是**海螺云端 API**，不是本地权重，不要混淆。
+
+### 2. 导出工作流并替换模板
+
+1. ComfyUI 菜单「工作流 → 导出（API）」得到 API 格式 JSON（顶层是节点 ID 到 `{class_type, inputs}` 的映射）；
+2. 用导出内容**整体替换** `workflows/text-to-video.template.json`（文生视频）或 `workflows/image-to-video.template.json`（图生视频）；
+3. 把需要动态注入的字段值改成占位符（保持 JSON 类型位置不变，网关会把数字占位符替换为数字）：
+
+| 占位符 | 注入内容 |
+| --- | --- |
+| `{{PROMPT}}` | 画布上填写的正向提示词 |
+| `{{NEGATIVE_PROMPT}}` | 反向提示词（未配置时取 `config.defaultNegativePrompt`） |
+| `{{SECONDS}}` | 视频时长（数字） |
+| `{{WIDTH}}` / `{{HEIGHT}}` / `{{SIZE}}` | 分辨率，来自渠道的 size 设置（如 `1280x720`） |
+| `{{SEED}}` | 每次请求随机种子（数字） |
+| `{{IMAGE}}` / `{{IMAGE_2}}`… | 参考图文件名（上传到 ComfyUI input 后的引用名），填在 LoadImage 类节点的 `image` 字段 |
+
+替换后如仍有 `{{...}}` 残留，网关会在创建任务时明确报错指出是哪个占位符。
+
+### 3. 配置并启动网关
+
+```bash
+cd local/comfy-video-gateway
+cp config.example.json config.json   # Windows: copy config.example.json config.json
+node gateway.ts                      # 或 bun gateway.ts
+```
+
+关键配置项：
+
+| 字段 | 说明 |
+| --- | --- |
+| `port` / `host` | 默认 `8765`，仅监听 `127.0.0.1`；后端不在本机时才改 `host`，此时必须设置 `apiKey` |
+| `apiKey` | 非空时校验 `Authorization: Bearer`；与 BeefTV 渠道里填的 API Key 保持一致 |
+| `executor` | `mock`（默认，不依赖 GPU，用于打通链路）/ `comfyui`（真实生成） |
+| `comfyuiUrl` | ComfyUI 地址，默认 `http://127.0.0.1:8188` |
+| `workflows` / `modelWorkflows` | 文生/图生模板路径；`modelWorkflows` 可按模型名覆盖（多个本地模型共用一个网关） |
+| `timeoutMinutes` | 等待 ComfyUI 生成的超时时间 |
+
+### 4. 放行本机上游（关键）
+
+BeefTV 后端默认拒绝本机/私网模型上游（SSRF 防护），需以精确白名单方式放行后重启后端：
+
+```bash
+CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=127.0.0.1
+```
+
+注意：自定义渠道中转只认这个主机白名单，`CANVAS_ALLOW_PRIVATE_UPSTREAMS` 总开关对它不生效；按安全纪律也只应精确放行 `127.0.0.1`，不要放开整个私网。
+
+### 5. 在 BeefTV 里配置渠道
+
+模型配置 → 新建渠道：
+
+- **接口协议**：选 **OpenAI Videos（`newapi`）**。不要选 `newapi-channel-2`——那是 JSON 版 `/video/generations` 协议，参考图要求公网 URL，不适合本地素材；
+- **Base URL**：`http://127.0.0.1:8765/v1`；
+- **API Key**：与网关 `config.apiKey` 一致（网关未设 Key 时随便填一个非空值，BeefTV 侧要求 Key 非空）；
+- **模型**：添加模型名（如 `minimax-h3`）并启用视频能力。多个本地模型时，把模型名登记到网关 `config.modelWorkflows` 即可路由到不同工作流。
+
+之后在画布上像使用云渠道一样发起视频生成：不带图走文生视频模板，接参考图节点走图生视频模板。
+
+### 6. 验证顺序
+
+1. **mock 联调**（不需要 GPU）：`executor: "mock"` 启动网关 → BeefTV 发起生成 → 数秒后画布出现视频节点（mock 未配 `mockVideoPath` 时是不可播放的占位字节，只证明链路通）；
+2. **真实生成**：`executor: "comfyui"` 重启网关 → 先文生视频、再图生视频；
+3. 遇到失败时先看网关控制台日志：模板未替换、占位符残留、ComfyUI 节点报错都会在此明确输出。
+
+## 安全与边界
+
+- 网关默认只绑定 `127.0.0.1`，不对外网暴露；跨机部署时改 `host` 并**必须**设置 `apiKey`；
+- 网关会把上传的参考图写入 ComfyUI 的 input 目录（`beeftv-ref-*.png` 命名），成片缓存在 `jobs/` 下自动过期清理；
+- 日志不记录模型密钥；BeefTV 侧的密钥约束（不进 URL、不进日志）由官方中转层保证，本目录不重复实现。

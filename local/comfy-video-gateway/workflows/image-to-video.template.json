@@ -1,0 +1,31 @@
+{
+    "_README": [
+        "这是脚手架文件，不能直接提交给 ComfyUI。",
+        "用法：在 ComfyUI 里跑通 MiniMax-H3 图生视频工作流后，",
+        "执行「工作流 → 导出（API）」得到 API 格式 JSON，用它的内容整体替换本文件，",
+        "再把对应字段值改成占位符（保持 JSON 结构不变）：",
+        "  {{IMAGE}}          第一张参考图，值为 BeefTV 上传后在 ComfyUI input 目录中的文件名，",
+        "                     填在 LoadImage（或同等节点）的 image 字段上",
+        "  {{IMAGE_2}} ...    第 2、3 张参考图（如工作流支持）",
+        "  {{PROMPT}} / {{NEGATIVE_PROMPT}} / {{SECONDS}} / {{WIDTH}} / {{HEIGHT}} / {{SIZE}} / {{SEED}}",
+        "                     含义同文生视频模板"
+    ],
+    "1": {
+        "class_type": "TODO_用导出的工作流替换本文件",
+        "inputs": {
+            "image": "{{IMAGE}}",
+            "prompt": "{{PROMPT}}",
+            "negative_prompt": "{{NEGATIVE_PROMPT}}",
+            "width": "{{WIDTH}}",
+            "height": "{{HEIGHT}}",
+            "duration": "{{SECONDS}}",
+            "seed": "{{SEED}}"
+        }
+    },
+    "2": {
+        "class_type": "TODO_通常是SaveVideo节点",
+        "inputs": {
+            "video": ["1", 0]
+        }
+    }
+}
