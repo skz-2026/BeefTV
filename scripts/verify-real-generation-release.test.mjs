@@ -125,6 +125,108 @@ function makeV2(version, sourceDigest, extra = {}) {
   };
 }
 
+test('v1.7.3 waiver requires current targeted evidence and cannot carry forward', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.3');
+  try {
+    const sourceDigest = run('--fingerprint').trim();
+    const proof = { status: 'passed', sourceDigest, evidence: ['synthetic-test-evidence'] };
+    const valid = {
+      version: 'v1.7.3', sourceDigest, budgetCNY: 0, spentCNY: 0, newSpentCNY: 0, pendingCNY: 0,
+      liveMatrixStatus: 'not_run_owner_waived', cases: [], releaseComplete: false,
+      liveTestWaiver: { approvedBy: 'Ender', instruction: '本版豁免付费矩阵，专项验收、独立复审和 CI 通过后发布', scope: 'byok-updater-targeted-acceptance' },
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.2', pendingCNY: null, failedRequestIds: ['202610020816334239151708268d9d6eZ5lRPwt', '202610021242434383740578268d9d6BAoXA1u1'], evidence: ['prior.json'] },
+      review: { result: 'approved', independent: true, reviewer: 'test-only', sourceDigest, evidence: ['review.md'] },
+      upgrade: { preservedData: true, sourceDigest, evidence: ['upgrade.md'] },
+      verification: Object.fromEntries(['modelServiceFlow', 'credentialPersistence', 'saveBarrier', 'localReleaseGate', 'ci'].map(id => [id, { ...proof }])),
+      packages: { status: 'pending_release_workflow', finalArchiveSmokeBeforeUpload: true, windowsReleasedUpgradeAndRollbackBeforeUpload: true, workflowEvidence: ['workflow.yml'] },
+    };
+    save(valid); assert.match(run(), /paid matrix NOT run/);
+    for (const mutate of [
+      r => r.liveTestWaiver.approvedBy = 'other', r => r.review.independent = false,
+      r => r.review.sourceDigest = 'stale', r => r.upgrade.preservedData = false,
+      r => r.newSpentCNY = 1, r => r.cases = [{}], r => r.priorFinancialUncertainty.pendingCNY = 0,
+      r => r.verification.credentialPersistence.status = 'failed', r => r.verification.ci.sourceDigest = 'stale',
+      r => r.packages.windowsReleasedUpgradeAndRollbackBeforeUpload = false,
+      r => r.releaseComplete = true, r => r.packages.status = 'passed',
+    ]) {
+      const changed = structuredClone(valid); mutate(changed); save(changed); assert.throws(() => run());
+    }
+    commitVersion('v1.7.4');
+    save({ ...valid, version: 'v1.7.4', sourceDigest: run('--fingerprint').trim() }, 'v1.7.4');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.2 paid-generation waiver requires targeted evidence and preserves prior uncertainty', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.2');
+  try {
+    const sourceDigest = run('--fingerprint').trim();
+    const requestIds = ['202610020816334239151708268d9d6eZ5lRPwt', '202610021242434383740578268d9d6BAoXA1u1'];
+    const platforms = ['darwin-arm64', 'darwin-amd64', 'windows-amd64'];
+    const checkIds = ['mcpStartup', 'assistantRuntime', 'windowsNativeRuntime', 'packagedCLI', 'localReleaseGate', 'ci'];
+    const valid = {
+      version: 'v1.7.2', sourceDigest, budgetCNY: 100, spentCNY: 43.74479, newSpentCNY: 0,
+      pendingCNY: null, knownPendingCNY: 0, cases: [], liveMatrixStatus: 'not_run_owner_waived', releaseComplete: false,
+      liveTestWaiver: { approvedBy: 'Ender', instruction: '本版豁免付费生成，专项验收通过后上线', scope: 'mcp-assistant-targeted-acceptance' },
+      financialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.1', failedRequestIds: requestIds, evidence: ['prior-financial-audit.md'] },
+      review: { result: 'approved', independent: true, reviewer: 'independent-test-reviewer', sourceDigest, evidence: ['review.md'] },
+      upgrade: { preservedData: true, sourceDigest, evidence: ['upgrade.md'] },
+      verification: Object.fromEntries(checkIds.map(id => [id, { status: 'passed', sourceDigest, evidence: [`${id}.md`] }])),
+    };
+    valid.verification.windowsNativeRuntime.method = 'native';
+    Object.assign(valid.verification.packagedCLI, {
+      method: 'package-validator', platforms, finalArchiveSmokeBeforeUpload: true,
+      releaseWorkflowEvidence: ['release-desktop.yml#archive-validation-before-upload'], finalArchivesStatus: 'pending_release_workflow',
+    });
+    save(valid);
+    assert.match(run(), /media matrix NOT run; new expense 0; two prior refund terminal states remain unknown; final archives: pending_release_workflow/);
+    const mutations = [
+      r => r.sourceDigest = 'stale', r => r.pendingCNY = 0, r => r.pendingCNY = 1,
+      r => r.knownPendingCNY = 1, r => r.spentCNY = 0, r => r.newSpentCNY = 1,
+      r => r.financialUncertainty.status = 'settled', r => r.financialUncertainty.carriedFromVersion = 'v1.6.23',
+      r => r.financialUncertainty.failedRequestIds.pop(), r => r.financialUncertainty.failedRequestIds.push('extra'),
+      r => r.financialUncertainty.evidence = [], r => delete r.financialUncertainty,
+      r => r.liveTestWaiver.approvedBy = 'other', r => r.liveTestWaiver.scope = 'model-picker-targeted-acceptance',
+      r => r.liveTestWaiver.instruction = '上线吧', r => r.review.independent = false,
+      r => r.review.sourceDigest = 'stale', r => r.review.result = 'pending', r => r.review.evidence = [],
+      r => r.upgrade.preservedData = false, r => r.upgrade.sourceDigest = 'stale', r => r.upgrade.evidence = [],
+      r => r.cases.push({ status: 'succeeded' }), r => r.liveMatrixStatus = 'passed',
+      r => r.verification.windowsNativeRuntime.method = 'cross-compiled',
+      r => r.verification.packagedCLI.method = 'mocked-final-archives',
+      r => r.verification.packagedCLI.platforms.pop(), r => r.verification.packagedCLI.platforms.push('linux-amd64'),
+      r => r.verification.packagedCLI.finalArchiveSmokeBeforeUpload = false,
+      r => r.verification.packagedCLI.releaseWorkflowEvidence = [],
+      r => r.verification.packagedCLI.finalArchivesStatus = 'passed',
+      r => r.verification.packagedCLI.finalArchivesStatus = 'waived',
+      r => r.verification.packagedCLI.finalArchives = { 'windows-amd64': { status: 'passed' } },
+      r => r.releaseComplete = true,
+    ];
+    for (const id of checkIds) {
+      mutations.push(r => delete r.verification[id], r => r.verification[id].status = 'pending',
+        r => r.verification[id].evidence = [], r => r.verification[id].sourceDigest = 'stale');
+    }
+    for (const mutate of mutations) {
+      const invalid = structuredClone(valid); mutate(invalid); save(invalid); assert.throws(() => run());
+    }
+    const completed = structuredClone(valid);
+    completed.releaseComplete = true;
+    completed.verification.packagedCLI.finalArchivesStatus = 'passed';
+    completed.verification.packagedCLI.finalArchives = Object.fromEntries(platforms.map(platform => [platform, {
+      status: 'passed', sourceDigest, sha256: 'a'.repeat(64), evidence: [`${platform}-archive-smoke.md`],
+    }]));
+    save(completed); assert.match(run(), /final archives: passed/);
+    for (const platform of platforms) {
+      for (const field of ['status', 'sourceDigest', 'sha256', 'evidence']) {
+        const invalid = structuredClone(completed); delete invalid.verification.packagedCLI.finalArchives[platform][field];
+        save(invalid); assert.throws(() => run());
+      }
+    }
+    commitVersion('v1.7.3');
+    save({ ...valid, version: 'v1.7.3', sourceDigest: run('--fingerprint').trim() }, 'v1.7.3');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('v1.7.1 targeted acceptance preserves uncertainty and never carries forward', () => {
   const { dir, run, save, commitVersion } = setupRepo('v1.7.1');
   try {

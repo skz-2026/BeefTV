@@ -18,6 +18,9 @@ let catalogReadFailures = 0;
 beforeEach(() => { saved = structuredClone(initial); writes = 0; submitted = []; failSave = false; holdSave = false; release = undefined; });
 beforeAll(async () => {
     const build = await Bun.build({ entrypoints: [import.meta.dir + "/fixtures/assistant-model-picker-harness.tsx"], target: "browser", define: { "import.meta.env.DEV": "false", "import.meta.env.PROD": "true", "import.meta.env.MODE": '"production"', "import.meta.env.VITE_CANVAS_LOCAL_MODE": '"true"', "import.meta.env.VITE_CANVAS_BACKEND_URL": '"/api"', "process.env.NODE_ENV": '"production"' }, plugins: [{ name: "source", setup(builder) {
+        // Vite owns icon glob expansion; this Bun harness covers selection and persistence.
+        builder.onResolve({ filter: /^@\/components\/model-logo$/ }, () => ({ path: "model-logo", namespace: "test-icons" }));
+        builder.onLoad({ filter: /.*/, namespace: "test-icons" }, () => ({ contents: "export function ModelLogo() { return null; }", loader: "js" }));
         builder.onResolve({ filter: /^@\// }, args => ({ path: Bun.resolveSync("../src/" + args.path.slice(2), import.meta.dir) }));
     } }] });
     if (!build.success) throw new Error(build.logs.join("\n"));
@@ -79,6 +82,27 @@ test("picker keyboard selection persists, respects busy and fits both themes at 
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         await page.getByRole("button", { name: "切换主题" }).click();
     }
+    await page.close();
+}, 30000);
+
+test("models-only local default is selectable and survives reload", async () => {
+    saved = { ...defaultConfig, assistantModel: "", textModel: "newapi-local::deepseek-v4-flash:free", channels: [createModelChannel({ id: "newapi-local", models: ["deepseek-v4-flash:free"], apiFormat: "openai" })] };
+    const page = await browser.newPage({ viewport: { width: 390, height: 700 } });
+    await page.goto(server.url.toString());
+    const picker = page.getByRole("combobox", { name: "助手模型" });
+    for (let i = 0; i < 2; i++) {
+        await picker.click();
+        expect(await picker.isDisabled()).toBe(false);
+        const option = page.locator('.ant-select-item-option-content');
+        expect(await option.allTextContents()).toEqual(["deepseek-v4-flash:free"]);
+        await option.click();
+        await page.waitForFunction(() => !document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)'));
+        await page.getByRole("button", { name: "切换主题" }).click();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.reload();
+    }
+    expect(saved.assistantModel).toBe("");
+    expect(saved.textModel).toBe("newapi-local::deepseek-v4-flash:free");
     await page.close();
 }, 30000);
 
