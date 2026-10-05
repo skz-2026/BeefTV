@@ -30,7 +30,8 @@ type GatewayConfig = {
     defaultWidth: number;
     defaultHeight: number;
     defaultModel: string;
-    workflows: { text: string; image: string };
+    imageModels: string[];
+    workflows: { text: string; image: string; imageGen: string };
     modelWorkflows: Record<string, string>;
     jobsDir: string;
     jobTtlHours: number;
@@ -89,9 +90,11 @@ async function loadConfig(): Promise<GatewayConfig> {
         defaultWidth: Number(parsed.defaultWidth ?? 1280),
         defaultHeight: Number(parsed.defaultHeight ?? 720),
         defaultModel: String(parsed.defaultModel ?? "local-video"),
+        imageModels: Array.isArray(parsed.imageModels) ? parsed.imageModels.map(String) : ["qwen-image-2.1"],
         workflows: {
             text: String(parsed.workflows?.text ?? "workflows/text-to-video.template.json"),
-            image: String(parsed.workflows?.image ?? "workflows/image-to-video.template.json"),
+            image: String(parsed.workflows?.image ?? "workflows/ref-to-video.template.json"),
+            imageGen: String(parsed.workflows?.imageGen ?? "workflows/qwen-t2i.template.json"),
         },
         modelWorkflows: parsed.modelWorkflows ?? {},
         jobsDir: path.resolve(scriptDir, String(parsed.jobsDir ?? "jobs")),
@@ -440,8 +443,123 @@ async function runJob(config: GatewayConfig, job: Job, workflow: unknown) {
     }
 }
 
-async function jobGC(config: GatewayConfig) {
-    const cutoff = Date.now() - config.jobTtlHours * 3_600_000;
+// ---------- OpenAI Images 协议（同步返回 b64_json） ----------
+
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    if (!chunks.length) return {};
+    try {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    } catch {
+        throw new Error("请求体不是合法 JSON");
+    }
+}
+
+async function comfyRunImages(config: GatewayConfig, workflow: unknown): Promise<Buffer[]> {
+    const clientId = `beeftv-gateway-${randomUUID()}`;
+    const submit = await fetch(`${config.comfyuiUrl}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: workflow, client_id: clientId }),
+    });
+    const submitBody = await submit.json().catch(() => ({}));
+    if (!submit.ok) throw new Error(`ComfyUI /prompt 提交失败（${submit.status}）：${JSON.stringify(submitBody).slice(0, 800)}`);
+    const promptId = (submitBody as { prompt_id?: string }).prompt_id;
+    if (!promptId) throw new Error(`ComfyUI 没有返回 prompt_id：${JSON.stringify(submitBody).slice(0, 300)}`);
+    log(`图片任务已提交 ComfyUI：prompt_id=${promptId}`);
+
+    const deadline = Date.now() + config.timeoutMinutes * 60_000;
+    while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
+        const historyResponse = await fetch(`${config.comfyuiUrl}/history/${promptId}`);
+        if (!historyResponse.ok) continue;
+        const history = (await historyResponse.json()) as Record<string, Record<string, unknown>>;
+        const entry = history[promptId];
+        if (!entry) continue;
+        const status = entry.status as { status_str?: string; messages?: unknown[] } | undefined;
+        if (status?.status_str === "error") {
+            throw new Error(`ComfyUI 执行出错：${JSON.stringify(status.messages ?? status).slice(0, 800)}`);
+        }
+        const files: Array<{ filename: string; subfolder?: string; type?: string }> = [];
+        for (const nodeOutput of Object.values((entry.outputs ?? {}) as Record<string, unknown>)) {
+            const images = (nodeOutput as Record<string, unknown>)?.images;
+            if (!Array.isArray(images)) continue;
+            for (const item of images) {
+                if (item && typeof item === "object" && typeof (item as Record<string, unknown>).filename === "string") {
+                    files.push(item as { filename: string; subfolder?: string; type?: string });
+                }
+            }
+        }
+        if (!files.length) continue;
+        const buffers: Buffer[] = [];
+        for (const file of files) {
+            const query = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? "", type: file.type ?? "output" });
+            const view = await fetch(`${config.comfyuiUrl}/view?${query.toString()}`);
+            if (!view.ok) throw new Error(`从 ComfyUI 下载图片失败（${view.status}）`);
+            buffers.push(Buffer.from(await view.arrayBuffer()));
+        }
+        log(`图片任务完成：${files.map((f) => f.filename).join(", ")}`);
+        return buffers;
+    }
+    throw new Error(`等待 ComfyUI 生成超时（${config.timeoutMinutes} 分钟）`);
+}
+
+async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    const body = await readJsonBody(req);
+    const prompt = String(body.prompt ?? "").trim();
+    if (!prompt) return json(res, 400, { error: { message: "prompt 不能为空" } });
+    const model = String(body.model ?? "") || config.imageModels[0] || "qwen-image-2.1";
+    const sizeRaw = String(body.size ?? "").trim();
+    const match = sizeRaw.match(/^(\d+)x(\d+)$/i);
+    const width = match ? Number(match[1]) : 1024;
+    const height = match ? Number(match[2]) : 1024;
+
+    const job: Job = {
+        id: randomUUID(),
+        status: "in_progress",
+        createdAt: Date.now(),
+        model,
+        prompt,
+        mode: "text",
+        workflowPath: config.workflows.imageGen,
+    };
+    jobs.set(job.id, job);
+    const { workflow } = await loadTemplate(config, job);
+    const substituted = substitutePlaceholders(workflow, {
+        prompt,
+        negative: config.defaultNegativePrompt,
+        seconds: 0,
+        frames: 0,
+        width,
+        height,
+        size: `${width}x${height}`,
+        seed: Math.floor(Math.random() * 2_147_483_647),
+        images: [],
+    });
+    assertNoLeftoverPlaceholders(substituted);
+    log(`图片任务 ${job.id} 开始：model=${model} ${width}x${height} prompt=${prompt.slice(0, 60)}`);
+
+    try {
+        if (config.executor === "mock") {
+            throw new Error("mock 模式不支持生图；请把 executor 设为 comfyui");
+        }
+        const buffers = await comfyRunImages(config, substituted);
+        job.status = "completed";
+        return json(res, 200, {
+            created: Math.floor(Date.now() / 1000),
+            data: buffers.map((buffer) => ({ b64_json: buffer.toString("base64") })),
+        });
+    } catch (error) {
+        job.status = "failed";
+        job.error = error instanceof Error ? error.message : String(error);
+        log(`图片任务 ${job.id} 失败：${job.error}`);
+        return json(res, 500, { error: { message: job.error, type: "generation_error" } });
+    }
+}
+
+async function jobGC(config: GatewayConfig) {    const cutoff = Date.now() - config.jobTtlHours * 3_600_000;
     for (const [id, job] of jobs) {
         if (job.createdAt < cutoff) {
             jobs.delete(id);
@@ -478,8 +596,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
     }
 
     if (req.method === "GET" && (pathname === "/models" || pathname.endsWith("/models"))) {
-        const models = [...Object.keys(config.modelWorkflows), config.defaultModel];
+        const models = [...Object.keys(config.modelWorkflows), config.defaultModel, ...config.imageModels];
         return json(res, 200, { object: "list", data: [...new Set(models)].map((id) => ({ id, object: "model" })) });
+    }
+
+    if (req.method === "POST" && (pathname === "/images/generations" || pathname === "/images")) {
+        return await handleImageGeneration(req, res, config);
     }
 
     if (req.method === "POST" && (pathname === "/videos" || pathname === "/videos/generations")) {

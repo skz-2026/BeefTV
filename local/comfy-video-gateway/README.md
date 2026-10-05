@@ -1,19 +1,34 @@
-# ComfyUI 视频网关（BeefTV 本地视频接入）
+# ComfyUI 视频网关（BeefTV 本地视频/生图接入）
 
-把 BeefTV 的视频生成请求接到**本机 ComfyUI**（MiniMax-H3、Wan、HunyuanVideo 等任意本地视频工作流），不修改 BeefTV 的任何官方代码。
+把 BeefTV 的视频与生图请求接到**本机 ComfyUI**（MiniMax-H3 视频、Qwen-Image-2.1 生图等任意本地工作流），不修改 BeefTV 的任何官方代码。
 
 ```text
 BeefTV 画布（浏览器）
-   │  视频渠道：OpenAI Videos 协议
+   │  视频渠道：OpenAI Videos 协议 / 生图渠道：OpenAI Images 协议
    ▼
-BeefTV 本地后端  /api/ai/custom 中转
+BeefTV 本地后端  /api/ai/custom 中转 + 任务 Worker
    │  CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=127.0.0.1 放行本机上游
    ▼
 本网关（gateway.ts，零依赖）
    │  翻译成 ComfyUI API：/upload/image → /prompt → /history → /view
    ▼
-ComfyUI + 本地视频模型权重（GPU）
+ComfyUI + 本地模型权重（GPU）
 ```
+
+## 支持的协议端点
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /v1/videos`（multipart） | 视频生成。无参考图 → T2VA 模板；带参考图 → **Ref2VA 角色参考模板**（人物一致性）；`modelWorkflows` 可按模型名覆盖 |
+| `GET /v1/videos/{id}` · `/content` | 视频任务轮询与成片下载 |
+| `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json` |
+| `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `imageModels` |
+
+### 已实测权重组合（RTX 5060 Ti 16GB）
+
+- **视频（MiniMax-H3）**：T2VA 用全量 INT8 底模 + turbo EMA LoRA；**Ref2VA（角色一致性）用 `minimax_h3_ref2va_pruned_int8_convrot` + 官方 `ref2v_turbo_4step` LoRA**（均来自 `Comfy-Org/MiniMax-H3`）。提示词需含 `<Picture 1>` 引用。
+- **生图（Qwen-Image-2.1）**：`qwen_image_2.1_int8_convrot`（6.9G）+ `qwen3vl_8b_int8_convrot`（8.9G，CLIPLoader type=qwen_image）+ `qwen_image_2.1_vae_bf16` + `qwen_image_2.1_viggle_turbo_r64` 4 步 LoRA（来源 `Comfy-Org/Qwen-Image-2.1`、`t8star/Qwen-Image-2.1-viggle-turbo-4step-r64-comfy`）。
+- 视频与生图**不要并发**（显存各自 ~15.5G / ~10G，串行使用）。
 
 本目录全部是**新增文件**，与官方仓库零耦合：`git pull` 官方更新不会产生任何冲突，也不会影响官方代码路径。
 

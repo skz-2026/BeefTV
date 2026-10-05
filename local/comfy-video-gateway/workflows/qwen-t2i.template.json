@@ -1,0 +1,96 @@
+{
+    "_README": [
+        "Qwen-Image-2.1 文生图（INT8 量化 + viggle 4步加速 LoRA），OpenAI Images 协议用。",
+        "权重：diffusion_models/qwen_image_2.1_int8_convrot.safetensors、",
+        "text_encoders/qwen3vl_8b_int8_convrot.safetensors（CLIPLoader type=qwen_image）、",
+        "vae/qwen_image_2.1_vae_bf16.safetensors、loras/qwen_image_2.1_viggle_turbo_r64.safetensors。",
+        "占位符：{{PROMPT}} {{NEGATIVE_PROMPT}} {{WIDTH}} {{HEIGHT}} {{SEED}}"
+    ],
+    "1": {
+        "class_type": "UNETLoader",
+        "inputs": {
+            "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+            "weight_dtype": "default"
+        }
+    },
+    "2": {
+        "class_type": "LoraLoaderModelOnly",
+        "inputs": {
+            "model": ["1", 0],
+            "lora_name": "qwen_image_2.1_viggle_turbo_r64.safetensors",
+            "strength_model": 1.0
+        }
+    },
+    "3": {
+        "class_type": "ModelSamplingAuraFlow",
+        "inputs": {
+            "model": ["2", 0],
+            "shift": 3.0
+        }
+    },
+    "4": {
+        "class_type": "CLIPLoader",
+        "inputs": {
+            "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+            "type": "qwen_image",
+            "device": "default"
+        }
+    },
+    "5": {
+        "class_type": "VAELoader",
+        "inputs": {
+            "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+        }
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": ["4", 0],
+            "text": "{{PROMPT}}"
+        }
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": ["4", 0],
+            "text": "{{NEGATIVE_PROMPT}}"
+        }
+    },
+    "8": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {
+            "width": "{{WIDTH}}",
+            "height": "{{HEIGHT}}",
+            "batch_size": 1
+        }
+    },
+    "9": {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["3", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "latent_image": ["8", 0],
+            "seed": "{{SEED}}",
+            "steps": 4,
+            "cfg": 1.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0
+        }
+    },
+    "10": {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": ["9", 0],
+            "vae": ["5", 0]
+        }
+    },
+    "11": {
+        "class_type": "SaveImage",
+        "inputs": {
+            "images": ["10", 0],
+            "filename_prefix": "QwenImage21/beeftv_t2i"
+        }
+    }
+}

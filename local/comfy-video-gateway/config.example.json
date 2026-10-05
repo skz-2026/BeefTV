@@ -14,9 +14,13 @@
     "defaultModel": "minimax-h3",
     "workflows": {
         "text": "workflows/text-to-video.template.json",
-        "image": "workflows/image-to-video.template.json"
+        "image": "workflows/ref-to-video.template.json",
+        "imageGen": "workflows/qwen-t2i.template.json"
     },
     "modelWorkflows": {},
     "jobsDir": "jobs",
-    "jobTtlHours": 24
+    "jobTtlHours": 24,
+    "imageModels": [
+        "qwen-image-2.1"
+    ]
 }
