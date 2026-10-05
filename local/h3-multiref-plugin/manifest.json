@@ -1,0 +1,406 @@
+{
+  "apiVersion": "beeftv.plugin/v2",
+  "id": "h3-multiref",
+  "name": "H3 Multi-Ref (Local)",
+  "version": "2.0.0",
+  "author": "BeefTV Contributors",
+  "description": "本地 H3 多参考图视频协议：一次携带最多 6 张角色参考图（经 ComfyUI 网关）。",
+  "documentation": "# H3 Multi-Ref (Local)\n\n本地扩展：OpenAI Videos 形态 + 多文件槽。参考图按顺序以 input_reference_0..5 上传，网关接入 MiniMax-H3 Ref2VA 多参考槽位。",
+  "permissions": [
+    "generation.run",
+    "media.read"
+  ],
+  "configuration": {
+    "fields": [
+      {
+        "name": "apiKey",
+        "type": "secret",
+        "label": "API Key",
+        "required": true
+      }
+    ]
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "h3-multiref",
+        "label": "H3 Multi-Ref (Local)",
+        "capabilities": [
+          "video"
+        ],
+        "scopes": [
+          "admin.system-channel",
+          "user.custom-channel",
+          "canvas",
+          "creation",
+          "agent"
+        ],
+        "baseUrl": "http://127.0.0.1:8765",
+        "requiresPublicMediaUrls": false,
+        "auth": {
+          "type": "bearer",
+          "field": "apiKey"
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "string",
+            "required": true,
+            "mapping": "model",
+            "description": "视频模型 ID。"
+          },
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": true,
+            "mapping": "prompt/content/input",
+            "description": "视频提示词。"
+          },
+          {
+            "name": "images",
+            "type": "media[]",
+            "required": false,
+            "mapping": "first/last/reference image",
+            "description": "显式 role 图片输入。"
+          },
+          {
+            "name": "videos",
+            "type": "media[]",
+            "required": false,
+            "mapping": "reference video",
+            "description": "参考视频。"
+          },
+          {
+            "name": "audios",
+            "type": "media[]",
+            "required": false,
+            "mapping": "reference audio/voice",
+            "description": "参考音频或音色。"
+          },
+          {
+            "name": "duration",
+            "type": "integer",
+            "required": false,
+            "mapping": "duration/seconds",
+            "description": "时长秒数。"
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "required": false,
+            "mapping": "ratio/aspect_ratio/size",
+            "description": "画幅比例或尺寸。"
+          },
+          {
+            "name": "resolution",
+            "type": "string",
+            "required": false,
+            "mapping": "resolution",
+            "description": "分辨率档位。"
+          },
+          {
+            "name": "generateAudio",
+            "type": "boolean",
+            "required": false,
+            "mapping": "generate_audio",
+            "description": "是否生成音频。"
+          },
+          {
+            "name": "watermark",
+            "type": "boolean",
+            "required": false,
+            "mapping": "watermark",
+            "description": "水印开关。"
+          },
+          {
+            "name": "providerOptions",
+            "type": "object",
+            "required": false,
+            "mapping": "provider-specific fields",
+            "description": "插件命名空间内的厂商扩展字段。"
+          }
+        ],
+        "create": {
+          "method": "POST",
+          "path": "/v1/videos",
+          "contentType": "multipart/form-data",
+          "body": {
+            "model": {
+              "$ref": "request.model"
+            },
+            "prompt": {
+              "$ref": "request.prompt"
+            },
+            "seconds": {
+              "$toString": {
+                "$ref": "request.duration"
+              }
+            },
+            "size": {
+              "$omitEmpty": {
+                "$ref": "request.aspectRatio"
+              }
+            },
+            "resolution_name": {
+              "$omitEmpty": {
+                "$ref": "request.resolution"
+              }
+            },
+            "variants": {
+              "$omitEmpty": {
+                "$ref": "request.providerOptions.newapi.variants"
+              }
+            }
+          },
+          "files": [
+            {
+              "name": "input_reference_0",
+              "source": {
+                "$at": [
+                  {
+                    "$filter": {
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "as": "media",
+                      "where": {
+                        "$ne": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  },
+                  0
+                ]
+              },
+              "filename": "input-reference-0.png"
+            },
+            {
+              "name": "input_reference_1",
+              "source": {
+                "$at": [
+                  {
+                    "$filter": {
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "as": "media",
+                      "where": {
+                        "$ne": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  },
+                  1
+                ]
+              },
+              "filename": "input-reference-1.png"
+            },
+            {
+              "name": "input_reference_2",
+              "source": {
+                "$at": [
+                  {
+                    "$filter": {
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "as": "media",
+                      "where": {
+                        "$ne": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  },
+                  2
+                ]
+              },
+              "filename": "input-reference-2.png"
+            },
+            {
+              "name": "input_reference_3",
+              "source": {
+                "$at": [
+                  {
+                    "$filter": {
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "as": "media",
+                      "where": {
+                        "$ne": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  },
+                  3
+                ]
+              },
+              "filename": "input-reference-3.png"
+            },
+            {
+              "name": "input_reference_4",
+              "source": {
+                "$at": [
+                  {
+                    "$filter": {
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "as": "media",
+                      "where": {
+                        "$ne": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  },
+                  4
+                ]
+              },
+              "filename": "input-reference-4.png"
+            },
+            {
+              "name": "input_reference_5",
+              "source": {
+                "$at": [
+                  {
+                    "$filter": {
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      },
+                      "as": "media",
+                      "where": {
+                        "$ne": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          "mask"
+                        ]
+                      }
+                    }
+                  },
+                  5
+                ]
+              },
+              "filename": "input-reference-5.png"
+            }
+          ]
+        },
+        "poll": {
+          "method": "GET",
+          "path": "/v1/videos/{{taskId}}"
+        },
+        "cancel": {
+          "method": "DELETE",
+          "path": "/v1/videos/{{taskId}}"
+        },
+        "result": {
+          "method": "GET",
+          "path": "/v1/videos/{{taskId}}/content",
+          "headers": {
+            "Accept": "video/mp4"
+          }
+        },
+        "response": {
+          "taskId": {
+            "$coalesce": [
+              {
+                "$ref": "response.id"
+              },
+              {
+                "$ref": "response.task_id"
+              },
+              {
+                "$ref": "response.taskId"
+              },
+              {
+                "$ref": "response.data.id"
+              },
+              {
+                "$ref": "taskId"
+              }
+            ]
+          },
+          "status": {
+            "$coalesce": [
+              {
+                "$ref": "response.status"
+              },
+              {
+                "$ref": "response.state"
+              },
+              {
+                "$ref": "response.data.status"
+              },
+              "pending"
+            ]
+          },
+          "message": {
+            "$coalesce": [
+              {
+                "$ref": "response.error.message"
+              },
+              {
+                "$ref": "response.message"
+              },
+              {
+                "$ref": "response.fail_reason"
+              }
+            ]
+          },
+          "videos": {
+            "$coalesce": [
+              {
+                "$ref": "response.url"
+              },
+              {
+                "$ref": "response.video_url"
+              },
+              {
+                "$ref": "response.output.url"
+              }
+            ]
+          },
+          "errorPaths": [
+            "error.code"
+          ],
+          "resultEphemeral": true,
+          "messagePaths": [
+            "error.message"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -158,6 +158,12 @@ function isFile(value: FormDataEntryValue | undefined): value is File {
 
 function collectReferenceFiles(form: FormData): File[] {
     const files: File[] = [];
+    // h3-multiref 协议按序号命名（input_reference_0..5）；openai-videos 用 input_reference[]。
+    for (let i = 0; i < 6; i += 1) {
+        const entry = form.get(`input_reference_${i}`);
+        if (isFile(entry)) files.push(entry);
+    }
+    if (files.length) return files;
     for (const key of ["input_reference[]", "input_reference"]) {
         for (const entry of form.getAll(key)) {
             if (isFile(entry)) files.push(entry);
@@ -231,8 +237,31 @@ function substitutePlaceholders(node: unknown, context: PlaceholderContext): unk
     return node;
 }
 
-function assertNoLeftoverPlaceholders(workflow: unknown) {
-    const leftovers = new Set<string>();
+// 多参考模板：删除没有实际图片的 LoadImage 节点和对应 ref_images.ref_image_N 槽位。
+function pruneEmptyRefSlots(workflow: Record<string, unknown>) {
+    const droppedNodes = new Set<string>();
+    for (const [id, node] of Object.entries(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
+        if (typed.class_type !== "MiniMaxH3AudioConditioningT8" || !typed.inputs) continue;
+        for (const key of Object.keys(typed.inputs)) {
+            const match = key.match(/^ref_images\.ref_image_(\d+)$/);
+            if (!match) continue;
+            const link = typed.inputs[key];
+            if (!Array.isArray(link)) continue;
+            const sourceId = String(link[0]);
+            const source = workflow[sourceId] as { class_type?: string; inputs?: { image?: unknown } } | undefined;
+            if (source && source.class_type === "LoadImage" && typeof source.inputs?.image === "string" && !source.inputs.image.trim()) {
+                delete typed.inputs[key];
+                droppedNodes.add(sourceId);
+            }
+        }
+    }
+    for (const id of droppedNodes) delete workflow[id];
+    if (droppedNodes.size) log(`多参考模板：剪除 ${droppedNodes.size} 个空参考槽位`);
+}
+
+function assertNoLeftoverPlaceholders(workflow: unknown) {    const leftovers = new Set<string>();
     const walk = (node: unknown) => {
         if (typeof node === "string") {
             for (const match of node.matchAll(/\{\{([A-Z0-9_]+)\}\}/g)) leftovers.add(match[0]);
@@ -343,6 +372,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     }
 
     const substituted = substitutePlaceholders(workflow, context);
+    if (substituted && typeof substituted === "object") pruneEmptyRefSlots(substituted as Record<string, unknown>);
     try {
         assertNoLeftoverPlaceholders(substituted);
     } catch (error) {

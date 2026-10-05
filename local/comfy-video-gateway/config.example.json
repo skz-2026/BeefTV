@@ -17,7 +17,9 @@
         "image": "workflows/ref-to-video.template.json",
         "imageGen": "workflows/qwen-t2i.template.json"
     },
-    "modelWorkflows": {},
+    "modelWorkflows": {
+        "h3-multiref": "workflows/ref-multi.template.json"
+    },
     "jobsDir": "jobs",
     "jobTtlHours": 24,
     "imageModels": [
