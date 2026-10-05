@@ -165,6 +165,7 @@ type PlaceholderContext = {
     prompt: string;
     negative: string;
     seconds: number;
+    frames: number;
     width: number;
     height: number;
     size: string;
@@ -178,6 +179,7 @@ function substitutePlaceholders(node: unknown, context: PlaceholderContext): unk
         if (exact === "{{PROMPT}}") return context.prompt;
         if (exact === "{{NEGATIVE_PROMPT}}") return context.negative;
         if (exact === "{{SECONDS}}") return context.seconds;
+        if (exact === "{{FRAMES}}") return context.frames;
         if (exact === "{{WIDTH}}") return context.width;
         if (exact === "{{HEIGHT}}") return context.height;
         if (exact === "{{SIZE}}") return context.size;
@@ -285,6 +287,8 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
         prompt,
         negative: config.defaultNegativePrompt,
         seconds,
+        // H3 官方换算：24fps 下 帧数 = 秒×24+4（示例工作流 5s→124 帧），生成范围 2–15 秒。
+        frames: Math.max(52, Math.min(15, seconds) * 24 + 4),
         width,
         height,
         size,
