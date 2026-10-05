@@ -107,6 +107,25 @@ CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=127.0.0.1
 2. **真实生成**：`executor: "comfyui"` 重启网关 → 先文生视频、再图生视频；
 3. 遇到失败时先看网关控制台日志：模板未替换、占位符残留、ComfyUI 节点报错都会在此明确输出。
 
+## MiniMax-H3 实测配置（RTX 5060 Ti 16GB）
+
+已在 5060 Ti 16GB + ComfyUI 0.38 + T8 节点包（minimax-h3-audio-T8）实测通过，模板即由此而来：
+
+| 权重 | 目录 | 大小 |
+| --- | --- | --- |
+| `minimax_h3_fl2va_int8_convrot.safetensors` | `models/diffusion_models/` | 32.5 GB |
+| `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` | 15 GB |
+| `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` | 5 GB |
+| `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` | 0.6 GB |
+| `minimax_h3_turbo_4步加速ema_comfyui.safetensors` | `models/loras/` | 0.7 GB |
+
+权重来自 [`t8star/Vdn-Minimax-H3-Comfy`](https://huggingface.co/t8star/Vdn-Minimax-H3-Comfy)（未门控，国内可用 `hf-mirror.com` 直链下载）与 [`t8star/minimax-h3-4step-turbo-loras-comfyui-exp`](https://huggingface.co/t8star/minimax-h3-4step-turbo-loras-comfyui-exp)。
+
+- 网关会把请求的宽高**自动对齐到 32 的倍数**（H3 硬性要求，720P 的 1280x720 会被对齐为 1280x704），无需在 BeefTV 侧做特殊设置。
+- 帧数按 `秒×24+4` 换算（5 秒→124 帧），时长范围 2–15 秒。
+- 实测耗时：832×480 · 5 秒约 1.5 分钟；1280×704 · 6 秒约 7 分钟（含权重加载）。生成期间显存约 15.5/16 GB，请勿并发提交多个视频任务。
+- BeefTV 后端首次使用 OpenAI Videos 协议需要官方 `openai-videos.beeftv-plugin` 插件包：仓库源码在 `plugin-packages/`，需先构建出 `.beeftv-plugin`（本仓库外用 `build-packages.sh`，Windows 无 zip 命令时可用任意 zipfile 工具复刻），并把 `CANVAS_OFFICIAL_PLUGIN_DIR` 指向该目录。
+
 ## 安全与边界
 
 - 网关默认只绑定 `127.0.0.1`，不对外网暴露；跨机部署时改 `host` 并**必须**设置 `apiKey`；

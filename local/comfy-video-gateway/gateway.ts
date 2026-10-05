@@ -254,8 +254,14 @@ async function loadTemplate(config: GatewayConfig, job: Job) {
 
 async function parseSize(form: FormData, config: GatewayConfig): Promise<{ width: number; height: number; size: string }> {
     const raw = text(form, "size");
+    // H3 等本地模型要求宽高被 32 整除；对请求尺寸向下取整对齐，保持画幅且不放大显存需求。
+    const snap32 = (value: number) => Math.max(32, Math.floor(value / 32) * 32);
     const match = raw.match(/^(\d+)x(\d+)$/i);
-    if (match) return { width: Number(match[1]), height: Number(match[2]), size: `${match[1]}x${match[2]}` };
+    if (match) {
+        const width = snap32(Number(match[1]));
+        const height = snap32(Number(match[2]));
+        return { width, height, size: `${width}x${height}` };
+    }
     if (raw) log(`无法识别的 size 值 "${raw}"，使用默认 ${config.defaultWidth}x${config.defaultHeight}`);
     return { width: config.defaultWidth, height: config.defaultHeight, size: `${config.defaultWidth}x${config.defaultHeight}` };
 }
