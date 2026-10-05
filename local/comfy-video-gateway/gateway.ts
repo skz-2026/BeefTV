@@ -106,6 +106,30 @@ async function loadConfig(): Promise<GatewayConfig> {
 
 const jobs = new Map<string, Job>();
 
+// ---------- GPU 显存按需调度 ----------
+// 16GB 显存放不下 H3 和 Qwen-Image 两套权重：所有生成任务串行执行；
+// 连续同类任务复用已加载模型，任务类型（模板）切换时先 /free 完全卸载。
+let gpuQueue: Promise<void> = Promise.resolve();
+let lastWorkload: string | null = null;
+
+function enqueueGpuWork<T>(workloadKey: string, task: () => Promise<T>, config: GatewayConfig): Promise<T> {
+    const run = async () => {
+        if (lastWorkload !== workloadKey) {
+            log(`切换生成负载（${lastWorkload ?? "空"} -> ${workloadKey.split(/[\\/]/).pop()}），先卸载已加载模型…`);
+            await fetch(`${config.comfyuiUrl}/free`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ unload_models: true, free_memory: true }),
+            }).catch(() => undefined);
+            lastWorkload = workloadKey;
+        }
+        return task();
+    };
+    const next = gpuQueue.then(run, run);
+    gpuQueue = next.then(() => undefined, () => undefined);
+    return next;
+}
+
 function templateAbsolutePath(config: GatewayConfig, workflowPath: string): string {
     return path.isAbsolute(workflowPath) ? workflowPath : path.resolve(scriptDir, workflowPath);
 }
@@ -328,7 +352,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     jobs.set(job.id, job);
     await fs.mkdir(path.join(config.jobsDir, job.id), { recursive: true });
     log(`任务 ${job.id} 已创建：model=${model} mode=${mode} seconds=${seconds} size=${size}`);
-    void runJob(config, job, substituted).catch((error) => {
+    void enqueueGpuWork(job.workflowPath, () => runJob(config, job, substituted), config).catch((error) => {
         job.status = "failed";
         job.error = error instanceof Error ? error.message : String(error);
         log(`任务 ${job.id} 失败：${job.error}`);
@@ -545,7 +569,7 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
         if (config.executor === "mock") {
             throw new Error("mock 模式不支持生图；请把 executor 设为 comfyui");
         }
-        const buffers = await comfyRunImages(config, substituted);
+        const buffers = await enqueueGpuWork(job.workflowPath, () => comfyRunImages(config, substituted), config);
         job.status = "completed";
         return json(res, 200, {
             created: Math.floor(Date.now() / 1000),

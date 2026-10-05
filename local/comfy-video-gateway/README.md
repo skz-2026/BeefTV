@@ -28,7 +28,7 @@ ComfyUI + 本地模型权重（GPU）
 
 - **视频（MiniMax-H3）**：T2VA 用全量 INT8 底模 + turbo EMA LoRA；**Ref2VA（角色一致性）用 `minimax_h3_ref2va_pruned_int8_convrot` + 官方 `ref2v_turbo_4step` LoRA**（均来自 `Comfy-Org/MiniMax-H3`）。提示词需含 `<Picture 1>` 引用。
 - **生图（Qwen-Image-2.1）**：`qwen_image_2.1_int8_convrot`（6.9G）+ `qwen3vl_8b_int8_convrot`（8.9G，CLIPLoader type=qwen_image）+ `qwen_image_2.1_vae_bf16` + `qwen_image_2.1_viggle_turbo_r64` 4 步 LoRA（来源 `Comfy-Org/Qwen-Image-2.1`、`t8star/Qwen-Image-2.1-viggle-turbo-4step-r64-comfy`）。
-- 视频与生图**不要并发**（显存各自 ~15.5G / ~10G，串行使用）。
+- 视频与生图**不要在 ComfyUI 里手工并发**；网关侧已内置 **GPU 按需调度**：所有生成请求串行执行，连续同类任务复用已加载模型，任务类型切换（T2V ↔ Ref2V ↔ 生图）时先调 ComfyUI `/free` 完全卸载旧模型再加载新模型，16GB 显存不会被两套权重挤爆。代价是切换后首个任务多付一次模型加载时间（H3 约 1-2 分钟，Qwen 约 5 秒）。
 
 本目录全部是**新增文件**，与官方仓库零耦合：`git pull` 官方更新不会产生任何冲突，也不会影响官方代码路径。
 
