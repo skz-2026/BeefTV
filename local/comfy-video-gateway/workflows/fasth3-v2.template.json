@@ -1,0 +1,129 @@
+{
+    "_README": [
+        "FastH3 V2 文生视频（T2VA）：FastVideo 官方 DMD2 蒸馏 8 步完整学生模型 + learned VSA 稀疏注意力（keep20%）。",
+        "由 T8 节点包 examples/workflows/34-fasth3-v2/FastH3_V2_Trained_VSA_73f_h1c1_EXP.json（已审配方）转为 API 格式，",
+        "输出改用 VHS_VideoCombine 对齐网关收集约定；保留 RuntimeAudit 节点用于确认 VSA 真实调度（Blackwell 上若不合规会在此报错）。",
+        "依赖权重：diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors（22GB，revision 0de92ab，SHA256 0922785978dc9bfe1adf27d8b291b0ca763f9f165f882e6cb297c72fbb6deda8）、",
+        "text_encoders/{{TEXT_ENCODER}}（复用现有 Qwen3-VL NVFP4 编码器）、vae/minimax_h3_video_vae_fp16.safetensors、vae/minimax_h3_audio_vae_fp32.safetensors。",
+        "注意：这是完整学生模型，不是 LoRA——不要叠加 turbo/EMA 加速 LoRA；官方训练合同只蒸馏了 T2VA，FL2VA/Ref2VA 未蒸馏（参考图任务请继续用 h3-multiref）。",
+        "占位符由网关按请求注入：{{PROMPT}} {{WIDTH}} {{HEIGHT}} {{FRAMES}} {{SEED}} {{TEXT_ENCODER}}"
+    ],
+    "1": {
+        "class_type": "UNETLoader",
+        "inputs": {
+            "unet_name": "fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors",
+            "weight_dtype": "default"
+        }
+    },
+    "2": {
+        "class_type": "CLIPLoader",
+        "inputs": {
+            "clip_name": "{{TEXT_ENCODER}}",
+            "type": "minimax",
+            "device": "default"
+        }
+    },
+    "3": {
+        "class_type": "VAELoader",
+        "inputs": {
+            "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+        }
+    },
+    "4": {
+        "class_type": "VAELoader",
+        "inputs": {
+            "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+        }
+    },
+    "5": {
+        "class_type": "MiniMaxH3AudioConditioningT8",
+        "inputs": {
+            "clip": ["2", 0],
+            "video_vae": ["3", 0],
+            "audio_vae": ["4", 0],
+            "prompt": "{{PROMPT}}",
+            "width": "{{WIDTH}}",
+            "height": "{{HEIGHT}}",
+            "length": "{{FRAMES}}",
+            "task_type": "T2VA",
+            "audio_mode": "native",
+            "audio_denoise_strength": 1,
+            "add_source_as_reference": false,
+            "prompt_primary_audio_ordinal": 0,
+            "strict_prompt_tags": true,
+            "ref_image_size": "match",
+            "reference_video_policy": "official_2_to_15s"
+        }
+    },
+    "6": {
+        "class_type": "MiniMaxH3FastH3V2SetupEXPT8",
+        "inputs": {
+            "model": ["1", 0],
+            "av_latent": ["5", 1],
+            "profile": "trained_vsa_exp",
+            "min_tokens": 0
+        }
+    },
+    "7": {
+        "class_type": "BasicGuider",
+        "inputs": {
+            "model": ["6", 0],
+            "conditioning": ["5", 0]
+        }
+    },
+    "8": {
+        "class_type": "RandomNoise",
+        "inputs": {
+            "noise_seed": "{{SEED}}",
+            "control": "fixed"
+        }
+    },
+    "9": {
+        "class_type": "SamplerCustomAdvanced",
+        "inputs": {
+            "noise": ["8", 0],
+            "guider": ["7", 0],
+            "sampler": ["6", 1],
+            "sigmas": ["6", 2],
+            "latent_image": ["5", 1]
+        }
+    },
+    "10": {
+        "class_type": "MiniMaxH3FastH3V2RuntimeAuditEXPT8",
+        "inputs": {
+            "model": ["6", 0],
+            "sampled_av_latent": ["9", 0]
+        }
+    },
+    "11": {
+        "class_type": "MiniMaxH3AVDecodeT8",
+        "inputs": {
+            "av_latent": ["10", 0],
+            "video_vae": ["3", 0],
+            "audio_vae": ["4", 0]
+        }
+    },
+    "12": {
+        "class_type": "VHS_VideoCombine",
+        "inputs": {
+            "images": ["11", 0],
+            "audio": ["11", 1],
+            "frame_rate": 24,
+            "loop_count": 0,
+            "filename_prefix": "MiniMaxH3/beeftv_fasth3",
+            "format": "video/h264-mp4",
+            "pix_fmt": "yuv420p",
+            "crf": 19,
+            "save_metadata": true,
+            "trim_to_audio": false,
+            "pingpong": false,
+            "save_output": true
+        }
+    },
+    "13": {
+        "class_type": "PreviewAny",
+        "inputs": {
+            "source": ["10", 1]
+        }
+    }
+}

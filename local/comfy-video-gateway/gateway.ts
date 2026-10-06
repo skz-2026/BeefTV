@@ -354,6 +354,11 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
 
     const { workflow } = await loadTemplate(config, job);
     const { width, height, size } = await parseSize(form, config);
+    // 可选 seed 表单参数：A/B 对比/复现实验用同一种子；缺省仍随机，不影响现有调用方。
+    const seedParam = Number(text(form, "seed"));
+    const seed = Number.isFinite(seedParam) && seedParam >= 0 && seedParam <= 2_147_483_647
+        ? Math.floor(seedParam)
+        : Math.floor(Math.random() * 2_147_483_647);
     const context: PlaceholderContext = {
         prompt,
         negative: config.defaultNegativePrompt,
@@ -363,7 +368,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
         width,
         height,
         size,
-        seed: Math.floor(Math.random() * 2_147_483_647),
+        seed,
         images: [],
         textEncoder: config.modelTextEncoders[model] ?? config.defaultTextEncoder,
     };
@@ -391,7 +396,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
 
     jobs.set(job.id, job);
     await fs.mkdir(path.join(config.jobsDir, job.id), { recursive: true });
-    log(`任务 ${job.id} 已创建：model=${model} mode=${mode} seconds=${seconds} size=${size}`);
+    log(`任务 ${job.id} 已创建：model=${model} mode=${mode} seconds=${seconds} size=${size} seed=${seed}`);
 
     // 动漫场景模型：多参考图自动走两步流程（合成→编辑首帧→I2VA）
     const animeSceneModels = ["h3-anime-scene"];

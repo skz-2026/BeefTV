@@ -27,6 +27,7 @@ ComfyUI + 本地模型权重（GPU）
 ### 已实测权重组合（RTX 5060 Ti 16GB）
 
 - **视频（MiniMax-H3）**：T2VA 用全量 INT8 底模 + turbo EMA LoRA；**Ref2VA（角色一致性）用 `minimax_h3_ref2va_pruned_int8_convrot` + 官方 `ref2v_turbo_4step` LoRA**（均来自 `Comfy-Org/MiniMax-H3`）。提示词需含 `<Picture 1>` 引用。
+- **视频（FastH3 V2，`fasth3-v2` / `fasth3-v2-uncensored`）**：FastVideo 官方 DMD2 蒸馏完整学生模型 `fastvideo_fasth3_8step_v2_pruned_int8_convrot`（22GB，来自 `FastVideo/FastVideo-FastH3-Comfy` revision `0de92ab`），8 步 + learned VSA 稀疏注意力（keep20%），复用现有 Qwen 编码器与双 VAE，**不要叠加 turbo/EMA LoRA**。官方只蒸馏了 T2VA——FL2VA/Ref2VA 未蒸馏，参考图任务仍走 `h3-multiref`。2026-10-07 实测（5060 Ti，832×480）：5s 比 turbo-4 慢约 11%（81s vs 91s），12s 快约 23%（283s vs 219s），时长/分辨率越高优势越大；跨帧人物一致性更好，原生音频响度健康（-14~-25 LUFS，turbo 常 -39~-41 近静音）。
 - **生图（Qwen-Image-2.1）**：`qwen_image_2.1_int8_convrot`（6.9G）+ `qwen3vl_8b_int8_convrot`（8.9G，CLIPLoader type=qwen_image）+ `qwen_image_2.1_vae_bf16` + `qwen_image_2.1_viggle_turbo_r64` 4 步 LoRA（来源 `Comfy-Org/Qwen-Image-2.1`、`t8star/Qwen-Image-2.1-viggle-turbo-4step-r64-comfy`）。
 - 视频与生图**不要在 ComfyUI 里手工并发**；网关侧已内置 **GPU 按需调度**：所有生成请求串行执行，连续同类任务复用已加载模型，任务类型切换（T2V ↔ Ref2V ↔ 生图）时先调 ComfyUI `/free` 完全卸载旧模型再加载新模型，16GB 显存不会被两套权重挤爆。代价是切换后首个任务多付一次模型加载时间（H3 约 1-2 分钟，Qwen 约 5 秒）。
 
@@ -71,7 +72,7 @@ ComfyUI + 本地模型权重（GPU）
 | `{{NEGATIVE_PROMPT}}` | 反向提示词（未配置时取 `config.defaultNegativePrompt`） |
 | `{{SECONDS}}` | 视频时长（数字） |
 | `{{WIDTH}}` / `{{HEIGHT}}` / `{{SIZE}}` | 分辨率，来自渠道的 size 设置（如 `1280x720`） |
-| `{{SEED}}` | 每次请求随机种子（数字） |
+| `{{SEED}}` | 每次请求随机种子（数字）；请求表单可选传 `seed` 固定种子，用于 A/B 对比复现 |
 | `{{IMAGE}}` / `{{IMAGE_2}}`… | 参考图文件名（上传到 ComfyUI input 后的引用名），填在 LoadImage 类节点的 `image` 字段 |
 | `{{TEXT_ENCODER}}` | 文本编码器权重文件名，按请求的模型名从 `modelTextEncoders` / `defaultTextEncoder` 解析，填在 CLIPLoader 的 `clip_name` 字段 |
 

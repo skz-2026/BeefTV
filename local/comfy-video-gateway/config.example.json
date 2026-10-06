@@ -16,7 +16,8 @@
     "modelTextEncoders": {
         "minimax-h3-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
         "h3-multiref-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
-        "h3-i2v-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+        "h3-i2v-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "fasth3-v2-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
     },
     "workflows": {
         "text": "workflows/text-to-video.template.json",
@@ -27,7 +28,9 @@
         "h3-multiref": "workflows/ref-multi.template.json",
         "h3-i2v": "workflows/image-to-video.template.json",
         "h3-multiref-uncensored": "workflows/ref-multi.template.json",
-        "h3-i2v-uncensored": "workflows/image-to-video.template.json"
+        "h3-i2v-uncensored": "workflows/image-to-video.template.json",
+        "fasth3-v2": "workflows/fasth3-v2.template.json",
+        "fasth3-v2-uncensored": "workflows/fasth3-v2.template.json"
     },
     "jobsDir": "jobs",
     "jobTtlHours": 24,
