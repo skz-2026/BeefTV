@@ -23,7 +23,7 @@
     "3": {
         "class_type": "CLIPLoader",
         "inputs": {
-            "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "clip_name": "{{TEXT_ENCODER}}",
             "type": "minimax",
             "device": "default"
         }

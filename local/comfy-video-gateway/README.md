@@ -22,7 +22,7 @@ ComfyUI + 本地模型权重（GPU）
 | `POST /v1/videos`（multipart） | 视频生成。无参考图 → T2VA 模板；带参考图 → **Ref2VA 角色参考模板**（人物一致性）；`modelWorkflows` 可按模型名覆盖 |
 | `GET /v1/videos/{id}` · `/content` | 视频任务轮询与成片下载 |
 | `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json` |
-| `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `imageModels` |
+| `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `modelTextEncoders` 键 + `imageModels` |
 
 ### 已实测权重组合（RTX 5060 Ti 16GB）
 
@@ -73,6 +73,7 @@ ComfyUI + 本地模型权重（GPU）
 | `{{WIDTH}}` / `{{HEIGHT}}` / `{{SIZE}}` | 分辨率，来自渠道的 size 设置（如 `1280x720`） |
 | `{{SEED}}` | 每次请求随机种子（数字） |
 | `{{IMAGE}}` / `{{IMAGE_2}}`… | 参考图文件名（上传到 ComfyUI input 后的引用名），填在 LoadImage 类节点的 `image` 字段 |
+| `{{TEXT_ENCODER}}` | 文本编码器权重文件名，按请求的模型名从 `modelTextEncoders` / `defaultTextEncoder` 解析，填在 CLIPLoader 的 `clip_name` 字段 |
 
 替换后如仍有 `{{...}}` 残留，网关会在创建任务时明确报错指出是哪个占位符。
 
@@ -84,6 +85,8 @@ cp config.example.json config.json   # Windows: copy config.example.json config.
 node gateway.ts                      # 或 bun gateway.ts
 ```
 
+改完 `gateway.ts` / `config.json` / 模板后重启网关：`bash restart-gateway.sh`（杀旧拉新，日志写 `logs/`）。
+
 关键配置项：
 
 | 字段 | 说明 |
@@ -93,6 +96,7 @@ node gateway.ts                      # 或 bun gateway.ts
 | `executor` | `mock`（默认，不依赖 GPU，用于打通链路）/ `comfyui`（真实生成） |
 | `comfyuiUrl` | ComfyUI 地址，默认 `http://127.0.0.1:8188` |
 | `workflows` / `modelWorkflows` | 文生/图生模板路径；`modelWorkflows` 可按模型名覆盖（多个本地模型共用一个网关） |
+| `defaultTextEncoder` / `modelTextEncoders` | H3 视频模板的编码器权重：模板里写 `{{TEXT_ENCODER}}` 占位符，默认取 `defaultTextEncoder`，命中 `modelTextEncoders` 的模型名换成对应文件（官方/无审查双编码器共存，见下文） |
 | `timeoutMinutes` | 等待 ComfyUI 生成的超时时间 |
 
 ### 4. 放行本机上游（关键）
@@ -112,7 +116,7 @@ CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=127.0.0.1
 - **接口协议**：选 **OpenAI Videos（`newapi`）**。不要选 `newapi-channel-2`——那是 JSON 版 `/video/generations` 协议，参考图要求公网 URL，不适合本地素材；
 - **Base URL**：`http://127.0.0.1:8765/v1`；
 - **API Key**：与网关 `config.apiKey` 一致（网关未设 Key 时随便填一个非空值，BeefTV 侧要求 Key 非空）；
-- **模型**：添加模型名（如 `minimax-h3`）并启用视频能力。多个本地模型时，把模型名登记到网关 `config.modelWorkflows` 即可路由到不同工作流。
+- **模型**：添加模型名（如 `minimax-h3`）并启用视频能力，也可直接点「拉取模型」从网关 `/v1/models` 获取。多个本地模型时，把模型名登记到网关 `config.modelWorkflows`（换工作流）或 `config.modelTextEncoders`（换编码器）即可路由。
 
 之后在画布上像使用云渠道一样发起视频生成：不带图走文生视频模板，接参考图节点走图生视频模板。
 
@@ -135,6 +139,21 @@ CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=127.0.0.1
 | `minimax_h3_turbo_4步加速ema_comfyui.safetensors` | `models/loras/` | 0.7 GB |
 
 权重来自 [`t8star/Vdn-Minimax-H3-Comfy`](https://huggingface.co/t8star/Vdn-Minimax-H3-Comfy)（未门控，国内可用 `hf-mirror.com` 直链下载）与 [`t8star/minimax-h3-4step-turbo-loras-comfyui-exp`](https://huggingface.co/t8star/minimax-h3-4step-turbo-loras-comfyui-exp)。
+
+### 官方 / 无审查双编码器（按模型切换）
+
+除官方编码器外，另部署了社区去审查编码器（Heretic 消融版，仅替换提示词理解这一层，视频底模不变）：
+
+| 权重 | 目录 | 大小 |
+| --- | --- | --- |
+| `qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors` | `models/text_encoders/` | 15.7 GB |
+
+来源 [`Abiray/Qwen3-VL-32B-Heretic-MiniMax-H3-nvfp4-ComfyUI`](https://modelscope.cn/models/Abiray/Qwen3-VL-32B-Heretic-MiniMax-H3-nvfp4-ComfyUI)（ModelScope）。视频模板的 `clip_name` 写 `{{TEXT_ENCODER}}` 占位符，按模型名解析编码器：
+
+- `minimax-h3` / `h3-multiref` / `h3-i2v` → 官方 `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`；
+- `minimax-h3-uncensored` / `h3-multiref-uncensored` / `h3-i2v-uncensored` → 上述 Heretic 权重。
+
+两套模型共用全部工作流模板（只有编码器不同），BeefTV 渠道里「拉取模型」即可看到全部模型名。去审查编码器消融有轻微能力损失（KL 0.042），对复杂结构化提示词（subject_definitions 等）的遵循度建议自行对比后选用；生成内容合法性与平台边界的责任在使用者。
 
 - 网关会把请求的宽高**自动对齐到 32 的倍数**（H3 硬性要求，720P 的 1280x720 会被对齐为 1280x704），无需在 BeefTV 侧做特殊设置。
 - 帧数按 `秒×24+4` 换算（5 秒→124 帧），时长范围 2–15 秒。

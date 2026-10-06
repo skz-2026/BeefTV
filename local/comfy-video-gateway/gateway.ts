@@ -31,6 +31,9 @@ type GatewayConfig = {
     defaultHeight: number;
     defaultModel: string;
     imageModels: string[];
+    // H3 视频模板的文本编码器：默认官方权重，modelTextEncoders 按模型名切换（如无审查版编码器）。
+    defaultTextEncoder: string;
+    modelTextEncoders: Record<string, string>;
     workflows: { text: string; image: string; imageGen: string };
     modelWorkflows: Record<string, string>;
     jobsDir: string;
@@ -91,6 +94,8 @@ async function loadConfig(): Promise<GatewayConfig> {
         defaultHeight: Number(parsed.defaultHeight ?? 720),
         defaultModel: String(parsed.defaultModel ?? "local-video"),
         imageModels: Array.isArray(parsed.imageModels) ? parsed.imageModels.map(String) : ["qwen-image-2.1"],
+        defaultTextEncoder: String(parsed.defaultTextEncoder ?? "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
+        modelTextEncoders: parsed.modelTextEncoders ?? {},
         workflows: {
             text: String(parsed.workflows?.text ?? "workflows/text-to-video.template.json"),
             image: String(parsed.workflows?.image ?? "workflows/ref-to-video.template.json"),
@@ -108,7 +113,9 @@ const jobs = new Map<string, Job>();
 
 // ---------- GPU 显存按需调度 ----------
 // 16GB 显存放不下 H3 和 Qwen-Image 两套权重：所有生成任务串行执行；
-// 连续同类任务复用已加载模型，任务类型（模板）切换时先 /free 完全卸载。
+// 连续同类任务复用已加载模型，任务类型（模板）切换时先 /free 卸载显存。
+// 96GB 内存下 free_memory 保持 false：权重缓存留在内存，切回时免磁盘重读
+//（官方/无审查两套编码器 + DiT 合计约 68GB，内存缓存得住）。
 let gpuQueue: Promise<void> = Promise.resolve();
 let lastWorkload: string | null = null;
 
@@ -119,7 +126,7 @@ function enqueueGpuWork<T>(workloadKey: string, task: () => Promise<T>, config: 
             await fetch(`${config.comfyuiUrl}/free`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ unload_models: true, free_memory: true }),
+                body: JSON.stringify({ unload_models: true, free_memory: false }),
             }).catch(() => undefined);
             lastWorkload = workloadKey;
         }
@@ -204,6 +211,7 @@ type PlaceholderContext = {
     size: string;
     seed: number;
     images: string[];
+    textEncoder: string;
 };
 
 function substitutePlaceholders(node: unknown, context: PlaceholderContext): unknown {
@@ -217,6 +225,7 @@ function substitutePlaceholders(node: unknown, context: PlaceholderContext): unk
         if (exact === "{{HEIGHT}}") return context.height;
         if (exact === "{{SIZE}}") return context.size;
         if (exact === "{{SEED}}") return context.seed;
+        if (exact === "{{TEXT_ENCODER}}") return context.textEncoder;
         const imageMatch = exact.match(/^\{\{IMAGE(?:_(\d+))?\}\}$/);
         if (imageMatch) {
             const index = Number(imageMatch[1] ?? 1) - 1;
@@ -356,6 +365,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
         size,
         seed: Math.floor(Math.random() * 2_147_483_647),
         images: [],
+        textEncoder: config.modelTextEncoders[model] ?? config.defaultTextEncoder,
     };
 
     if (mode === "image") {
@@ -382,6 +392,25 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     jobs.set(job.id, job);
     await fs.mkdir(path.join(config.jobsDir, job.id), { recursive: true });
     log(`任务 ${job.id} 已创建：model=${model} mode=${mode} seconds=${seconds} size=${size}`);
+
+    // 动漫场景模型：多参考图自动走两步流程（合成→编辑首帧→I2VA）
+    const animeSceneModels = ["h3-anime-scene"];
+    if (animeSceneModels.includes(model) && references.length > 0) {
+        void enqueueGpuWork(`anime-scene-${job.id}`, async () => {
+            try {
+                const target = config.executor === "mock" ? await mockRun(config, job) : await runAnimeSceneJob(config, job, references, prompt, seconds, width, height);
+                job.status = "completed";
+                job.filePath = target;
+                log(`任务 ${job.id} [动漫场景] 完成`);
+            } catch (error) {
+                job.status = "failed";
+                job.error = error instanceof Error ? error.message : String(error);
+                log(`任务 ${job.id} [动漫场景] 失败：${job.error}`);
+            }
+        }, config);
+        return json(res, 200, { id: job.id, status: job.status, model });
+    }
+
     void enqueueGpuWork(job.workflowPath, () => runJob(config, job, substituted), config).catch((error) => {
         job.status = "failed";
         job.error = error instanceof Error ? error.message : String(error);
@@ -497,6 +526,102 @@ async function runJob(config: GatewayConfig, job: Job, workflow: unknown) {
     }
 }
 
+// ---------- 动漫场景模型：多参考图 → 合成 → Qwen-Edit 首帧 → H3 I2VA ----------
+
+async function uploadFileToComfyUI(config: GatewayConfig, buffer: Buffer, name: string): Promise<string> {
+    const form = new FormData();
+    form.append("image", new File([buffer], name, { type: "image/png" }));
+    form.append("type", "input");
+    form.append("overwrite", "true");
+    const response = await fetch(`${config.comfyuiUrl}/upload/image`, { method: "POST", body: form });
+    if (!response.ok) throw new Error(`上传 ComfyUI 失败（${response.status}）`);
+    const result = await response.json() as { name?: string; subfolder?: string };
+    if (!result.name) throw new Error("ComfyUI 上传未返回文件名");
+    return result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+}
+
+async function compositeImagesOnComfy(config: GatewayConfig, imageNames: string[]): Promise<string> {
+    if (imageNames.length === 1) return imageNames[0];
+    const nodes: Record<string, unknown> = {};
+    const loadIds: string[] = [];
+    for (let i = 0; i < imageNames.length; i++) {
+        const id = String(i + 1);
+        nodes[id] = { class_type: "LoadImage", inputs: { image: imageNames[i], upload: "image" } };
+        loadIds.push(id);
+    }
+    let prevId = loadIds[0];
+    for (let i = 1; i < imageNames.length; i++) {
+        const concatId = `cat-${i}`;
+        nodes[concatId] = { class_type: "ImageConcatenate", inputs: { image1: [prevId, 0], image2: [loadIds[i], 0], direction: "right" } };
+        prevId = concatId;
+    }
+    nodes["save"] = { class_type: "SaveImage", inputs: { images: [prevId, 0], filename_prefix: "beeftv/scene-composite" } };
+    const clientId = `beeftv-gateway-${randomUUID()}`;
+    const submit = await fetch(`${config.comfyuiUrl}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: nodes, client_id: clientId }) });
+    const body = await submit.json();
+    if (!submit.ok) throw new Error(`合成提交失败: ${JSON.stringify(body).slice(0, 300)}`);
+    const promptId = body.prompt_id;
+    if (!promptId) throw new Error("合成未返回 prompt_id");
+    const deadline = Date.now() + 5 * 60_000;
+    while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, config.pollIntervalMs));
+        const h = await (await fetch(`${config.comfyuiUrl}/history/${promptId}`)).json();
+        const e = h[promptId];
+        if (!e) continue;
+        if (e.status?.status_str === "error") throw new Error(`合成执行失败: ${JSON.stringify(e.status.messages ?? {}).slice(0, 400)}`);
+        for (const out of Object.values(e.outputs ?? {})) {
+            const imgs = (out as Record<string, unknown>)?.images;
+            if (Array.isArray(imgs) && imgs.length > 0) {
+                const f = imgs[0] as { filename: string; subfolder?: string; type?: string };
+                const q = new URLSearchParams({ filename: f.filename, subfolder: f.subfolder ?? "", type: f.type ?? "output" });
+                const view = await fetch(`${config.comfyuiUrl}/view?${q}`);
+                if (!view.ok) throw new Error(`下载合成图失败 ${view.status}`);
+                const buf = Buffer.from(await view.arrayBuffer());
+                return await uploadFileToComfyUI(config, buf, `beeftv-composited-${Date.now()}.png`);
+            }
+        }
+    }
+    throw new Error("合成等待超时");
+}
+
+async function runAnimeSceneJob(
+    config: GatewayConfig, job: Job,
+    references: File[], prompt: string, seconds: number, width: number, height: number,
+): Promise<string> {
+    job.status = "in_progress";
+    log(`任务 ${job.id} [动漫场景] 1/3 上传 ${references.length} 张参考图…`);
+    const imageNames: string[] = [];
+    for (let i = 0; i < references.length; i++) {
+        imageNames.push(await uploadFileToComfyUI(config, Buffer.from(await references[i].arrayBuffer()), `beeftv-scene-${i}-${Date.now()}.png`));
+    }
+    log(`任务 ${job.id} [动漫场景] 2/3 合成 + Qwen-Edit 首帧…`);
+    const composited = await compositeImagesOnComfy(config, imageNames);
+    const n = references.length;
+    const editPrompt = `2D anime style illustration. The reference shows ${n} character design sheets side by side. Create a single scene using ALL ${n} characters, keeping each character's EXACT face design, costume, animal features (monkey face, pig ears, etc.) and accessories exactly as in the reference. Do NOT humanize any character. Scene: ${prompt}. Exactly ${n} characters, one each, no duplicates. 2D anime production art.`;
+    // 用 Qwen-Edit 模板生成首帧
+    const editPath = templateAbsolutePath(config, config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
+    const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
+    const editSub = substitutePlaceholders(editWorkflow, {
+        prompt: editPrompt, negative: "", seconds: 0, frames: 0, width, height,
+        size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647), images: [composited],
+    });
+    const firstFrameBufs = await comfyRunImages(config, editSub);
+    const firstFrameBuf = firstFrameBufs[0];
+    const firstFrameName = await uploadFileToComfyUI(config, firstFrameBuf, `beeftv-firstframe-${job.id}.png`);
+    log(`任务 ${job.id} [动漫场景] 首帧完成，3/3 H3 I2VA 动化…`);
+    // 用 I2VA 模板跑视频
+    const i2vaPath = templateAbsolutePath(config, config.modelWorkflows["h3-i2v"] || "workflows/image-to-video.template.json");
+    const i2vaWorkflow = stripDocKeys(JSON.parse(await fs.readFile(i2vaPath, "utf8")));
+    const i2vaSub = substitutePlaceholders(i2vaWorkflow, {
+        prompt, negative: config.defaultNegativePrompt, seconds,
+        frames: Math.max(52, Math.min(15, seconds) * 24 + 4),
+        width, height, size: `${width}x${height}`,
+        seed: Math.floor(Math.random() * 2_147_483_647), images: [firstFrameName],
+    });
+    // 直接调 comfyRun 拿视频
+    return await comfyRun(config, job, i2vaSub);
+}
+
 // ---------- OpenAI Images 协议（同步返回 b64_json） ----------
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -591,6 +716,7 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
         size: `${width}x${height}`,
         seed: Math.floor(Math.random() * 2_147_483_647),
         images: [],
+        textEncoder: config.defaultTextEncoder,
     });
     assertNoLeftoverPlaceholders(substituted);
     log(`图片任务 ${job.id} 开始：model=${model} ${width}x${height} prompt=${prompt.slice(0, 60)}`);
@@ -650,7 +776,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
     }
 
     if (req.method === "GET" && (pathname === "/models" || pathname.endsWith("/models"))) {
-        const models = [...Object.keys(config.modelWorkflows), config.defaultModel, ...config.imageModels];
+        const models = [
+            ...Object.keys(config.modelWorkflows),
+            ...Object.keys(config.modelTextEncoders),
+            config.defaultModel,
+            ...config.imageModels,
+        ];
         return json(res, 200, { object: "list", data: [...new Set(models)].map((id) => ({ id, object: "model" })) });
     }
 

@@ -2,10 +2,10 @@
     "_README": [
         "MiniMax-H3 文生视频（T2VA），由 T8 示例 2026-08-06_H3_Turbo_Stable_4V4A 转为 API 格式。",
         "依赖权重：diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors、",
-        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors、",
+        "text_encoders/{{TEXT_ENCODER}}（官方 qwen3vl_32b_minimax_h3_nvfp4_awq / 无审查 qwen3vl_32b_heretic_minimax_h3_nvfp4，按模型名选择）、",
         "vae/minimax_h3_video_vae_fp16.safetensors、vae/minimax_h3_audio_vae_fp32.safetensors、",
         "loras/minimax_h3_turbo_4步加速ema_comfyui.safetensors",
-        "占位符由网关按请求注入：{{PROMPT}} {{WIDTH}} {{HEIGHT}} {{FRAMES}} {{SEED}}"
+        "占位符由网关按请求注入：{{PROMPT}} {{WIDTH}} {{HEIGHT}} {{FRAMES}} {{SEED}} {{TEXT_ENCODER}}"
     ],
     "1": {
         "class_type": "UNETLoader",
@@ -25,7 +25,7 @@
     "3": {
         "class_type": "CLIPLoader",
         "inputs": {
-            "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "clip_name": "{{TEXT_ENCODER}}",
             "type": "minimax",
             "device": "default"
         }

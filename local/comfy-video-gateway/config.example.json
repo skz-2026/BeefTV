@@ -5,20 +5,29 @@
     "executor": "mock",
     "comfyuiUrl": "http://127.0.0.1:8188",
     "pollIntervalMs": 1000,
-    "timeoutMinutes": 30,
+    "timeoutMinutes": 60,
     "mockDelayMs": 3000,
     "mockVideoPath": "",
     "defaultNegativePrompt": "",
     "defaultWidth": 1280,
     "defaultHeight": 720,
     "defaultModel": "minimax-h3",
+    "defaultTextEncoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "modelTextEncoders": {
+        "minimax-h3-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "h3-multiref-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "h3-i2v-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+    },
     "workflows": {
         "text": "workflows/text-to-video.template.json",
         "image": "workflows/ref-to-video.template.json",
         "imageGen": "workflows/qwen-t2i.template.json"
     },
     "modelWorkflows": {
-        "h3-multiref": "workflows/ref-multi.template.json"
+        "h3-multiref": "workflows/ref-multi.template.json",
+        "h3-i2v": "workflows/image-to-video.template.json",
+        "h3-multiref-uncensored": "workflows/ref-multi.template.json",
+        "h3-i2v-uncensored": "workflows/image-to-video.template.json"
     },
     "jobsDir": "jobs",
     "jobTtlHours": 24,
