@@ -622,6 +622,61 @@ async function runAnimeSceneJob(
     return await comfyRun(config, job, i2vaSub);
 }
 
+// ---------- 图片编辑协议：POST /v1/images/edits（multipart，输入图+指令 → 编辑后图片） ----------
+
+async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    const form = await parseForm(req);
+    const prompt = text(form, "prompt");
+    if (!prompt) return json(res, 400, { error: { message: "prompt 不能为空" } });
+    const model = text(form, "model") || "qwen-edit";
+    const sizeRaw = text(form, "size");
+    const match = sizeRaw.match(/^(\d+)x(\d+)$/i);
+    const width = match ? Number(match[1]) : 1280;
+    const height = match ? Number(match[2]) : 704;
+
+    // 收集输入图片（input_reference[] / input_reference / image）
+    const inputFiles: File[] = [];
+    for (const key of ["input_reference[]", "input_reference", "image", "image[]"]) {
+        for (const entry of form.getAll(key)) {
+            if (isFile(entry)) inputFiles.push(entry);
+        }
+    }
+    if (!inputFiles.length) return json(res, 400, { error: { message: "图片编辑需要至少一张输入图片（input_reference）" } });
+
+    if (config.executor === "mock") {
+        return json(res, 500, { error: { message: "mock 模式不支持图片编辑" } });
+    }
+
+    log(`图片编辑任务开始：model=${model} 输入图=${inputFiles.length} 张 ${width}x${height} prompt=${prompt.slice(0, 60)}`);
+    try {
+        // 1. 上传所有输入图到 ComfyUI
+        const imageNames: string[] = [];
+        for (let i = 0; i < inputFiles.length; i++) {
+            imageNames.push(await uploadFileToComfyUI(config, Buffer.from(await inputFiles[i].arrayBuffer()), `beeftv-edit-${i}-${Date.now()}.png`));
+        }
+        // 2. 多图时自动合成（水平拼接）
+        const composited = await compositeImagesOnComfy(config, imageNames);
+        // 3. 用 qwen-edit 模板生成编辑后图片
+        const editPath = templateAbsolutePath(config, config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
+        const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
+        const substituted = substitutePlaceholders(editWorkflow, {
+            prompt, negative: "", seconds: 0, frames: 0, width, height,
+            size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647),
+            images: [composited],
+        });
+        const buffers = await comfyRunImages(config, substituted);
+        log(`图片编辑完成：${buffers.length} 张输出`);
+        return json(res, 200, {
+            created: Math.floor(Date.now() / 1000),
+            data: buffers.map(b => ({ b64_json: b.toString("base64") })),
+        });
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        log(`图片编辑失败：${msg}`);
+        return json(res, 500, { error: { message: msg, type: "generation_error" } });
+    }
+}
+
 // ---------- OpenAI Images 协议（同步返回 b64_json） ----------
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -787,6 +842,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
 
     if (req.method === "POST" && (pathname === "/images/generations" || pathname === "/images")) {
         return await handleImageGeneration(req, res, config);
+    }
+
+    if (req.method === "POST" && (pathname === "/images/edits")) {
+        return await handleImageEdit(req, res, config);
     }
 
     if (req.method === "POST" && (pathname === "/videos" || pathname === "/videos/generations")) {
