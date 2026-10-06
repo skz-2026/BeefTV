@@ -557,7 +557,7 @@ async function compositeImagesOnComfy(config: GatewayConfig, imageNames: string[
     let prevId = loadIds[0];
     for (let i = 1; i < imageNames.length; i++) {
         const concatId = `cat-${i}`;
-        nodes[concatId] = { class_type: "ImageConcatenate", inputs: { image1: [prevId, 0], image2: [loadIds[i], 0], direction: "right" } };
+        nodes[concatId] = { class_type: "ImageBatch", inputs: { image1: [prevId, 0], image2: [loadIds[i], 0],  } };
         prevId = concatId;
     }
     nodes["save"] = { class_type: "SaveImage", inputs: { images: [prevId, 0], filename_prefix: "beeftv/scene-composite" } };
