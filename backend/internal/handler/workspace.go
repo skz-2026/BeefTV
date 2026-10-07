@@ -130,6 +130,41 @@ func RegisterWorkspaceRoutes(r *gin.RouterGroup, svc *app.Service) {
 		}
 		ok(c, gin.H{"saved": true})
 	})
+	r.GET("/workspace/model-config/export", func(c *gin.Context) {
+		if _, err := workspaceForLocalRequest(c, svc); err != nil {
+			fail(c, http.StatusUnauthorized, err)
+			return
+		}
+		providerConfig := requestProviderConfig(c, svc)
+		var config map[string]any
+		if versioned, supportsVersioning := providerConfig.(VersionedProviderConfig); supportsVersioning {
+			effective, _, err := versioned.LoadEffectiveModelConfig()
+			if err != nil {
+				failService(c, err)
+				return
+			}
+			config = effective.Config
+		} else {
+			body, err := providerConfig.ReadLocalModelConfig()
+			if err != nil {
+				failService(c, err)
+				return
+			}
+			if err := json.Unmarshal(body, &config); err != nil {
+				fail(c, http.StatusInternalServerError, errors.New("本地模型配置损坏"))
+				return
+			}
+		}
+		// 导出包含渠道 apiKey 明文，仅供本机运维编辑后再导入；
+		// 该路由绝不能暴露到任何公网可达的 origin。
+		payload, err := json.MarshalIndent(config, "", "  ")
+		if err != nil {
+			fail(c, http.StatusInternalServerError, err)
+			return
+		}
+		c.Header("Content-Disposition", `attachment; filename="model-config.json"`)
+		c.Data(http.StatusOK, "application/json", payload)
+	})
 }
 
 func redactModelConfig(c *gin.Context, svc *app.Service, config map[string]any) map[string]any {

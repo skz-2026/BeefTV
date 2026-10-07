@@ -73,6 +73,34 @@ func TestWorkspaceModelConfigRejectsStaleRevisionWithoutLeakingSecrets(t *testin
 	}
 }
 
+func TestWorkspaceModelConfigExportDownloadsEditableConfig(t *testing.T) {
+	router, _ := newModelConfigTestRouter(t)
+	first := putModelConfig(t, router, 0, "export-secret-key")
+	if first.Code != http.StatusOK {
+		t.Fatalf("put status = %d body=%s", first.Code, first.Body.String())
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/workspace/model-config/export", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("export status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if disposition := recorder.Header().Get("Content-Disposition"); disposition != `attachment; filename="model-config.json"` {
+		t.Fatalf("content-disposition = %q", disposition)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &config); err != nil {
+		t.Fatalf("export body is not a bare config object: %v", err)
+	}
+	channels, _ := config["channels"].([]any)
+	if len(channels) == 0 {
+		t.Fatalf("export missing channels: %s", recorder.Body.String())
+	}
+	// 导出面向本机运维编辑：自定义渠道 key 随配置原样带出。
+	if !bytes.Contains(recorder.Body.Bytes(), []byte("export-secret-key")) {
+		t.Fatalf("export dropped the editable api key: %s", recorder.Body.String())
+	}
+}
+
 func newModelConfigTestRouter(t *testing.T) (*gin.Engine, *workspace.ProviderConfig) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

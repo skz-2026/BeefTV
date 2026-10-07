@@ -60,7 +60,10 @@ export function createModelConfigRepository(dependencies: ModelConfigRepositoryD
                     try {
                         const current = await dependencies.read();
                         state = { ...state, revision: current.revision, status: "saving", dirty: true, error: "" };
-                        const retried = await dependencies.write(config, state.revision);
+                        // A conflicted snapshot must never overwrite whatever
+                        // another tab saved: retry with the newest local state.
+                        if (!latestConfig) throw new Error("模型配置已清空，取消重试");
+                        const retried = await dependencies.write(latestConfig, state.revision);
                         state = { status: "saved", revision: retried.revision, dirty: generation !== savingGeneration, error: "" };
                         continue;
                     } catch (retryError) {

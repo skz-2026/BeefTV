@@ -5,6 +5,7 @@ import { FullScreenLoader } from "@/components/ui/aceternity/full-screen-loader"
 import { WorkspaceErrorState } from "@/components/layout/workspace-state";
 import { appPathname } from "@/lib/app-routing";
 import { preloadWorkspaceRoute } from "@/lib/workspace-route-modules";
+import { shouldMigrateLocalModelConfig } from "@/lib/workspace-model-config";
 import { applyUserSession, localWorkspaceConfig } from "@/lib/user-session";
 import { getWorkspaceBootstrap, type WorkspaceBootstrapPayload } from "@/services/api/workspace";
 import { commitModelConfig, flushModelConfig, hydrateModelConfig } from "@/services/model-config-repository";
@@ -105,6 +106,15 @@ export function shouldSaveLocalModelConfig({ subscriptionReady, modelConfigReady
 async function hydrateLocalModelConfig() {
     const result = await hydrateModelConfig();
     const normalizedConfig = localWorkspaceConfig(normalizeConfigSnapshot({ config: result.config }).config);
+    // A backend with no stored config must never wipe channels that only
+    // exist in this browser: migrate the local snapshot up to the backend
+    // once instead of replacing it with the built-in defaults.
+    const localConfig = localWorkspaceConfig(normalizeConfigSnapshot({ config: useConfigStore.getState().config }).config);
+    if (shouldMigrateLocalModelConfig({ health: result.health, localChannelCount: localConfig.channels.length })) {
+        useConfigStore.getState().replaceConfig(localConfig);
+        await commitModelConfig(localConfig);
+        return;
+    }
     useConfigStore.getState().replaceConfig(normalizedConfig);
     if (shouldPersistHydratedModelConfig(result.health)) await commitModelConfig(normalizedConfig);
 }
