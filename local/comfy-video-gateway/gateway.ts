@@ -344,11 +344,19 @@ async function parseSize(form: FormData, config: GatewayConfig): Promise<{ width
     const raw = text(form, "size");
     // H3 等本地模型要求宽高被 32 整除；对请求尺寸向下取整对齐，保持画幅且不放大显存需求。
     const snap32 = (value: number) => Math.max(32, Math.floor(value / 32) * 32);
+    // 画幅别名（BeefTV 节点会传 "16:9" 这类比例字符串）→ 32 对齐的默认分辨率
+    const aspectAlias: Record<string, [number, number]> = {
+        "16:9": [1280, 704], "9:16": [704, 1280], "1:1": [960, 960], "4:3": [1024, 768], "3:4": [768, 1024], "21:9": [1344, 576],
+    };
     const match = raw.match(/^(\d+)x(\d+)$/i);
     if (match) {
         const width = snap32(Number(match[1]));
         const height = snap32(Number(match[2]));
         return { width, height, size: `${width}x${height}` };
+    }
+    const alias = aspectAlias[raw.trim()];
+    if (alias) {
+        return { width: alias[0], height: alias[1], size: `${alias[0]}x${alias[1]}` };
     }
     if (raw) log(`无法识别的 size 值 "${raw}"，使用默认 ${config.defaultWidth}x${config.defaultHeight}`);
     return { width: config.defaultWidth, height: config.defaultHeight, size: `${config.defaultWidth}x${config.defaultHeight}` };
