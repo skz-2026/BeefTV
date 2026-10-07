@@ -246,6 +246,29 @@ function substitutePlaceholders(node: unknown, context: PlaceholderContext): unk
     return node;
 }
 
+// 图片编辑模板：删除没有实际图片的 LoadImage 节点，并剪掉 TextEncodeQwenImage21 对应的 images.image_N 槽。
+function pruneEmptyEditRefSlots(workflow: Record<string, unknown>) {
+    const droppedNodes = new Set<string>();
+    for (const [id, node] of Object.entries(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
+        if (typed.class_type !== "LoadImage" || !typed.inputs) continue;
+        if (typeof typed.inputs.image === "string" && !typed.inputs.image.trim()) droppedNodes.add(id);
+    }
+    if (!droppedNodes.size) return;
+    for (const [id, node] of Object.entries(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
+        if (typed.class_type !== "TextEncodeQwenImage21" || !typed.inputs) continue;
+        for (const key of Object.keys(typed.inputs)) {
+            if (!key.startsWith("images.image_")) continue;
+            const link = typed.inputs[key];
+            if (Array.isArray(link) && droppedNodes.has(String(link[0]))) delete typed.inputs[key];
+        }
+    }
+    for (const id of droppedNodes) delete workflow[id];
+}
+
 // 多参考模板：删除没有实际图片的 LoadImage 节点和对应 ref_images.ref_image_N 槽位。
 function pruneEmptyRefSlots(workflow: Record<string, unknown>) {
     const droppedNodes = new Set<string>();
@@ -647,6 +670,7 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
         }
     }
     if (!inputFiles.length) return json(res, 400, { error: { message: "图片编辑需要至少一张输入图片（input_reference）" } });
+    if (inputFiles.length > 6) return json(res, 400, { error: { message: `图片编辑最多支持 6 张参考图（收到 ${inputFiles.length} 张），多余请合并为对照表或分镜拆解` } });
 
     if (config.executor === "mock") {
         return json(res, 500, { error: { message: "mock 模式不支持图片编辑" } });
@@ -665,15 +689,14 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
             : (config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
         const editPath = templateAbsolutePath(config, editTemplatePath);
         const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
-        // images[0] = 主参考（第一张），images[1..] = 附加参考（EditPlus 的 image2/image3）
+        // images[0] = 主参考（第一张），images[1..] = 附加参考
         const substituted = substitutePlaceholders(editWorkflow, {
             prompt, negative: "", seconds: 0, frames: 0, width, height,
             size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647),
             images: imageNames,
         });
-        // 多参考 Plus 模板要求恰好 3 个图槽：不足时补第一张，超出时截断
-        if (editWorkflow["22"] && imageNames.length < 2) (substituted as Record<string, any>)["22"].inputs.image = imageNames[0];
-        if (editWorkflow["23"] && imageNames.length < 3) (substituted as Record<string, any>)["23"].inputs.image = imageNames[0];
+        // 未提供的参考图槽位：剪掉空 LoadImage 和对应 images.image_N 输入
+        pruneEmptyEditRefSlots(substituted as Record<string, any>);
         const buffers = await comfyRunImages(config, substituted);
         log(`图片编辑完成：${buffers.length} 张输出`);
         return json(res, 200, {

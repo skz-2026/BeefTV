@@ -1,21 +1,23 @@
 {
     "_README": [
-        "Qwen-Image-2.1 7B 编辑版：用已有的 7B 底模（6.9GB）+ PE-I2I 编辑编码器（9GB）。",
-        "16GB 显存可完整加载，速度秒级。多参考图走 TextEncodeQwenImageEditPlus（3 张独立输入）。",
-        "占位符：{{PROMPT}} {{WIDTH}} {{HEIGHT}} {{SEED}} {{IMAGE}} {{IMAGE_2}} {{IMAGE_3}}"
+        "Qwen-Image-2.1 官方编辑配方（照 comfyui_workflow_templates_json/image_qwen_image_2_1_image_edit.json 转写）。",
+        "关键机制：TextEncodeQwenImage21（编码器 qwen3vl_8b）同时吐 positive/negative/latent 三个输出，",
+        "参考图经 VAE 编进初始 latent（KSampler 的 latent_image 必须接它的 latent 输出，不是 EmptySD3LatentImage）。",
+        "PE-I2I 编码器是提示词增强 LLM，不参与图像条件——网关暂不接增强链，直接用画布详尽提示词。",
+        "占位符：{{PROMPT}} {{SEED}} {{WIDTH}} {{HEIGHT}} {{IMAGE}} {{IMAGE_2}}..{{IMAGE_6}}（空槽由网关剪除）"
     ],
     "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "qwen_image_2.1_int8_convrot.safetensors", "weight_dtype": "default" } },
-    "3": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors", "type": "qwen_image", "device": "default" } },
-    "5": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_2.1_vae_bf16.safetensors" } },
+    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "device": "default" } },
+    "3": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_2.1_vae_bf16.safetensors" } },
+    "4": { "class_type": "QwenImage21Cache", "inputs": { "model": ["1", 0], "device": "auto", "dtype": "default" } },
     "13": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE}}", "upload": "image" } },
     "22": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE_2}}", "upload": "image" } },
     "23": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE_3}}", "upload": "image" } },
-    "4": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "qwen_image_2.1_viggle_turbo_r64.safetensors", "strength_model": 1.0 } },
-    "6": { "class_type": "ModelSamplingAuraFlow", "inputs": { "model": ["4", 0], "shift": 3.0 } },
-    "7": { "class_type": "TextEncodeQwenImageEditPlus", "inputs": { "clip": ["3", 0], "prompt": "{{PROMPT}}", "vae": ["5", 0], "image1": ["13", 0], "image2": ["22", 0], "image3": ["23", 0] } },
-    "8": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["3", 0], "text": "" } },
-    "9": { "class_type": "EmptySD3LatentImage", "inputs": { "width": "{{WIDTH}}", "height": "{{HEIGHT}}", "batch_size": 1 } },
-    "10": { "class_type": "KSampler", "inputs": { "model": ["6", 0], "positive": ["7", 0], "negative": ["8", 0], "latent_image": ["9", 0], "seed": "{{SEED}}", "steps": 4, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
-    "11": { "class_type": "VAEDecode", "inputs": { "samples": ["10", 0], "vae": ["5", 0] } },
+    "24": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE_4}}", "upload": "image" } },
+    "25": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE_5}}", "upload": "image" } },
+    "26": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE_6}}", "upload": "image" } },
+    "8": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["2", 0], "vae": ["3", 0], "prompt": "{{PROMPT}}", "negative_prompt": "", "resolution": 1024, "images.image_1": ["13", 0], "images.image_2": ["22", 0], "images.image_3": ["23", 0], "images.image_4": ["24", 0], "images.image_5": ["25", 0], "images.image_6": ["26", 0] } },
+    "9": { "class_type": "KSampler", "inputs": { "model": ["4", 0], "positive": ["8", 0], "negative": ["8", 1], "latent_image": ["8", 2], "seed": "{{SEED}}", "steps": 25, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0 } },
+    "11": { "class_type": "VAEDecode", "inputs": { "samples": ["9", 0], "vae": ["3", 0] } },
     "12": { "class_type": "SaveImage", "inputs": { "images": ["11", 0], "filename_prefix": "QwenImage21Edit/beeftv" } }
 }
