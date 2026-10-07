@@ -654,21 +654,26 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
 
     log(`图片编辑任务开始：model=${model} 输入图=${inputFiles.length} 张 ${width}x${height} prompt=${prompt.slice(0, 60)}`);
     try {
-        // 1. 上传所有输入图到 ComfyUI
+        // 1. 上传所有输入图到 ComfyUI（每张独立，不拼接——保持各参考图身份完整）
         const imageNames: string[] = [];
         for (let i = 0; i < inputFiles.length; i++) {
             imageNames.push(await uploadFileToComfyUI(config, Buffer.from(await inputFiles[i].arrayBuffer()), `beeftv-edit-${i}-${Date.now()}.png`));
         }
-        // 2. 多图时自动合成（水平拼接）
-        const composited = await compositeImagesOnComfy(config, imageNames);
-        // 3. 用 qwen-edit 模板生成编辑后图片
-        const editPath = templateAbsolutePath(config, config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
+        // 2. 选择编辑模板：qwen-edit-plus（多参考独立输入，身份保真）或 qwen-edit（单图拼接）
+        const editTemplatePath = imageNames.length > 1
+            ? (config.modelWorkflows["qwen-edit-plus"] || "workflows/qwen-edit-plus.template.json")
+            : (config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
+        const editPath = templateAbsolutePath(config, editTemplatePath);
         const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
+        // images[0] = 主参考（第一张），images[1..] = 附加参考（EditPlus 的 image2/image3）
         const substituted = substitutePlaceholders(editWorkflow, {
             prompt, negative: "", seconds: 0, frames: 0, width, height,
             size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647),
-            images: [composited],
+            images: imageNames,
         });
+        // 多参考 Plus 模板要求恰好 3 个图槽：不足时补第一张，超出时截断
+        if (editWorkflow["22"] && imageNames.length < 2) (substituted as Record<string, any>)["22"].inputs.image = imageNames[0];
+        if (editWorkflow["23"] && imageNames.length < 3) (substituted as Record<string, any>)["23"].inputs.image = imageNames[0];
         const buffers = await comfyRunImages(config, substituted);
         log(`图片编辑完成：${buffers.length} 张输出`);
         return json(res, 200, {
