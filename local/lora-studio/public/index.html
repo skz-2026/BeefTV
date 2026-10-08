@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>LoRA Studio · 短剧卡司训练台</title>
+<style>
+  :root { --bg:#111418; --card:#1a1f26; --line:#2a323c; --fg:#dde4ec; --dim:#8b98a8; --acc:#4f9cf9; --ok:#3ecf8e; --warn:#f5a623; --err:#f2705f; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; padding:20px; }
+  header { display:flex; align-items:center; gap:16px; margin-bottom:16px; }
+  header h1 { font-size:18px; }
+  .dot { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); }
+  .dot i { width:9px; height:9px; border-radius:50%; background:var(--dim); display:inline-block; }
+  .dot.on i { background:var(--ok); } .dot.busy i { background:var(--warn); }
+  .layout { display:grid; grid-template-columns:240px 1fr; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card h3 { font-size:14px; margin-bottom:10px; color:var(--acc); }
+  button { background:#252d37; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button.danger { color:var(--err); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  input, select { background:#141a21; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; }
+  .drama-item { padding:8px 10px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; }
+  .drama-item:hover, .drama-item.sel { background:#232b35; }
+  .drama-item small { color:var(--dim); }
+  .char-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:12px; }
+  .char { border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .char .name { font-weight:600; }
+  .char .trig { color:var(--acc); font-family:Consolas,monospace; font-size:12px; }
+  .char .meta { color:var(--dim); font-size:12px; margin:4px 0 8px; }
+  .thumbs img { width:52px; height:78px; object-fit:cover; border-radius:4px; margin:2px; cursor:pointer; border:1px solid var(--line); }
+  .thumbs img:hover { border-color:var(--err); }
+  .bar { height:8px; background:#232b35; border-radius:4px; overflow:hidden; margin:8px 0; }
+  .bar i { display:block; height:100%; background:var(--acc); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .kv { font-size:12px; color:var(--dim); }
+  .video { width:100%; max-width:420px; border-radius:8px; margin-top:8px; }
+  #toast { position:fixed; bottom:20px; right:20px; background:#252d37; border:1px solid var(--line); padding:10px 16px; border-radius:8px; display:none; max-width:420px; }
+  .muted { color:var(--dim); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LoRA Studio</h1>
+  <span class="dot" id="dot-comfy"><i></i>ComfyUI</span>
+  <span class="dot" id="dot-gw"><i></i>网关</span>
+  <span class="dot" id="dot-gpu"><i></i>GPU</span>
+  <span class="dot" id="dot-train"><i></i>训练进程</span>
+</header>
+<div class="layout">
+  <div>
+    <div class="card">
+      <h3>短剧</h3>
+      <div id="drama-list"></div>
+      <div class="row" style="margin-top:10px">
+        <input id="new-drama" placeholder="新剧名（英文id优先）" style="flex:1">
+        <button class="primary" onclick="createDrama()">新建</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>流程</h3>
+      <div class="muted">① 添加角色（触发词+英文描述）<br>② 上传三视图 → 自动裁正/侧/背<br>③ 一键姿势扩增数据集<br>④ 审查对照表，点缩略图删坏片<br>⑤ 一键合训（自动停/启 ComfyUI）<br>⑥ 交付：注册网关 h3-{剧id}<br>⑦ A/B 验收</div>
+    </div>
+  </div>
+  <div id="main"><div class="card muted">左侧选择或新建一部短剧。</div></div>
+</div>
+<div id="toast"></div>
+<script>
+let OV = null, SEL = null, PROG = null;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+function toast(msg, ms = 3500) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => t.style.display = "none", ms); }
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const j = await r.json();
+  if (!j.ok && j.error) { toast("⚠ " + j.error); throw new Error(j.error); }
+  return j;
+}
+function setDot(id, cls, title) { const el = $(id); el.className = "dot " + cls; el.title = title || ""; }
+
+async function refresh() {
+  try {
+    OV = await api("/api/overview");
+    setDot("#dot-comfy", OV.env.comfyOnline ? "on" : "", `ComfyUI ${OV.env.comfyOnline ? "在线" : "离线"}`);
+    setDot("#dot-gw", OV.env.gatewayOnline ? "on" : "", `网关 ${OV.env.gatewayOnline ? "在线" : "离线"}`);
+    const g = OV.env.gpu;
+    setDot("#dot-gpu", g.used > 1000 ? "busy" : "on", `GPU ${g.used}/${g.total} MB · 利用率 ${g.util}%`);
+    setDot("#dot-train", OV.env.trainingProcess.running ? "busy" : "", OV.env.trainingProcess.running ? "训练中 PID " + OV.env.trainingProcess.pids.join(",") : "无训练进程");
+    $("#drama-list").innerHTML = OV.dramas.map((d) =>
+      `<div class="drama-item ${SEL === d.id ? "sel" : ""}" onclick="select('${d.id}')">
+        <span>${esc(d.name)}</span><small>${d.chars.length}角色</small></div>`).join("");
+    if (SEL) {
+      const d = OV.dramas.find((x) => x.id === SEL);
+      if (d) renderMain(d);
+    }
+    if (OV.dramas.some((d) => d.training?.status === "running") || OV.env.building) pollProgress();
+  } catch { /* 服务重启间隙忽略 */ }
+}
+
+function select(id) { SEL = id; refresh(); }
+
+async function createDrama() {
+  const name = $("#new-drama").value.trim();
+  if (!name) return;
+  const j = await api("/api/dramas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+  $("#new-drama").value = "";
+  SEL = j.drama.id; refresh();
+}
+
+async function addChar(id) {
+  const trigger = prompt("触发词（小写英文，提示词用，如 wukong）：");
+  if (!trigger) return;
+  const displayName = prompt("角色中文名：", trigger) || trigger;
+  const desc = prompt("英文锁定描述（可选，如 the pig boy with round pink face in black T-shirt）：", "") || "";
+  await api(`/api/dramas/${id}/chars`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trigger, displayName, desc }) });
+  refresh();
+}
+
+async function uploadSheet(id, trigger) {
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = "image/png,image/jpeg";
+  input.onchange = async () => {
+    const fd = new FormData(); fd.append("file", input.files[0]);
+    toast("上传裁切中…");
+    await api(`/api/dramas/${id}/chars/${trigger}/sheet`, { method: "POST", body: fd });
+    refresh();
+  };
+  input.click();
+}
+
+async function buildDataset(id) {
+  const n = prompt("每角色姿势数（默认12）：", "12");
+  if (n === null) return;
+  await api(`/api/dramas/${id}/build`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ posesPerChar: Number(n) || 12 }) });
+  toast("数据集构建已启动（走网关生成，每张约30-60秒）"); refresh();
+}
+
+async function delImage(id, trigger, file) {
+  if (!confirm(`删除 ${file}？`)) return;
+  await api(`/api/dramas/${id}/images/${trigger}/${file}`, { method: "DELETE" });
+  refresh();
+}
+
+async function startTrain(id) {
+  const steps = prompt("训练步数（1000 步 ≈ 8 小时）：", "1000");
+  if (steps === null) return;
+  await api(`/api/dramas/${id}/train`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ steps: Number(steps) || 1000 }) });
+  toast("训练已启动：ComfyUI 将自动停机，训完自动恢复"); refresh();
+}
+
+async function deliver(id) {
+  toast("注册网关路由中…");
+  const j = await api(`/api/dramas/${id}/deliver`, { method: "POST" });
+  toast(`已注册 ${j.route}，网关${j.gatewayUp ? "在线" : "未响应（手动重启网关）"}`); refresh();
+}
+
+async function validate(id, trigger) {
+  toast(`验收生成中：${trigger}（lora vs 基线，各 2 秒，约 3-5 分钟）…`, 8000);
+  const j = await api(`/api/dramas/${id}/validate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trigger }) });
+  toast("验收片已生成"); refresh();
+}
+
+async function pollProgress() {
+  if (!SEL) return;
+  try {
+    const j = await api(`/api/dramas/${SEL}/progress`);
+    PROG = j.progress;
+    const bar = $("#train-bar"); const txt = $("#train-text");
+    if (bar && PROG && PROG.total) {
+      bar.style.width = (PROG.step / PROG.total * 100).toFixed(1) + "%";
+      txt.textContent = `步数 ${PROG.step}/${PROG.total} · 已用 ${PROG.elapsed} · ETA ${PROG.eta} · loss ${PROG.loss} · ${PROG.status === "running" ? "训练中" : PROG.status === "done" ? "✅ 完成" : PROG.status === "failed" ? "❌ 失败" : ""}`;
+    }
+  } catch { }
+}
+
+function renderMain(d) {
+  const t = d.training || {};
+  const del = d.delivered || {};
+  const canTrain = d.chars.some((c) => c.datasetCount >= 6);
+  $("#main").innerHTML = `
+  <div class="card">
+    <h3>${esc(d.name)} · 角色</h3>
+    <div class="char-grid">
+      ${d.chars.map((c) => `
+      <div class="char">
+        <div class="name">${esc(c.displayName)} <span class="trig">${esc(c.trigger)}</span></div>
+        <div class="meta">${c.desc ? esc(c.desc) : "（无英文描述）"} · 数据集 ${c.datasetCount} 张${c.build ? ` · 构建 ${c.build.done}/${c.build.total}${c.build.active ? " ⏳" : c.build.error ? " ❌ " + esc(c.build.error) : " ✓"}` : ""}</div>
+        <div class="row">
+          <button onclick="uploadSheet('${d.id}','${c.trigger}')">${c.sheetFile ? "重传三视图" : "上传三视图"}</button>
+          <button class="danger" onclick="api('/api/dramas/${d.id}/chars/${c.trigger}',{method:'DELETE'}).then(refresh)">删除</button>
+        </div>
+        ${c.datasetCount ? `<div class="thumbs">${datasetThumbs(d.id, c)}</div>
+        <div class="kv"><a href="/media/${d.id}/contact-${c.trigger}.png" target="_blank">对照表 ↗</a>（点缩略图删除坏片）</div>` : ""}
+      </div>`).join("") || `<div class="muted">还没有角色</div>`}
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button onclick="addChar('${d.id}')">＋ 添加角色</button>
+      <button class="primary" onclick="buildDataset('${d.id}')" ${d.chars.length ? "" : "disabled"}>③ 一键建数据集</button>
+      <span class="muted">需 ComfyUI 在线（训练期间不可用）</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>训练（全卡司合训 · 多触发词）</h3>
+    <div class="bar"><i id="train-bar" style="width:${t.status === "done" ? "100" : progressPct()}%"></i></div>
+    <div class="kv" id="train-text">${trainText(t)}</div>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" onclick="startTrain('${d.id}')" ${canTrain && t.status !== "running" ? "" : "disabled"}>⑤ 开始训练</button>
+      ${t.loraFile ? `<span class="kv">产物：${esc(t.loraFile)}</span>` : ""}
+      <span class="muted">训练自动停 ComfyUI，结束自动恢复；期间生成功能不可用</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>交付与验收</h3>
+    <div class="row">
+      <button class="primary" onclick="deliver('${d.id}')" ${t.status === "done" || t.loraFile ? "" : "disabled"}>⑥ 注册网关路由</button>
+      ${del.route ? `<span class="kv">已注册 <b>${esc(del.route)}</b>（BeefTV 拉取模型后按 触发词 唤起角色）</span>` : ""}
+    </div>
+    <div class="row" style="margin-top:10px">
+      ${d.chars.map((c) => `<button onclick="validate('${d.id}','${c.trigger}')" ${del.route ? "" : "disabled"}>${esc(c.displayName)} A/B 验收</button>`).join("")}
+    </div>
+    ${validationVideos(d)}
+  </div>`;
+  function progressPct() { return PROG && PROG.total ? (PROG.step / PROG.total * 100).toFixed(1) : "0"; }
+  function trainText(t) {
+    if (t.status === "running") return PROG?.total ? `步数 ${PROG.step}/${PROG.total} · loss ${PROG.loss} · ETA ${PROG.eta}` : "启动中（加载权重约 8-10 分钟）…";
+    if (t.status === "done") return "✅ 训练完成，LoRA 已拷贝到 ComfyUI";
+    if (t.status === "failed") return "❌ 失败：" + esc(t.error || "") + "（日志 " + esc((t.logPath || "").split("/").pop() || "") + "）";
+    return canTrain ? "就绪" : "每个角色至少 6 张数据集（三视图 3 + 姿势）";
+  }
+}
+function datasetThumbs(id, c) {
+  const files = [];
+  for (let i = 0; i < c.datasetCount; i++) files.push(i);
+  // 用对照表代替逐张枚举的简化：仍提供删除入口需要文件名——由 overview 返回
+  return (c.files || []).map((f) => `<img src="/media/${id}/datasets/${c.trigger}/${f}" title="点击删除" onclick="delImage('${id}','${c.trigger}','${f}')">`).join("");
+}
+function validationVideos(d) {
+  return d.chars.map((c) => [`${c.trigger}-lora`, `${c.trigger}-base`].map((k) =>
+    `<video class="video" src="/media/${d.id}/validation/${k}.mp4" controls preload="none" onerror="this.remove()"></video>`).join("")
+    .replace(/^/, `<div class="kv">${esc(c.displayName)} 验收（上 LoRA / 下基线）</div>`)).join("");
+}
+setInterval(refresh, 3000);
+refresh();
+</script>
+</body>
+</html>
