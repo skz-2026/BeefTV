@@ -245,11 +245,11 @@
         "2",
         0
       ],
-      "lora_name": "wukong_h3.safetensors",
+      "lora_name": "xiyou_cast_h3.safetensors",
       "strength_model": 0.8
     },
     "_meta": {
-      "title": "角色LoRA wukong"
+      "title": "西游卡司LoRA"
     }
   }
 }
