@@ -182,6 +182,22 @@ function collectReferenceFiles(form: FormData): File[] {
     return files;
 }
 
+// 音频参考（声线锚定 ref_audios / 台词驱动 drive_audio）：input_reference_audio[] 或按 MIME 判定的音频文件
+function isAudioFile(file: File): boolean {
+    return (file.type || "").startsWith("audio/") || /\.(mp3|wav|flac|ogg|m4a|aac)$/i.test(file.name || "");
+}
+
+function collectAudioReferences(form: FormData, imageRefs: File[]): File[] {
+    const explicit: File[] = [];
+    for (const key of ["input_reference_audio[]", "input_reference_audio", "drive_audio"]) {
+        for (const entry of form.getAll(key)) {
+            if (isFile(entry) && isAudioFile(entry)) explicit.push(entry);
+        }
+    }
+    if (explicit.length) return explicit;
+    return imageRefs.filter(isAudioFile);
+}
+
 function text(form: FormData, key: string): string {
     const value = form.get(key);
     return typeof value === "string" ? value.trim() : "";
@@ -214,6 +230,7 @@ type PlaceholderContext = {
     size: string;
     seed: number;
     images: string[];
+    audios: string[];
     textEncoder: string;
 };
 
@@ -233,6 +250,12 @@ function substitutePlaceholders(node: unknown, context: PlaceholderContext): unk
         if (imageMatch) {
             const index = Number(imageMatch[1] ?? 1) - 1;
             return context.images[index] ?? "";
+        }
+        // 音频参考/台词驱动占位符：{{AUDIO}}=第一段，{{AUDIO_N}}=第 N 段（ref_audios 音色锚、drive_audio 台词驱动）
+        const audioMatch = exact.match(/^\{\{AUDIO(?:_(\d+))?\}\}$/);
+        if (audioMatch) {
+            const index = Number(audioMatch[1] ?? 1) - 1;
+            return context.audios[index] ?? "";
         }
         // 占位符嵌在更长字符串里时按子串替换（例如提示词拼接）。
         return node
@@ -294,6 +317,31 @@ function pruneEmptyRefSlots(workflow: Record<string, unknown>) {
     }
     for (const id of droppedNodes) delete workflow[id];
     if (droppedNodes.size) log(`多参考模板：剪除 ${droppedNodes.size} 个空参考槽位`);
+}
+
+// 音频模板：删除没有实际音频的 LoadAudio 节点和 ref_audios.ref_audio_N / drive_audio 槽位。
+function pruneEmptyAudioSlots(workflow: Record<string, unknown>) {
+    const droppedNodes = new Set<string>();
+    for (const [id, node] of Object.entries(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
+        if (typed.class_type !== "LoadAudio" || !typed.inputs) continue;
+        if (typeof typed.inputs.audio === "string" && !typed.inputs.audio.trim()) droppedNodes.add(id);
+    }
+    if (!droppedNodes.size) return;
+    for (const [id, node] of Object.entries(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
+        if (typed.class_type !== "MiniMaxH3AudioConditioningT8" || !typed.inputs) continue;
+        for (const key of Object.keys(typed.inputs)) {
+            if (key === "drive_audio" || /^ref_audios\.ref_audio_\d+$/.test(key)) {
+                const link = typed.inputs[key];
+                if (Array.isArray(link) && droppedNodes.has(String(link[0]))) delete typed.inputs[key];
+            }
+        }
+    }
+    for (const id of droppedNodes) delete workflow[id];
+    if (droppedNodes.size) log(`音频模板：剪除 ${droppedNodes.size} 个空音频槽位`);
 }
 
 function assertNoLeftoverPlaceholders(workflow: unknown) {    const leftovers = new Set<string>();
@@ -371,7 +419,9 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     if (!prompt) return json(res, 400, { error: { message: "prompt 不能为空" } });
     const model = text(form, "model") || config.defaultModel;
     const seconds = Math.max(1, Math.floor(Number(text(form, "seconds")) || 5));
-    const references = collectReferenceFiles(form);
+    const allRefs = collectReferenceFiles(form);
+    const audioRefs = collectAudioReferences(form, allRefs);
+    const references = allRefs.filter((f) => !isAudioFile(f));
     const mode: Job["mode"] = references.length > 0 ? "image" : "text";
     const override = config.modelWorkflows[model];
     const workflowPath = override || (mode === "image" ? config.workflows.image : config.workflows.text);
@@ -404,8 +454,17 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
         size,
         seed,
         images: [],
+        audios: [],
         textEncoder: config.modelTextEncoders[model] ?? config.defaultTextEncoder,
     };
+
+    // 音频参考上传（ref_audios 声线锚定 / drive_audio 台词驱动模板消费 {{AUDIO_N}}）
+    if (audioRefs.length && config.executor === "comfyui") {
+        for (let index = 0; index < audioRefs.length && index < 4; index += 1) {
+            context.audios.push(await uploadReferenceToComfy(config, audioRefs[index], 90 + index));
+        }
+        log(`任务前置：${audioRefs.length} 段音频参考已上传`);
+    }
 
     if (mode === "image") {
         if (config.executor === "comfyui") {
@@ -421,7 +480,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     }
 
     const substituted = substitutePlaceholders(workflow, context);
-    if (substituted && typeof substituted === "object") pruneEmptyRefSlots(substituted as Record<string, unknown>);
+    if (substituted && typeof substituted === "object") { pruneEmptyRefSlots(substituted as Record<string, unknown>); pruneEmptyAudioSlots(substituted as Record<string, unknown>); }
     try {
         assertNoLeftoverPlaceholders(substituted);
     } catch (error) {
@@ -642,7 +701,7 @@ async function runAnimeSceneJob(
     const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
     const editSub = substitutePlaceholders(editWorkflow, {
         prompt: editPrompt, negative: "", seconds: 0, frames: 0, width, height,
-        size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647), images: [composited],
+        size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647), images: [composited], audios: [],
     });
     const firstFrameBufs = await comfyRunImages(config, editSub);
     const firstFrameBuf = firstFrameBufs[0];
@@ -655,7 +714,7 @@ async function runAnimeSceneJob(
         prompt, negative: config.defaultNegativePrompt, seconds,
         frames: Math.max(52, Math.min(15, seconds) * 24 + 4),
         width, height, size: `${width}x${height}`,
-        seed: Math.floor(Math.random() * 2_147_483_647), images: [firstFrameName],
+        seed: Math.floor(Math.random() * 2_147_483_647), images: [firstFrameName], audios: [],
     });
     // 直接调 comfyRun 拿视频
     return await comfyRun(config, job, i2vaSub);
@@ -709,7 +768,7 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
         const substituted = substitutePlaceholders(editWorkflow, {
             prompt, negative: "", seconds: 0, frames: 0, width, height,
             size: `${width}x${height}`, seed: editSeed,
-            images: imageNames,
+            images: imageNames, audios: [],
             textEncoder: config.modelTextEncoders[model] ?? config.defaultImageTextEncoder,
         });
         // 未提供的参考图槽位：剪掉空 LoadImage 和对应 images.image_N 输入
@@ -826,6 +885,7 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
         size: `${width}x${height}`,
         seed: genSeed,
         images: [],
+        audios: [],
         textEncoder: config.modelTextEncoders[model] ?? config.defaultImageTextEncoder,
     });
     assertNoLeftoverPlaceholders(substituted);
