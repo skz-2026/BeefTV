@@ -42,7 +42,7 @@ type GatewayConfig = {
     jobTtlHours: number;
 };
 
-type JobStatus = "queued" | "in_progress" | "completed" | "failed";
+type JobStatus = "queued" | "in_progress" | "completed" | "failed" | "cancelled";
 
 type Job = {
     id: string;
@@ -54,6 +54,9 @@ type Job = {
     prompt: string;
     mode: "text" | "image";
     workflowPath: string;
+    // 取消链路：DELETE /v1/videos/{id} → 标记取消 + ComfyUI 队列删除/中断，排队任务轮到时跳过
+    promptId?: string;
+    cancelled?: boolean;
 };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -578,11 +581,13 @@ async function comfyRun(config: GatewayConfig, job: Job, workflow: unknown): Pro
     }
     const promptId = (submitBody as { prompt_id?: string }).prompt_id;
     if (!promptId) throw new Error(`ComfyUI 没有返回 prompt_id：${JSON.stringify(submitBody).slice(0, 300)}`);
+    job.promptId = promptId;
     log(`任务 ${job.id} 已提交 ComfyUI：prompt_id=${promptId}`);
 
     const deadline = Date.now() + config.timeoutMinutes * 60_000;
     while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
+        if (job.cancelled) throw new Error("任务已取消");
         const historyResponse = await fetch(`${config.comfyuiUrl}/history/${promptId}`);
         if (!historyResponse.ok) continue;
         const history = (await historyResponse.json()) as Record<string, Record<string, unknown>>;
@@ -612,12 +617,23 @@ async function comfyRun(config: GatewayConfig, job: Job, workflow: unknown): Pro
 }
 
 async function runJob(config: GatewayConfig, job: Job, workflow: unknown) {
+    if (job.cancelled) {
+        job.status = "cancelled";
+        log(`任务 ${job.id} 在排队期间被取消，跳过执行`);
+        return;
+    }
     try {
         const target = config.executor === "mock" ? await mockRun(config, job) : await comfyRun(config, job, workflow);
         job.status = "completed";
         job.filePath = target;
         log(`任务 ${job.id} 完成`);
     } catch (error) {
+        if (job.cancelled) {
+            job.status = "cancelled";
+            job.error = "任务已取消";
+            log(`任务 ${job.id} 已取消`);
+            return;
+        }
         job.status = "failed";
         job.error = error instanceof Error ? error.message : String(error);
         log(`任务 ${job.id} 失败：${job.error}`);
@@ -977,6 +993,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
             model: job.model,
             ...(job.status === "failed" ? { error: { message: job.error ?? "视频生成失败" } } : {}),
         });
+    }
+
+    // 取消任务（openai-videos 插件 cancel 钩子）：排队中→跳过；执行中→删 ComfyUI 队列并中断
+    if (req.method === "DELETE" && taskMatch) {
+        const job = jobs.get(taskMatch[1]);
+        if (!job) return json(res, 404, { error: { message: `任务 ${taskMatch[1]} 不存在或已被清理` } });
+        if (job.status === "completed" || job.status === "cancelled") {
+            return json(res, 200, { id: job.id, status: job.status });
+        }
+        job.cancelled = true;
+        if (job.status === "in_progress" && job.promptId) {
+            await fetch(`${config.comfyuiUrl}/queue`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ delete: [job.promptId] }),
+            }).catch(() => undefined);
+            await fetch(`${config.comfyuiUrl}/interrupt`, { method: "POST" }).catch(() => undefined);
+        }
+        job.status = "cancelled";
+        job.error = "任务已取消";
+        log(`任务 ${job.id} 收到取消请求（${job.promptId ? `已中断 ComfyUI ${job.promptId}` : "排队中，轮到时跳过"}）`);
+        return json(res, 200, { id: job.id, status: "cancelled" });
     }
 
     const contentMatch = pathname.match(/^\/videos\/([^/]+)\/content$/);
