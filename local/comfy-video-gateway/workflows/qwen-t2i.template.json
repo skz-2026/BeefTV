@@ -4,7 +4,8 @@
         "权重：diffusion_models/qwen_image_2.1_int8_convrot.safetensors、",
         "text_encoders/qwen3vl_8b_int8_convrot.safetensors（CLIPLoader type=qwen_image）、",
         "vae/qwen_image_2.1_vae_bf16.safetensors、loras/qwen_image_2.1_viggle_turbo_r64.safetensors。",
-        "占位符：{{PROMPT}} {{NEGATIVE_PROMPT}} {{WIDTH}} {{HEIGHT}} {{SEED}}"
+        "占位符：{{PROMPT}} {{NEGATIVE_PROMPT}} {{WIDTH}} {{HEIGHT}} {{SEED}} {{TEXT_ENCODER}}",
+        "编码器按模型名切换：官方 qwen-image-2.1 用 int8_convrot，无审查版经 config.modelTextEncoders 指向 Heretic 编码器。"
     ],
     "1": {
         "class_type": "UNETLoader",
@@ -31,7 +32,7 @@
     "4": {
         "class_type": "CLIPLoader",
         "inputs": {
-            "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+            "clip_name": "{{TEXT_ENCODER}}",
             "type": "qwen_image",
             "device": "default"
         }

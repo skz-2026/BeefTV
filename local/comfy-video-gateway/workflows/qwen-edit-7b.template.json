@@ -4,10 +4,11 @@
         "关键机制：TextEncodeQwenImage21（编码器 qwen3vl_8b）同时吐 positive/negative/latent 三个输出，",
         "参考图经 VAE 编进初始 latent（KSampler 的 latent_image 必须接它的 latent 输出，不是 EmptySD3LatentImage）。",
         "PE-I2I 编码器是提示词增强 LLM，不参与图像条件——网关暂不接增强链，直接用画布详尽提示词。",
-        "占位符：{{PROMPT}} {{SEED}} {{WIDTH}} {{HEIGHT}} {{IMAGE}} {{IMAGE_2}}..{{IMAGE_6}}（空槽由网关剪除）"
+        "占位符：{{PROMPT}} {{SEED}} {{WIDTH}} {{HEIGHT}} {{IMAGE}} {{IMAGE_2}}..{{IMAGE_6}}（空槽由网关剪除）",
+        "编码器占位符 {{TEXT_ENCODER}}：官方模型用 qwen3vl_8b_int8_convrot，无审查版经 config.modelTextEncoders 指向 Heretic。"
     ],
     "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "qwen_image_2.1_int8_convrot.safetensors", "weight_dtype": "default" } },
-    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "device": "default" } },
+    "2": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{TEXT_ENCODER}}", "type": "qwen_image", "device": "default" } },
     "3": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_2.1_vae_bf16.safetensors" } },
     "4": { "class_type": "QwenImage21Cache", "inputs": { "model": ["1", 0], "device": "auto", "dtype": "default" } },
     "13": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE}}", "upload": "image" } },

@@ -13,11 +13,15 @@
     "defaultHeight": 720,
     "defaultModel": "minimax-h3",
     "defaultTextEncoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "defaultImageTextEncoder": "qwen3vl_8b_int8_convrot.safetensors",
     "modelTextEncoders": {
         "minimax-h3-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
         "h3-multiref-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
         "h3-i2v-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
-        "fasth3-v2-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+        "fasth3-v2-uncensored": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+        "qwen-image-2.1-uncensored": "qwen3vl_8b_int8_convrot_heretic.safetensors",
+        "qwen-edit-uncensored": "qwen3vl_8b_int8_convrot_heretic.safetensors",
+        "qwen-edit-plus-uncensored": "qwen3vl_8b_int8_convrot_heretic.safetensors"
     },
     "workflows": {
         "text": "workflows/text-to-video.template.json",
@@ -35,6 +39,7 @@
     "jobsDir": "jobs",
     "jobTtlHours": 24,
     "imageModels": [
-        "qwen-image-2.1"
+        "qwen-image-2.1",
+        "qwen-image-2.1-uncensored"
     ]
 }

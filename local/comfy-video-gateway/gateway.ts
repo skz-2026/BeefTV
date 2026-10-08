@@ -34,6 +34,8 @@ type GatewayConfig = {
     // H3 视频模板的文本编码器：默认官方权重，modelTextEncoders 按模型名切换（如无审查版编码器）。
     defaultTextEncoder: string;
     modelTextEncoders: Record<string, string>;
+    // Qwen-Image 图片模板（qwen-t2i/qwen-edit-7b）的文本编码器，按模型名切换的规则与视频侧一致。
+    defaultImageTextEncoder: string;
     workflows: { text: string; image: string; imageGen: string };
     modelWorkflows: Record<string, string>;
     jobsDir: string;
@@ -96,6 +98,7 @@ async function loadConfig(): Promise<GatewayConfig> {
         imageModels: Array.isArray(parsed.imageModels) ? parsed.imageModels.map(String) : ["qwen-image-2.1"],
         defaultTextEncoder: String(parsed.defaultTextEncoder ?? "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"),
         modelTextEncoders: parsed.modelTextEncoders ?? {},
+        defaultImageTextEncoder: String(parsed.defaultImageTextEncoder ?? "qwen3vl_8b_int8_convrot.safetensors"),
         workflows: {
             text: String(parsed.workflows?.text ?? "workflows/text-to-video.template.json"),
             image: String(parsed.workflows?.image ?? "workflows/ref-to-video.template.json"),
@@ -669,6 +672,11 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
     const match = sizeRaw.match(/^(\d+)x(\d+)$/i);
     const width = match ? Number(match[1]) : 1280;
     const height = match ? Number(match[2]) : 704;
+    // 可选 seed 表单参数：首帧编辑复现/对照实验用同一种子；缺省随机，不影响现有调用方。
+    const editSeedParam = Number(text(form, "seed"));
+    const editSeed = Number.isFinite(editSeedParam) && editSeedParam >= 0 && editSeedParam <= 2_147_483_647
+        ? Math.floor(editSeedParam)
+        : Math.floor(Math.random() * 2_147_483_647);
 
     // 收集输入图片（input_reference[] / input_reference / image）
     const inputFiles: File[] = [];
@@ -684,7 +692,7 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
         return json(res, 500, { error: { message: "mock 模式不支持图片编辑" } });
     }
 
-    log(`图片编辑任务开始：model=${model} 输入图=${inputFiles.length} 张 ${width}x${height} prompt=${prompt.slice(0, 60)}`);
+    log(`图片编辑任务开始：model=${model} 输入图=${inputFiles.length} 张 ${width}x${height} seed=${editSeed} prompt=${prompt.slice(0, 60)}`);
     try {
         // 1. 上传所有输入图到 ComfyUI（每张独立，不拼接——保持各参考图身份完整）
         const imageNames: string[] = [];
@@ -700,8 +708,9 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
         // images[0] = 主参考（第一张），images[1..] = 附加参考
         const substituted = substitutePlaceholders(editWorkflow, {
             prompt, negative: "", seconds: 0, frames: 0, width, height,
-            size: `${width}x${height}`, seed: Math.floor(Math.random() * 2_147_483_647),
+            size: `${width}x${height}`, seed: editSeed,
             images: imageNames,
+            textEncoder: config.modelTextEncoders[model] ?? config.defaultImageTextEncoder,
         });
         // 未提供的参考图槽位：剪掉空 LoadImage 和对应 images.image_N 输入
         pruneEmptyEditRefSlots(substituted as Record<string, any>);
@@ -790,6 +799,11 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
     const match = sizeRaw.match(/^(\d+)x(\d+)$/i);
     const width = match ? Number(match[1]) : 1024;
     const height = match ? Number(match[2]) : 1024;
+    // 可选 seed 字段：场景底图等需要复现的生图用同一种子；缺省随机。
+    const genSeedParam = Number(body.seed);
+    const genSeed = Number.isFinite(genSeedParam) && genSeedParam >= 0 && genSeedParam <= 2_147_483_647
+        ? Math.floor(genSeedParam)
+        : Math.floor(Math.random() * 2_147_483_647);
 
     const job: Job = {
         id: randomUUID(),
@@ -810,12 +824,12 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
         width,
         height,
         size: `${width}x${height}`,
-        seed: Math.floor(Math.random() * 2_147_483_647),
+        seed: genSeed,
         images: [],
-        textEncoder: config.defaultTextEncoder,
+        textEncoder: config.modelTextEncoders[model] ?? config.defaultImageTextEncoder,
     });
     assertNoLeftoverPlaceholders(substituted);
-    log(`图片任务 ${job.id} 开始：model=${model} ${width}x${height} prompt=${prompt.slice(0, 60)}`);
+    log(`图片任务 ${job.id} 开始：model=${model} ${width}x${height} seed=${genSeed} prompt=${prompt.slice(0, 60)}`);
 
     try {
         if (config.executor === "mock") {

@@ -19,10 +19,15 @@ ComfyUI + 本地模型权重（GPU）
 
 | 端点 | 说明 |
 | --- | --- |
-| `POST /v1/videos`（multipart） | 视频生成。无参考图 → T2VA 模板；带参考图 → **Ref2VA 角色参考模板**（人物一致性）；`modelWorkflows` 可按模型名覆盖 |
+| `POST /v1/videos`（multipart） | 视频生成。无参考图 → T2VA 模板；带参考图 → **Ref2VA 角色参考模板**（人物一致性）；`modelWorkflows` 可按模型名覆盖。可选 `seed` 表单参数（0–2147483647，缺省随机） |
 | `GET /v1/videos/{id}` · `/content` | 视频任务轮询与成片下载 |
-| `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json` |
+| `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json`。可选 `seed` 字段（同 seed 逐字节可复现，2026-10-08 实测验证） |
+| `POST /v1/images/edits`（multipart） | 图片编辑（多参考身份保真），可选 `seed` 表单参数（首帧编辑复现/对照实验） |
 | `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `modelTextEncoders` 键 + `imageModels` |
+
+#### `h3-hybrid-flf`：首尾帧咬合（镜头间接续）
+
+模板 `workflows/hybrid-first-last.template.json`，在 hybrid（首帧+参考）基础上把 T8 条件节点的 `last_frame` 槽接上第二张图。**输入约定（连线顺序即槽位）**：images[0]=首帧、images[1]=尾帧、images[2..]=身份参考（正面图/三视图）。适用场景：同场景连续镜头（上一镜尾帧=本镜首帧的 frame chaining，或手绘/编辑出首尾两张定稿帧让模型补中间动作）。BeefTV 侧用法：视频节点连 [首帧节点, 尾帧节点, 参考图...]，模型选 `h3-hybrid-flf`（渠道里需配：能力=视频、协议=OpenAI Videos、勾全模态参考）。
 
 ### 已实测权重组合（RTX 5060 Ti 16GB）
 
