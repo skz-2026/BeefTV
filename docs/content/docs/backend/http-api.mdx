@@ -43,8 +43,11 @@ Wails 和浏览器开发模式共用同一套 `127.0.0.1` HTTP 合同。路由�
 | `/ops`, `/ops/:op` | 统一操作层：CLI、MCP 与内置 pi 会话共用同一组操作与校验 |
 | `/ops/clients*`, `/assistant/*` | 外部客户端登记、内置创作助手（同源代理）与宿主生命周期 |
 | `/health/*`, `/system/version` | 启动、就绪与版本诊断 |
+| `/system/hardware` | 本机硬件遥测快照：CPU、内存、GPU、磁盘用量与温度、ACPI 热区 |
 
 `POST /timeline/render-plan` 接收时间线快照、不透明源标识和输出选项，返回版本化语义计划。源标识是 nodeId 或 resource id，不是本地路径。请求不得携带 ffmpeg 参数。该接口不做生成、不写资源、不创建任务。
+
+`GET /system/hardware` 返回本机硬件遥测快照，供画布硬件监控浮窗低频轮询。各采集源尽力而为：无 NVIDIA 驱动命令或无传感器权限时，对应字段为 null/空数组（温度与热区在多数 Windows 机器上需要管理员权限才能读到）。只读采集，不落数据库。
 
 `POST /timeline/renders` 接收同一套时间线快照和输出选项（宽高、帧率、采样率、是否烧录字幕），创建本机 ffmpeg 成片任务。选项进入任务输入并在执行时编译进语义计划。
 

@@ -81,6 +81,7 @@ func registerDesktopCanvasAPI(api *gin.RouterGroup, svc *app.Service, dependenci
 	RegisterAgentHostLifecycleRoutes(api, svc, dependencies.AssistantHost)
 	RegisterChunkedUploadRoutes(api, svc, false)
 	RegisterDiagnosticsRoutes(api, svc)
+	RegisterSystemHardwareRoutes(api, svc)
 	RegisterPluginRoutes(api, svc, false)
 	projectAPI := api.Group("")
 	projectAPI.Use(RequireFeature(svc, app.FeatureShortDrama))

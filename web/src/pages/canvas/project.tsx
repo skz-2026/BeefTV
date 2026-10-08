@@ -36,6 +36,7 @@ import { AppModal } from "@/components/ui/product/app-modal";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
 import { CanvasConfigNodePanel } from "@/components/canvas/canvas-config-node-panel";
 import { CanvasActiveTaskPanel } from "@/components/canvas/canvas-active-task-panel";
+import { CanvasHardwareMonitor } from "@/components/canvas/canvas-hardware-monitor";
 import { CanvasAssetTray } from "@/components/canvas/canvas-asset-tray";
 import { CanvasProjectSidebar } from "@/components/canvas/canvas-project-sidebar";
 import { CanvasCharacterReferenceNodeContent } from "@/components/canvas/canvas-character-reference-node";
@@ -102,6 +103,7 @@ import { persistCanvasTimeline, refreshLocalCanvasProjectIfChanged } from "@/ser
 import { syncLocalCanvasSnapshot } from "@/services/local-workspace-sync";
 import { useCanvasConnectionController } from "./use-canvas-connection-controller";
 import { useCanvasActiveTasks } from "./use-canvas-active-tasks";
+import { useHardwareMonitor } from "./use-hardware-monitor";
 import { useCanvasStyleWorkflow } from "./use-canvas-style-workflow";
 import { useCanvasDirector } from "./use-canvas-director";
 import { useCanvasHistory } from "./use-canvas-history";
@@ -271,6 +273,8 @@ function InfiniteCanvasPage() {
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [isMiniMapOpen, setIsMiniMapOpen] = useState(() => scopedLocalStorage.getItem("canvas:minimap") === "1");
+    // 硬件监控浮窗默认展示，关闭后按用户偏好持久化（面板内 × 与缩放坞开关共用一个状态）。
+    const [isHardwareMonitorOpen, setIsHardwareMonitorOpen] = useState(() => scopedLocalStorage.getItem("canvas:hardware-monitor") !== "0");
     const [canvasAppearance, setCanvasAppearance] = useState<CanvasAppearance>(() => canvasAppearanceForTheme(colorTheme));
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>(DEFAULT_CANVAS_BACKGROUND_MODE);
     const [showImageInfo, setShowImageInfo] = useState(false);
@@ -334,6 +338,7 @@ function InfiniteCanvasPage() {
 
     const { tasks: activeTasks } = useCanvasActiveTasks(projectId, projectLoaded);
     const { focusMode, enterFocusMode, exitFocusMode, toggleFocusMode } = useFocusMode();
+    const { stats: hardwareStats, error: hardwareStatsError } = useHardwareMonitor(isHardwareMonitorOpen && !focusMode);
     const [focusDockRevealed, setFocusDockRevealed] = useState(false);
 
     useEffect(() => {
@@ -2950,6 +2955,17 @@ function InfiniteCanvasPage() {
 
 {isMiniMapOpen && !focusMode ? <Minimap nodes={nodes} viewport={viewport} viewportSize={size} canvasContainerRef={containerRef} onViewportPreviewChange={previewViewport} onViewportChange={handleViewportChange} /> : null}
 
+{isHardwareMonitorOpen && !focusMode ? (
+    <CanvasHardwareMonitor
+        stats={hardwareStats}
+        error={hardwareStatsError}
+        onClose={() => {
+            setIsHardwareMonitorOpen(false);
+            scopedLocalStorage.setItem("canvas:hardware-monitor", "0");
+        }}
+    />
+) : null}
+
                         {!focusMode ? (
                             <CanvasOverlayLayerContainer
                                 overlayId="asset-tray"
@@ -2989,6 +3005,12 @@ function InfiniteCanvasPage() {
                                     onToggleMiniMap={() => setIsMiniMapOpen((value) => {
                                         const next = !value;
                                         scopedLocalStorage.setItem("canvas:minimap", next ? "1" : "0");
+                                        return next;
+                                    })}
+                                    isHardwareMonitorOpen={isHardwareMonitorOpen}
+                                    onToggleHardwareMonitor={() => setIsHardwareMonitorOpen((value) => {
+                                        const next = !value;
+                                        scopedLocalStorage.setItem("canvas:hardware-monitor", next ? "1" : "0");
                                         return next;
                                     })}
                                 />

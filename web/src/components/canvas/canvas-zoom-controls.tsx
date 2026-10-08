@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { Focus, Grid3X3, LayoutTemplate, Link2, Map } from "lucide-react";
+import { Focus, Grid3X3, LayoutTemplate, Link2, Map, Thermometer } from "lucide-react";
 
 import { FloatingDock, type FloatingDockEntry } from "@/components/ui/aceternity/floating-dock";
 import { aceternityMotion } from "@/lib/aceternity-motion";
@@ -20,6 +20,8 @@ type CanvasZoomControlsProps = {
     onToggleConnections: () => void;
     isMiniMapOpen: boolean;
     onToggleMiniMap: () => void;
+    isHardwareMonitorOpen?: boolean;
+    onToggleHardwareMonitor?: () => void;
     containerRef?: RefObject<HTMLDivElement | null>;
     libtvChrome?: boolean;
 };
@@ -30,7 +32,7 @@ const ZOOM_STEP = 0.1;
 const ZOOM_MENU_HALF_WIDTH = 92;
 const QUICK_ZOOM_LEVELS = [0.5, 1, 8] as const;
 
-export function CanvasZoomControls({ scale, onScaleChange, onFitContent, onAutoArrange, snapToGrid, onSnapToGridChange, showConnections, onToggleConnections, isMiniMapOpen, onToggleMiniMap, containerRef, libtvChrome = false }: CanvasZoomControlsProps) {
+export function CanvasZoomControls({ scale, onScaleChange, onFitContent, onAutoArrange, snapToGrid, onSnapToGridChange, showConnections, onToggleConnections, isMiniMapOpen, onToggleMiniMap, isHardwareMonitorOpen, onToggleHardwareMonitor, containerRef, libtvChrome = false }: CanvasZoomControlsProps) {
     const theme = canvasThemes[useActiveTheme()];
     const rootRef = useRef<HTMLDivElement>(null);
     const liveScaleRef = useRef(scale);
@@ -128,6 +130,7 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitContent, onAutoA
     const items: FloatingDockEntry[] = [
         { id: "zoom-connections", label: showConnections ? "隐藏节点连线" : "显示节点连线", icon: <Link2 />, active: showConnections, onClick: onToggleConnections },
         { id: "zoom-minimap", label: "切换小地图", icon: <Map />, active: isMiniMapOpen, onClick: onToggleMiniMap },
+        ...(onToggleHardwareMonitor ? [{ id: "zoom-hardware-monitor", label: "硬件监控", icon: <Thermometer />, active: isHardwareMonitorOpen, onClick: onToggleHardwareMonitor }] : []),
         { id: "zoom-snap-grid", label: "网格吸附", icon: <Grid3X3 />, active: snapToGrid, onClick: () => onSnapToGridChange(!snapToGrid) },
         { id: "zoom-fit", label: "适合屏幕", icon: <Focus />, onClick: onFitContent },
         ...(onAutoArrange ? [{ id: "zoom-auto-arrange", label: "自动整理节点", icon: <LayoutTemplate />, onClick: onAutoArrange }] : []),

@@ -555,6 +555,16 @@ paths:
             application/yaml:
               schema:
                 type: string
+  /system/hardware:
+    get:
+      tags: [meta]
+      summary: 本机硬件遥测快照
+      description: 供画布硬件监控浮窗低频轮询。各采集源尽力而为：无 NVIDIA 卡或无传感器权限时对应字段为 null/空数组；只读，不落库。
+      responses:
+        "200":
+          description: 信封 data 含 collectedAt、cpu、memory、gpu、disks、thermalZones
+        "401":
+          $ref: "#/components/responses/Error"
   /admin/channels/{id}/duplicate:
     post:
       tags: [admin]
