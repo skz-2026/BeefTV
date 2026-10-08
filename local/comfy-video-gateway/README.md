@@ -29,6 +29,10 @@ ComfyUI + 本地模型权重（GPU）
 
 模板 `workflows/hybrid-first-last.template.json`，在 hybrid（首帧+参考）基础上把 T8 条件节点的 `last_frame` 槽接上第二张图。**输入约定（连线顺序即槽位）**：images[0]=首帧、images[1]=尾帧、images[2..]=身份参考（正面图/三视图）。适用场景：同场景连续镜头（上一镜尾帧=本镜首帧的 frame chaining，或手绘/编辑出首尾两张定稿帧让模型补中间动作）。BeefTV 侧用法：视频节点连 [首帧节点, 尾帧节点, 参考图...]，模型选 `h3-hybrid-flf`（渠道里需配：能力=视频、协议=OpenAI Videos、勾全模态参考）。
 
+#### `h3-hybrid-{角色}`：西游角色身份 LoRA（2026-10-08 上线）
+
+五角色身份 LoRA（`models/loras/{wukong,tangseng,bajie,shaseng,bailongma}_h3.safetensors`，AI Toolkit 训练 fl2va 底模，数据集=三视图裁切+正面图姿势扩增各 15 张，触发词=角色拼音）。模板 `workflows/hybrid-{char}.template.json` = hybrid + 角色 LoRA（strength 0.8）串在 turbo LoRA 之后。**用法**：模型选 `h3-hybrid-wukong` 等，提示词以触发词开头（如 "wukong, the monkey boy..."）；首帧仍连（管构图），身份锚定由 LoRA 承担——多人镜可不再连三视图/正面参考。训练队列日志在 `C:\AI\ai-toolkit\output\train-*.log`，验收脚本 `C:\work\BeefTV\.local\validate-loras.js`（lora vs 基线同 seed 对照）。
+
 ### 已实测权重组合（RTX 5060 Ti 16GB）
 
 - **视频（MiniMax-H3）**：T2VA 用全量 INT8 底模 + turbo EMA LoRA；**Ref2VA（角色一致性）用 `minimax_h3_ref2va_pruned_int8_convrot` + 官方 `ref2v_turbo_4step` LoRA**（均来自 `Comfy-Org/MiniMax-H3`）。提示词需含 `<Picture 1>` 引用。
