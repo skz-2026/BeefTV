@@ -5,7 +5,9 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } fro
 import { ModelEditorModal } from "@/components/model-editor-modal";
 import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/channel-headers-editor";
 import { WorkspaceState } from "@/components/layout/workspace-state";
+import { PageHeader } from "@/components/layout/workspace-page";
 import { mergeFetchedChannelModelProfiles } from "@/lib/channel-model-catalog";
+import { seedancePortraitModel } from "@/lib/seedance-portrait";
 import { ensureModelProfilesWithUiDefaults } from "@/lib/model-protocols";
 import { fetchChannelModels, type ChannelModelFetchResult } from "@/services/api/image";
 import { channelHasGenerationCredential, channelHasManagedBeefAPICredential, createModelChannel, defaultBaseUrlForApiFormat, filterModelsByCapability, isBuiltinBeefAPIChannel, modelOptionsFromChannels, normalizeConfigSnapshot, useConfigStore, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
@@ -13,6 +15,7 @@ import { ChannelModelSettings } from "./channel-model-settings";
 import { ModelServiceEditor } from "./model-service-editor";
 import { currentModelConnectionReceipt, useModelConnectionTests } from "@/stores/use-model-connection-tests";
 import { ModelLogo } from "@/components/model-logo";
+import beefTVAppIcon from "../../../../assets/app-icon.png";
 import { MODEL_SERVICE_PRESETS, servicePresetFor } from "@/lib/model-service-presets";
 import { workspaceCapabilities } from "@/services/workspace-mode";
 import { localWorkspaceConfig } from "@/lib/user-session";
@@ -269,20 +272,19 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub }: ChannelS
 
     return (
         <Form layout="vertical" requiredMark={false}>
-            <div className="settings-pane-header">
-                <div className="min-w-0">
-                    <h2>模型服务</h2>
-                    <p className="mt-1 text-xs text-foreground/55">连接自己的 API，选择适合创作的模型。</p>
-                </div>
-                <div className="flex w-full gap-2 sm:w-auto sm:shrink-0">
+            <PageHeader
+                title={localMode ? "本地模型渠道" : "个人渠道"}
+                actions={(
+                    <div className="settings-pane-header-actions flex w-full gap-2 sm:w-auto sm:shrink-0">
                     <Button className="h-10 flex-1 sm:h-8 sm:flex-none" icon={<RefreshCw className="size-4" />} loading={loadingChannelIds.includes("all")} disabled={loadingChannelIds.some((id) => id !== "all")} onClick={() => void refreshAllModels()}>
                         更新目录
                     </Button>
                     <Button type="primary" className="h-10 flex-1 sm:h-8 sm:flex-none" icon={<Plus className="size-4" />} onClick={addChannel}>
                         添加模型服务
                     </Button>
-                </div>
-            </div>
+                    </div>
+                )}
+            />
             {onOpenRunningHub ? (
                 <section className="settings-section mb-3">
                     <div className="mb-3">
@@ -313,12 +315,18 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub }: ChannelS
                                 <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2.5">
                                     <div className="min-w-0 flex-1 basis-52">
                                         <h3 id={`channel-${channel.id}-title`} className="flex items-center gap-2 text-sm font-semibold">
-                                            <ModelLogo icon={builtinBeefAPI ? undefined : MODEL_SERVICE_PRESETS.find((preset) => preset.id === servicePresetFor(channel))?.icon} size={20} />
-                                            {channel.name || "未命名渠道"}
+                                            {builtinBeefAPI ? <img src={beefTVAppIcon} alt="" className="size-5 shrink-0 object-contain" draggable={false} /> : <ModelLogo icon={MODEL_SERVICE_PRESETS.find((preset) => preset.id === servicePresetFor(channel))?.icon} size={20} />}
+                                            {builtinBeefAPI ? "BeefTV" : channel.name || "未命名渠道"}
                                         </h3>
                                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground/55">
-                                            已选择 {channel.models.length} 个模型
-                                            {!builtinBeefAPI ? <span>费用由服务商结算</span> : null}
+                                            {builtinBeefAPI ? (
+                                                <>
+                                                    <span>已保存 {channel.models.length} 个模型</span>
+                                                    <span>BeefTV 官方算力渠道，一键连接、开箱即用</span>
+                                                </>
+                                            ) : (
+                                                <span>{channelProtocolLabel(channel)} · 已保存 {channel.models.length} 个模型</span>
+                                            )}
                                             <ChannelStatus channel={channel} persistence={persistence} connection={builtinBeefAPI ? beefConnection : null} />
                                         </div>
                                     </div>
@@ -333,7 +341,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub }: ChannelS
                                                 onRetry={() => void runBeefAction(retryBeefConnection, "无法重新连接")}
                                                 onDisconnect={() => void runBeefAction(disconnectBeefAPIConnection, "无法断开连接")}
                                                 onWallet={() => {
-                                                    void openBeefAPIWallet().catch((error) => message.error(error instanceof Error ? error.message : "无法打开企业钱包"));
+                                                    void openBeefAPIWallet().catch((error) => message.error(error instanceof Error ? error.message : "无法打开 BeefTV 账户"));
                                                 }}
                                             />
                                         ) : null}
@@ -516,7 +524,16 @@ export function applyFetchedChannelModelCatalog(channel: ModelChannel, result: C
     if (channel.id === "beefapi") return { ...channel, models: uniqueModels(result.models), modelProfiles: profiles };
     const existing = new Map((channel.modelProfiles || []).map((profile) => [profile.model, profile]));
     // Refresh updates the catalog without silently enabling new models or removing manual ones.
-    return { ...channel, models: channel.models.length ? channel.models : uniqueModels(result.models), modelProfiles: profiles.map((profile) => existing.get(profile.model) || profile).concat((channel.modelProfiles || []).filter((profile) => !profiles.some((item) => item.model === profile.model))) };
+    return {
+        ...channel,
+        models: channel.models.length ? channel.models : uniqueModels(result.models),
+        modelProfiles: profiles.map((profile) => {
+            const previous = existing.get(profile.model);
+            if (!previous) return profile;
+            return seedancePortraitModel(profile.model) ? { ...previous, videoPricing: profile.videoPricing ?? null } : previous;
+        }).concat((channel.modelProfiles || []).filter((profile) => !profiles.some((item) => item.model === profile.model))
+            .map((profile) => seedancePortraitModel(profile.model) ? { ...profile, videoPricing: null } : profile)),
+    };
 }
 
 function WorkflowChannelEntry({ icon, title, description, status, ready, onOpen }: { icon: ReactNode; title: string; description: string; status: string; ready: boolean; onOpen?: () => void }) {
@@ -660,7 +677,7 @@ function BeefAPIConnectionActions({
         return (
             <>
                 <Button className={buttonClass} size="small" onClick={onWallet}>
-                    打开企业钱包
+                    打开 BeefTV 账户
                 </Button>
                 <Button className={buttonClass} size="small" loading={busy} onClick={onDisconnect}>
                     断开连接
@@ -689,7 +706,7 @@ function BeefAPIConnectionActions({
     }
     return (
         <Button className={buttonClass} size="small" type="primary" loading={busy} onClick={onConnect}>
-            连接 BeefAPI
+            连接 BeefTV
         </Button>
     );
 }
@@ -699,7 +716,7 @@ export function modelConfigChannelPresentation(channel: ModelChannel) {
     return {
         builtin,
         deletable: !builtin,
-        adapterLabel: builtin ? `应用内置适配 · v${channel.presetVersion || 1}` : "",
+        adapterLabel: builtin ? "应用内置适配" : "",
     };
 }
 
@@ -756,7 +773,7 @@ function channelConnectionError(channel: ModelChannel, connection?: BeefAPIConne
     }
     if (isBuiltinBeefAPIChannel(channel)) {
         if (connection?.state === "connected" || channelHasManagedBeefAPICredential(channel)) return "";
-        return "请先连接 BeefAPI";
+        return "请先连接 BeefTV";
     }
     if (!channelHasGenerationCredential(channel)) return "请填写 API Key / Access Key";
     if (requiresSecretKey(channel) && !channel.secretKey?.trim()) return "当前协议需要填写 Secret Key";
@@ -764,7 +781,7 @@ function channelConnectionError(channel: ModelChannel, connection?: BeefAPIConne
 }
 
 function channelConnectionSignature(channel: ModelChannel) {
-    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, JSON.stringify(channel.headers || [])].join("\n");
+    return [channel.baseUrl.trim(), channel.referenceAssetOrigin?.trim() || "", channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, JSON.stringify(channel.headers || [])].join("\n");
 }
 
 function channelProtocolLabel(channel: ModelChannel) {

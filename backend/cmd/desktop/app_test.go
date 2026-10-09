@@ -121,6 +121,24 @@ func TestDefaultDataDirHonorsExplicitDesktopOverride(t *testing.T) {
 	}
 }
 
+func TestDefaultDataDirLaunchArgumentUsesIsolatedProfile(t *testing.T) {
+	original := os.Args
+	t.Cleanup(func() { os.Args = original })
+	want := filepath.Join(t.TempDir(), "isolated profile")
+	t.Setenv("CANVAS_DESKTOP_DATA_DIR", filepath.Join(t.TempDir(), "other-profile"))
+	os.Args = []string{"BeefTV", "--data-dir=" + want}
+	got, err := defaultDataDir()
+	if err != nil || got != want {
+		t.Fatalf("isolated profile: got %q, err %v", got, err)
+	}
+	for _, invalid := range []string{"", "relative", string(filepath.Separator)} {
+		os.Args = []string{"BeefTV", "--data-dir=" + invalid}
+		if _, err := defaultDataDir(); err == nil {
+			t.Fatalf("accepted unsafe profile %q", invalid)
+		}
+	}
+}
+
 func TestDesktopStartupHookStartsRuntimeBeforeFrontendBootstrap(t *testing.T) {
 	app := newDesktopApp(t.TempDir())
 	app.startup(context.Background())
@@ -150,7 +168,7 @@ func TestDesktopAppBoundMethodsStayTiny(t *testing.T) {
 		names = append(names, typ.Method(i).Name)
 	}
 	sort.Strings(names)
-	if !reflect.DeepEqual(names, []string{"CheckForUpdate", "ConfirmUpdateStartup", "DownloadUpdate", "InstallUpdate", "RuntimeConfig", "SaveOwnedArtifact", "SaveOwnedMedia", "UpdateStatus"}) {
+	if !reflect.DeepEqual(names, []string{"CheckForUpdate", "ConfirmUpdateStartup", "DownloadUpdate", "InstallUpdate", "OpenBeefTVX", "RuntimeConfig", "SaveOwnedArtifact", "SaveOwnedMedia", "UpdateStatus"}) {
 		t.Fatalf("bound methods = %v", names)
 	}
 }
@@ -172,13 +190,15 @@ func TestSaveOwnedMediaCancelReturnsNoError(t *testing.T) {
 
 func TestMediaSaveDialogSuppliesDefaultFileType(t *testing.T) {
 	for _, ext := range []string{"mp4", "png", "jpg", "webp", "mov", "wav", "m4a", "zip", "glb"} {
-		t.Run(ext, func(t *testing.T) {
-			name := "中文素材_20261001." + ext
-			options := mediaSaveDialogOptions(name, "windows")
-			if options.DefaultFilename != name || options.Title != "保存文件" || len(options.Filters) != 1 || options.Filters[0].Pattern != "*."+ext || options.Filters[0].DisplayName == "" {
-				t.Fatalf("save dialog must supply the actual format as its default filter: %+v", options)
-			}
-		})
+		for _, platform := range []string{"windows", "darwin"} {
+			t.Run(platform+"/"+ext, func(t *testing.T) {
+				name := "中文素材_20261001." + ext
+				options := mediaSaveDialogOptions(name, platform)
+				if options.DefaultFilename != name || options.Title != "保存文件" || len(options.Filters) != 1 || options.Filters[0].Pattern != "*."+ext || options.Filters[0].DisplayName == "" {
+					t.Fatalf("save dialog must supply the actual format as its default filter: %+v", options)
+				}
+			})
+		}
 	}
 	for _, tc := range []struct{ input, name, pattern string }{
 		{`../clip:name.MP4`, "clip_name.MP4", "*.MP4"},
@@ -194,7 +214,7 @@ func TestMediaSaveDialogSuppliesDefaultFileType(t *testing.T) {
 	if len(options.Filters) != 0 {
 		t.Fatalf("must not invent a format for an extensionless artifact: %+v", options)
 	}
-	for _, platform := range []string{"darwin", "linux"} {
+	for _, platform := range []string{"linux"} {
 		options := mediaSaveDialogOptions("clip.mp4", platform)
 		if options.DefaultFilename != "clip.mp4" || len(options.Filters) != 0 {
 			t.Fatalf("must preserve the existing %s dialog options: %+v", platform, options)

@@ -89,6 +89,12 @@ func GeminiURL(baseURL string, path string) string {
 func ProviderDownloadURL(baseURL string, rawURL string) string {
 	base, baseErr := url.Parse(strings.TrimSpace(baseURL))
 	target, targetErr := url.Parse(strings.TrimSpace(rawURL))
+	// A completed task may return a root-relative authenticated media endpoint.
+	// Resolve only a single-slash path, never a scheme-relative external host or
+	// an arbitrary status string, and leave network validation to the transport.
+	if baseErr == nil && targetErr == nil && base.Host != "" && base.User == nil && (base.Scheme == "https" || base.Scheme == "http") && target.Scheme == "" && target.Host == "" && strings.HasPrefix(target.Path, "/") && !strings.HasPrefix(strings.TrimSpace(rawURL), "//") && target.Fragment == "" && !strings.Contains(target.Path, "\\") {
+		return base.ResolveReference(target).String()
+	}
 	if baseErr != nil || targetErr != nil || !strings.EqualFold(base.Scheme, "https") || !strings.EqualFold(target.Scheme, "https") {
 		return rawURL
 	}
@@ -106,7 +112,7 @@ func IsBeefAPIHost(host string) bool {
 
 func isBeefAPIHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
-	return host == "beefapi.com" || strings.HasSuffix(host, ".beefapi.com")
+	return host == "beeftv.app" || host == "beefapi.com" || strings.HasSuffix(host, ".beefapi.com")
 }
 
 func SameProviderOrigin(baseURL string, rawURL string) bool {

@@ -17,6 +17,8 @@ export type DesktopUpdateState = {
     releaseNotes: string;
     downloadedBytes: number;
     totalBytes: number;
+    bytesPerSecond: number;
+    reconnecting: boolean;
     error: string;
 };
 
@@ -29,6 +31,7 @@ export type DesktopRuntimeBinding = {
     DownloadUpdate?: () => Promise<DesktopUpdateState>;
     InstallUpdate?: () => Promise<void>;
     ConfirmUpdateStartup?: () => Promise<void>;
+    OpenBeefTVX?: () => Promise<void>;
 };
 
 declare global {

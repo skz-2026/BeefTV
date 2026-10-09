@@ -5,8 +5,8 @@ import type { Skill } from "@/services/api/skills";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 
 import { executeAssistantProposal } from "./canvas-assistant-proposal-execution";
-import { prepareAssistantProposalSnapshot } from "./canvas-assistant-proposal-snapshot";
-import { readAssistantProposalSourceState, readPersistedAssistantProposalSource } from "./canvas-assistant-proposal-source";
+import { AssistantProposalBlockedError, prepareAssistantProposalSnapshot } from "./canvas-assistant-proposal-snapshot";
+import { recordAssistantProposalCanvasRejection, readAssistantProposalSourceState, readPersistedAssistantProposalSource } from "./canvas-assistant-proposal-source";
 import { useCanvasOwnerLifetime } from "./canvas-owner-epoch";
 import type { CanvasNodeGenerationOptions } from "./use-canvas-generation-executor";
 
@@ -33,6 +33,7 @@ export function useCanvasAssistantProposal({
 }: UseCanvasAssistantProposalOptions) {
     const claimsRef = useRef(new Set<string>());
     const [assistantProposalFeedback, setAssistantProposalFeedback] = useState<Record<string, string>>({});
+    const [runningProposalIds, setRunningProposalIds] = useState<ReadonlySet<string>>(() => new Set());
     const handledRef = useRef(handledProposals);
     handledRef.current = handledProposals;
     const markHandledRef = useRef(markProposalHandled);
@@ -49,7 +50,9 @@ export function useCanvasAssistantProposal({
         (proposal: AssistantGenerationProposal) => {
             const owner = lifetime.capture(projectId);
             const generateForThisRun = handleGenerateNodeRef.current;
-            setAssistantProposalFeedback((current) => ({ ...current, [proposal.proposalId]: "" }));
+            const proposalId = proposal.proposalId;
+            setAssistantProposalFeedback((current) => ({ ...current, [proposalId]: "" }));
+            setRunningProposalIds((current) => new Set(current).add(proposalId));
             void executeAssistantProposal({
                 proposal,
                 nodes: nodesRef.current,
@@ -60,17 +63,26 @@ export function useCanvasAssistantProposal({
                         proposal,
                         () => readAssistantProposalSourceState(owner.canvasId, nodesRef.current, connectionsRef.current, addedSkillsRef.current),
                         () => readPersistedAssistantProposalSource(owner.canvasId),
-                    ),
+                    ).catch(error => {
+                        if (error instanceof AssistantProposalBlockedError && error.reason === "canvas_saving" && lifetime.matches(owner, projectIdRef.current)) recordAssistantProposalCanvasRejection(owner.canvasId);
+                        throw error;
+                    }),
                 generate: generateForThisRun,
                 stillOwns: () => lifetime.matches(owner, projectIdRef.current),
                 markHandled: (proposalId) => markHandledRef.current(proposalId),
                 notify: (content) => {
-                    setAssistantProposalFeedback((current) => ({ ...current, [proposal.proposalId]: content }));
+                    setAssistantProposalFeedback((current) => ({ ...current, [proposalId]: content }));
                 },
+            }).finally(() => {
+                setRunningProposalIds((current) => {
+                    const next = new Set(current);
+                    next.delete(proposalId);
+                    return next;
+                });
             });
         },
         [connectionsRef, lifetime, nodesRef, projectId],
     );
 
-    return { runAssistantProposal, assistantProposalFeedback };
+    return { runAssistantProposal, assistantProposalFeedback, runningProposalIds };
 }

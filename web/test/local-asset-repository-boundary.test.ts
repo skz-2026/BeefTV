@@ -81,6 +81,70 @@ afterEach(async () => {
 });
 
 describe("workspace asset repository runtime boundary", () => {
+    test("archived deletion passes its status guard to the backend before removing the projection", async () => {
+        const restore = switchScope("delete-archived");
+        desktopBackend();
+        const asset = { ...sampleAsset(), kind: "text" as const, data: { content: "archived text" }, status: "archived" as const };
+        useAssetStore.setState({ assets: [asset] });
+        let deletes = 0;
+        try {
+            await withAdapter(async (config) => {
+                if (config.method === "delete" && config.url === "/assets/asset-1") {
+                    expect(config.params).toEqual({ expectedStatus: "archived" });
+                    expect(useAssetStore.getState().assets).toHaveLength(1);
+                    deletes++;
+                    return envelope({ id: asset.id });
+                }
+                throw new Error(`unexpected ${config.method} ${config.url}`);
+            }, () => deleteWorkspaceAsset(asset.id, captureUserScope(), { expectedStatus: "archived" }));
+            expect(deletes).toBe(1);
+            expect(useAssetStore.getState().assets).toEqual([]);
+        } finally { restore(); }
+    });
+
+    test("browser-local archived deletion refuses an asset that has become active", async () => {
+        const restore = switchScope("delete-status-conflict");
+        browserLocal();
+        const asset = sampleAsset();
+        useAssetStore.setState({ assets: [asset] });
+        let writes = 0;
+        try {
+            await withAdapter(async (config) => {
+                writes++;
+                throw new Error("unexpected write");
+            }, async () => {
+                await expect(deleteWorkspaceAsset(asset.id, captureUserScope(), { expectedStatus: "archived" })).rejects.toMatchObject({ status: 409 });
+            });
+            expect(writes).toBe(0);
+            expect(useAssetStore.getState().assets).toEqual([asset]);
+        } finally { restore(); }
+    });
+
+    test("failed archived deletion keeps its projection until a successful retry", async () => {
+        const restore = switchScope("delete-retry");
+        desktopBackend();
+        const asset = { ...sampleAsset(), kind: "text" as const, data: { content: "archived text" }, status: "archived" as const };
+        useAssetStore.setState({ assets: [asset] });
+        let attempts = 0;
+        try {
+            await withAdapter(async (config) => {
+                if (config.method === "delete") {
+                    attempts++;
+                    if (attempts === 1) throw new Error("offline");
+                    return envelope({ id: asset.id });
+                }
+                throw new Error(`unexpected ${config.method} ${config.url}`);
+            }, async () => {
+                const scope = captureUserScope();
+                await expect(deleteWorkspaceAsset(asset.id, scope, { expectedStatus: "archived" })).rejects.toThrow("offline");
+                expect(useAssetStore.getState().assets.find((item) => item.id === asset.id)?.status).toBe("archived");
+                await deleteWorkspaceAsset(asset.id, scope, { expectedStatus: "archived" });
+            });
+            expect(attempts).toBe(2);
+            expect(useAssetStore.getState().assets).toEqual([]);
+        } finally { restore(); }
+    });
+
     test("browser-local linking writes projectIds locally and does not call project APIs", async () => {
         const restore = switchScope("owner-a");
         browserLocal();

@@ -1,7 +1,9 @@
 package generation
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"infinite-canvas/backend/internal/model"
@@ -44,6 +46,8 @@ func TestProviderDownloadURLNormalizesBeefAPIResultToConfiguredOrigin(t *testing
 		name, baseURL, resultURL, want string
 	}{
 		{name: "same origin", baseURL: "https://provider.example", resultURL: "https://provider.example/files/video.mp4", want: "https://provider.example/files/video.mp4"},
+		{name: "BeefTV uses configured origin", baseURL: "https://beeftv.app", resultURL: "https://beefapi.com/v1/videos/task-1/content", want: "https://beeftv.app/v1/videos/task-1/content"},
+		{name: "BeefTV lookalike stays external", baseURL: "https://beeftv.app", resultURL: "https://beeftv.app.attacker.example/video.mp4", want: "https://beeftv.app.attacker.example/video.mp4"},
 		{name: "beef enterprise uses configured origin", baseURL: "https://enterprise.beefapi.com", resultURL: "https://beefapi.com/v1/videos/task-1/content", want: "https://enterprise.beefapi.com/v1/videos/task-1/content"},
 		{name: "beef subdomain uses configured origin", baseURL: "https://api.beefapi.com", resultURL: "https://cdn.beefapi.com/video.mp4?token=result", want: "https://api.beefapi.com/video.mp4?token=result"},
 		{name: "lookalike host stays external", baseURL: "https://enterprise.beefapi.com", resultURL: "https://beefapi.com.attacker.example/video.mp4", want: "https://beefapi.com.attacker.example/video.mp4"},
@@ -81,5 +85,36 @@ func TestApplyAuth(t *testing.T) {
 	ApplyAuth(req, Config{APIKey: "tok"})
 	if req.Header.Get("Authorization") != "Bearer tok" {
 		t.Fatalf("bearer auth = %v", req.Header)
+	}
+}
+
+func TestProviderDownloadURLRootRelativeResult(t *testing.T) {
+	base := "https://api.example.com/v1"
+	for _, test := range []struct{ raw, want string }{
+		{"/v1/videos/task-fixture/content?alt=media", "https://api.example.com/v1/videos/task-fixture/content?alt=media"},
+		{"//external.example/file", "//external.example/file"},
+		{"video", "video"},
+		{"/file#fragment", "/file#fragment"},
+		{"https://cdn.example/file", "https://cdn.example/file"},
+	} {
+		if got := ProviderDownloadURL(base, test.raw); got != test.want {
+			t.Errorf("result %q: got %q, want %q", test.raw, got, test.want)
+		}
+	}
+}
+
+func TestProviderRelativeResultDownloadsWithSameOriginAuth(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/videos/task-fixture/content" || r.Header.Get("Authorization") != "Bearer fixture-key" {
+			t.Errorf("same-origin download path or authentication lost")
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("fixture-video"))
+	}))
+	defer server.Close()
+	body, _, err := GetProviderExternalBinary(context.Background(), Config{BaseURL: server.URL + "/v1", APIKey: "fixture-key"}, "/v1/videos/task-fixture/content")
+	if err != nil || string(body) != "fixture-video" {
+		t.Fatalf("relative output download failed: %v", err)
 	}
 }

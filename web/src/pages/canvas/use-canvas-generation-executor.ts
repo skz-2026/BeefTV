@@ -14,8 +14,8 @@ import { buildCameraPrompt } from "@/lib/canvas/camera-prompt-library";
 import { buildTextRewritePrompt } from "@/lib/prompts";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { generationErrorMessage } from "@/lib/generation-error";
-import { modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
+import { modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
 import type { Skill } from "@/services/api/skills";
 import { skillRuntime } from "@/services/skill-runtime";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -27,7 +27,8 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/ty
 import { executeImageGeneration } from "./canvas-image-generation-executor";
 import { executeAudioGeneration, executeVideoGeneration } from "./canvas-media-generation-executors";
 import { executeTextGeneration } from "./canvas-text-generation-executor";
-import { canvasGenerationFailureMetadata, canvasGenerationRetryBlocked } from "./canvas-generation-failure";
+import { canvasGenerationFailureMetadata, canvasGenerationRetryBlocked, canvasImageGenerationHasPendingResult } from "./canvas-generation-failure";
+import { createReferenceLinkResolver } from "./canvas-reference-links";
 
 type UseCanvasGenerationExecutorOptions = {
     projectId: string;
@@ -116,6 +117,10 @@ export function useCanvasGenerationExecutor({
                     const inputAssets = options?.confirmedInputs?.assets ?? assets;
                     const inputSkills = options?.confirmedInputs?.skills ?? addedSkills;
                     const sourceNode = inputNodes.find((node) => node.id === nodeId);
+                    if (mode === "image" && canvasImageGenerationHasPendingResult(sourceNode, inputNodes)) {
+                        message.warning("生成结果已保留，请重新加载资源");
+                        return;
+                    }
                     if (isCanvasNodeGenerating(nodesRef.current.find((node) => node.id === nodeId))) {
                         message.info("该节点的生成任务仍在进行中，请等待完成后再生成");
                         return;
@@ -223,7 +228,7 @@ export function useCanvasGenerationExecutor({
                         return;
                     }
                     const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
-                    if ((options?.retryContext || sourceNode?.metadata?.failedInputFingerprint || sourceNode?.metadata?.failedPromptFingerprint) && canvasGenerationRetryBlocked(sourceNode?.metadata, { ...generationContext, mode })) {
+                    if (canvasGenerationRetryBlocked(sourceNode?.metadata, { ...generationContext, mode })) {
                         message.warning(sourceNode?.metadata?.errorDetails || "请先查看失败原因并调整输入，再重新生成");
                         return;
                     }
@@ -332,10 +337,13 @@ export function useCanvasGenerationExecutor({
                     let pendingNodeIds: string[] = [];
                     const execution = {
                         projectId,
+                        nodesRef,
                         nodeId,
                         sourceNode,
-                        canvasNodes: inputNodes,
-                        canvasConnections: inputConnections,
+                        // 收费输入保持确认时的快照；目标节点写回必须使用当前画布。
+                        // 另一目标可能已在重复生成确认等待期间完成，不能把整图回滚到旧结果。
+                        canvasNodes: nodesRef.current,
+                        canvasConnections: connectionsRef.current,
                         prompt,
                         effectivePrompt,
                         generationConfig,
@@ -365,6 +373,7 @@ export function useCanvasGenerationExecutor({
                         },
                         applyGenerationTaskResult,
                         showError: (content: string) => message.error(content),
+                        resolveReferenceLinks: createReferenceLinkResolver(modal),
                         registerPendingNodeIds: (nodeIds: string[]) => {
                             pendingNodeIds = nodeIds;
                         },

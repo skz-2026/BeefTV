@@ -989,7 +989,7 @@ function InfiniteCanvasPage() {
         getCanvasCenter,
     });
 
-    const { runAssistantProposal, assistantProposalFeedback } = useCanvasAssistantProposal({
+    const { runAssistantProposal, assistantProposalFeedback, runningProposalIds } = useCanvasAssistantProposal({
         projectId,
         addedSkills,
         nodesRef,
@@ -2575,9 +2575,6 @@ function InfiniteCanvasPage() {
                                             containerRef={containerRef}
                                             viewport={viewport}
                                             theme={theme}
-                                            displayConnections={renderedConnections}
-                                            selectedConnectionId={selectedConnectionId}
-                                            relatedConnectionIds={relatedHighlight.connectionIds}
                                             scriptScrollTopById={scriptScrollTopById}
                                             connectingParams={connectingParams}
                                             batchConnectionPreview={batchConnectionPreview}
@@ -2605,6 +2602,7 @@ function InfiniteCanvasPage() {
                                     <CanvasNodeActionContext.Provider value={canvasNodeActions}>
                                         <CanvasNodeGraphContext.Provider value={nodeGraphContext}>
                                             <CanvasProjectWorldLayers
+                                                containerRef={containerRef}
                                                 connectionApproach={connectionApproach}
                                                 projectId={projectId}
                                                 viewportScale={viewport.k}
@@ -2639,7 +2637,6 @@ function InfiniteCanvasPage() {
                                                 selectedNodeBounds={selectedNodeBounds}
                                                 batchSourceNodeIds={batchSourceNodeIds}
                                                 batchConnectionPreview={batchConnectionPreview}
-                                                isNodeDragging={isNodeDragging}
                                                 selectionBoundsElementRef={selectionBoundsElementRef}
                                                 renderCanvasNodeContent={renderCanvasNodeContent}
                                                 onConnectionSelect={(connectionId) => {
@@ -3327,6 +3324,7 @@ function InfiniteCanvasPage() {
                 {rightPanel === "assistant" && !focusMode && !versions.preview ? (
                     <CanvasAssistantSidebar
                         proposalFeedback={assistantProposalFeedback}
+                        runningProposalIds={runningProposalIds}
                         assistant={assistant}
                         canvasTitle={workspaceProject?.title === "未命名项目" || !workspaceProject?.title ? "未命名工作区" : workspaceProject.title}
                         dockable={assistantDockable}

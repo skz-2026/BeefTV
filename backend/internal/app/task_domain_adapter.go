@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -31,7 +32,7 @@ func (s *Service) taskDependencies() localtask.Dependencies {
 	return localtask.Dependencies{
 		Catalog:    taskCatalogAdapter{s},
 		Secrets:    taskSecretsAdapter{s},
-		Media:      taskMediaAdapter{},
+		Media:      taskMediaAdapter{s},
 		Projects:   taskProjectsAdapter{s},
 		Policy:     taskPolicyAdapter{s},
 		Persist:    taskPersistAdapter{s},
@@ -106,7 +107,12 @@ func (a taskCatalogAdapter) Select(userID string, req localtask.SelectRequest) (
 }
 
 func (a taskCatalogAdapter) PrepareRetry(task *model.Task, input map[string]any) error {
-	return a.s.prepareLogicalTaskRetry(task, input)
+	if err := a.s.prepareLogicalTaskRetry(task, input); err != nil {
+		return err
+	}
+	// RetryTask clears the provider ID and submits again. Poll/download recovery
+	// uses a separate path and must not depend on current catalog availability.
+	return a.s.validatePortraitTaskQuote(input)
 }
 
 func (a taskCatalogAdapter) RequireCustomChannels(input map[string]any) error {
@@ -114,7 +120,10 @@ func (a taskCatalogAdapter) RequireCustomChannels(input map[string]any) error {
 }
 
 func (a taskCatalogAdapter) ValidateCapability(input map[string]any) error {
-	return a.s.ValidateTaskCapability(input)
+	if err := a.s.ValidateTaskCapability(input); err != nil {
+		return err
+	}
+	return a.s.validatePortraitTaskQuote(input)
 }
 
 func (taskCatalogAdapter) HasExecutableVideoConfig(input map[string]any) bool {
@@ -135,7 +144,35 @@ func (a taskSecretsAdapter) DecryptInputJSON(raw string) (string, error) {
 	return a.s.decryptTaskInputJSON(raw)
 }
 
-type taskMediaAdapter struct{}
+type taskMediaAdapter struct{ s *Service }
+
+func (a taskMediaAdapter) ValidateTransport(userID string, input map[string]any) error {
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return BadAuthRequest("任务输入格式无效")
+	}
+	var prepared generation.Input
+	if err := json.Unmarshal(raw, &prepared); err != nil {
+		return BadAuthRequest("任务参数格式无效，请检查模型设置后重新提交")
+	}
+	if len(prepared.ReferenceImages)+len(prepared.ReferenceVideos)+len(prepared.ReferenceAudios) == 0 && prepared.Mask == nil {
+		return nil
+	}
+	if isWorkflowProviderInterface(prepared.Config.InterfaceType) {
+		return nil
+	}
+	// System selections need their stored endpoint/model. Custom selections
+	// already carry these; leave network/DNS validation to execution.
+	if prepared.Config.ChannelID != "" || systemChannelIDFromBaseURL(prepared.Config.BaseURL) != "" {
+		prepared.Config, err = a.s.resolveProviderConfig(prepared.Config)
+		if err != nil {
+			return err
+		}
+	}
+	ctx := a.s.bindGenerationRuntime(context.Background(), generation.CallMeta{UserID: userID})
+	ctx = withProtocolRegistry(ctx, a.s.protocolRegistry())
+	return generation.ValidateMediaTransport(ctx, prepared)
+}
 
 func (taskMediaAdapter) ContainsInlineData(input map[string]any) bool {
 	return containsInlineMediaDataURL(input)

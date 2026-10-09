@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { createTurnBudget } from './request-budget.mjs';
 import { ASSISTANT_CANVAS_NODE_UPDATE_PATCH, createOperationBridge, scopedSchema } from './operation-bridge.mjs';
 import { newTurnAccumulator, resetTurnAccumulator } from './canvas-turn.mjs';
@@ -309,6 +310,167 @@ describe('内置助手节点更新投影', () => {
       expect(Object.hasOwn(writes[1].body.params.patch, 'content')).toBe(false);
       expect(Object.hasOwn(writes[1].body.params.patch, 'prompt')).toBe(false);
       expect(writes[0].body.params.patch).not.toHaveProperty('prompt');
+    });
+  });
+});
+
+
+test('media discovery descriptions reach actual model-facing bridge tools without changing modes', async () => {
+  // The Go registry test checks these real descriptors. Reuse their source schema
+  // over HTTP here so a fixture cannot silently retain an outdated mode contract.
+  const source = readFileSync(new URL('../backend/internal/operations/media.go', import.meta.url), 'utf8');
+  const params = JSON.parse(source.match(/Params:\s*json.RawMessage\(`([^`]+)`\)/)[1]);
+  const ops = [...source.matchAll(/"(media\.(?:overview|inspect|check))":\s*("[^"\n]+")/g)].map(match => ({
+    id: match[1], summary: JSON.parse(match[2]), readOnly: true, scope: 'canvas', params,
+  }));
+  expect(ops).toHaveLength(3);
+  const server = createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ code: 0, data: { ops } }));
+  });
+  const port = await listen(server);
+  try {
+    const bridge = createOperationBridge({ opsUrl: `http://127.0.0.1:${port}`, hostToken: 'test-only', turnBudgetContext: new AsyncLocalStorage() });
+    await bridge.loadDescriptors();
+    const tools = bridge.buildTools('canvas', [], { aborted: false }, newTurnAccumulator(), 'session');
+    expect(new Set(tools.map(tool => tool.description)).size).toBe(3);
+    for (const tool of tools) {
+      const original = ops.find(op => op.id === tool.label);
+      expect(tool.description).toBe(original.summary);
+      expect(tool.parameters.properties.mode).toEqual(params.properties.mode);
+      expect(tool.parameters.properties.mode.description).toContain('不能判断连续运动或声音');
+      expect(tool.parameters.properties.mode.enum).toEqual(['frames', 'video', 'audio']);
+      expect(tool.parameters.properties.canvasId).toBeUndefined();
+    }
+    expect(tools.find(tool => tool.name === 'media_inspect').description).toContain('15 秒');
+    expect(tools.find(tool => tool.name === 'media_overview').description).toContain('不能替代');
+    expect(tools.find(tool => tool.name === 'media_check').description).toContain('不能判断');
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+const EDGE_CREATE_PARAMS = {
+  type: 'object',
+  properties: { canvasId: { type: 'string' }, fromNodeId: { type: 'string' }, toNodeId: { type: 'string' }, expectedRevision: { type: 'integer' } },
+  required: ['canvasId', 'fromNodeId', 'toNodeId', 'expectedRevision'],
+};
+const DOCUMENT_COMMIT_PARAMS = {
+  type: 'object',
+  properties: { canvasId: { type: 'string' }, expectedRevision: { type: 'integer' }, document: { type: 'object' } },
+  required: ['canvasId', 'expectedRevision', 'document'],
+};
+
+// Fake ops server with a real revision CAS: each accepted write advances the revision by one.
+async function withCasBridge(run, { revision = 9 } = {}) {
+  const state = { revision, seen: [] };
+  const opsServer = createServer(async (req, res) => {
+    res.setHeader('content-type', 'application/json');
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const parsed = body ? JSON.parse(body) : {};
+    if (req.url === '/ops') {
+      res.end(JSON.stringify({ code: 0, data: { ops: [
+        { id: 'canvas.edge.create', summary: '连接两个节点', readOnly: false, params: EDGE_CREATE_PARAMS },
+        { id: 'canvas.node.update', summary: '局部修改一个节点', readOnly: false, params: NODE_UPDATE_PARAMS },
+        { id: 'canvas.nodes.create', summary: '批量创建节点', readOnly: false, params: NODE_CREATE_PARAMS },
+        { id: 'canvas.document.commit', summary: '提交整份画布文档', readOnly: false, params: DOCUMENT_COMMIT_PARAMS },
+      ] } }));
+      return;
+    }
+    const op = req.url.slice('/ops/'.length);
+    state.seen.push({ op, expectedRevision: parsed.params?.expectedRevision });
+    if (parsed.params?.expectedRevision !== state.revision) {
+      res.writeHead(409);
+      res.end(JSON.stringify({ code: 1, reason: 'stale_revision', msg: '云端画布已有更新' }));
+      return;
+    }
+    state.revision += 1;
+    const result = op === 'canvas.edge.create'
+      ? { revision: state.revision, created: true, edgeId: `e${state.revision}` }
+      : op === 'canvas.nodes.create'
+        ? { revision: state.revision, created: [{ id: `n${state.revision}` }] }
+        : { revision: state.revision, nodeId: parsed.params?.nodeId };
+    res.end(JSON.stringify({ code: 0, data: { op, replayed: false, result } }));
+  });
+  const port = await listen(opsServer);
+  const turnBudgetContext = new AsyncLocalStorage();
+  try {
+    const bridge = createOperationBridge({ opsUrl: `http://127.0.0.1:${port}`, hostToken: 'host-secret', turnBudgetContext });
+    await bridge.loadDescriptors();
+    const turn = resetTurnAccumulator(newTurnAccumulator(), state.revision, 'turn-cas');
+    const log = [];
+    const tools = bridge.buildTools('canvas-1', log, { aborted: false, permissionMode: 'full-access' }, turn, 'sess-C');
+    const budget = createTurnBudget({ maxToolSteps: 20 });
+    const call = (name, toolCallId, args) => turnBudgetContext.run(budget, () => tools.find((tool) => tool.name === name).execute(toolCallId, args));
+    await run({ state, turn, log, call });
+  } finally {
+    opsServer.closeAllConnections();
+    await new Promise((resolve) => opsServer.close(resolve));
+  }
+}
+
+describe('同一轮的并行写入', () => {
+  test('同一条消息里三次连线都带旧版本 9，按本轮最新版本依次落地', async () => {
+    await withCasBridge(async ({ state, turn, log, call }) => {
+      for (const [id, to] of [['c1', 'b'], ['c2', 'c'], ['c3', 'd']]) {
+        await call('canvas_edge_create', id, { fromNodeId: 'a', toNodeId: to, expectedRevision: 9 });
+      }
+      expect(state.seen.map((item) => item.expectedRevision)).toEqual([9, 10, 11]);
+      expect(state.revision).toBe(12);
+      expect(log.map((entry) => entry.isError)).toEqual([false, false, false]);
+      expect(log.map((entry) => entry.rebasedFrom)).toEqual([undefined, 9, 9]);
+      expect(log[2].args.expectedRevision).toBe(11);
+      expect(turn.createdEdgeIds).toEqual(['e10', 'e11', 'e12']);
+      expect(turn.revisionAfter).toBe(12);
+      expect(JSON.stringify(log)).not.toContain('host-secret');
+    });
+  });
+
+  test('节点创建与局部修改同样接到本轮链头；按最新版本发来的写入原样转发', async () => {
+    await withCasBridge(async ({ state, log, call }) => {
+      await call('canvas_nodes_create', 'n1', { nodes: [{ title: '镜头', type: 'image' }], expectedRevision: 9 });
+      await call('canvas_node_update', 'u1', { nodeId: 'n10', patch: { title: '改名' }, expectedRevision: 9 });
+      await call('canvas_edge_create', 'e1', { fromNodeId: 'a', toNodeId: 'b', expectedRevision: 11 });
+      expect(state.seen.map((item) => item.expectedRevision)).toEqual([9, 10, 11]);
+      expect(log.map((entry) => entry.rebasedFrom)).toEqual([undefined, 9, undefined]);
+    });
+  });
+
+  test('别人在中间改过画布时仍然版本冲突', async () => {
+    await withCasBridge(async ({ state, log, call }) => {
+      await call('canvas_edge_create', 'c1', { fromNodeId: 'a', toNodeId: 'b', expectedRevision: 9 });
+      state.revision += 1; // foreign write: 10 -> 11
+      await expect(call('canvas_edge_create', 'c2', { fromNodeId: 'a', toNodeId: 'c', expectedRevision: 9 })).rejects.toThrow('stale_revision');
+      expect(state.seen.at(-1).expectedRevision).toBe(10);
+      // A revision outside this turn's own chain is never rewritten.
+      await expect(call('canvas_edge_create', 'c3', { fromNodeId: 'a', toNodeId: 'd', expectedRevision: 8 })).rejects.toThrow('stale_revision');
+      expect(state.seen.at(-1).expectedRevision).toBe(8);
+      expect(log.at(-1).rebasedFrom).toBeUndefined();
+      expect(state.revision).toBe(11);
+    });
+  });
+
+  test('整份文档提交从不改写版本', async () => {
+    await withCasBridge(async ({ state, log, call }) => {
+      await call('canvas_edge_create', 'c1', { fromNodeId: 'a', toNodeId: 'b', expectedRevision: 9 });
+      await expect(call('canvas_document_commit', 'd1', { document: { nodes: [] }, expectedRevision: 9 })).rejects.toThrow('stale_revision');
+      expect(state.seen.at(-1)).toEqual({ op: 'canvas.document.commit', expectedRevision: 9 });
+      expect(log.at(-1).rebasedFrom).toBeUndefined();
+    });
+  });
+
+  test('新的一轮不继承上一轮的写入链', async () => {
+    await withCasBridge(async ({ state, turn, log, call }) => {
+      await call('canvas_edge_create', 'c1', { fromNodeId: 'a', toNodeId: 'b', expectedRevision: 9 });
+      expect(turn.writeChains).toEqual([{ canvasId: 'canvas-1', start: 9, head: 10 }]);
+      resetTurnAccumulator(turn, 10, 'turn-next');
+      expect(turn.writeChains).toEqual([]);
+      expect(turn.writeRequests).toEqual([]);
+      await expect(call('canvas_edge_create', 'c2', { fromNodeId: 'a', toNodeId: 'c', expectedRevision: 9 })).rejects.toThrow('stale_revision');
+      expect(state.seen.at(-1).expectedRevision).toBe(9);
+      expect(log.at(-1).rebasedFrom).toBeUndefined();
     });
   });
 });

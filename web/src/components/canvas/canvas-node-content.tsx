@@ -5,12 +5,11 @@ import { VideoPlayer } from "@/components/video-player";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { GenerationFailureNotice } from "@/components/generation/generation-failure-notice";
 import { explainGenerationError } from "@/lib/generation-error";
-import { generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel, isGenerationTaskSubmissionUncertain } from "@/lib/generation-task-display";
+import { formatGenerationElapsed, generationProgressDisplay, generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel, isGenerationTaskSubmissionUncertain, trackGenerationProgressChange, type GenerationProgressRecord } from "@/lib/generation-task-display";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { loadCanvasDrawingPreview } from "@/lib/canvas/canvas-drawing-storage";
-import { canvasNodeVideoPreviewUrl } from "@/lib/canvas/canvas-media-preview";
-import { isSilentDirectorClayVideo } from "@/lib/canvas/director/director-clay-output";
+import { canvasNodeVideoPreviewUrl, inferVideoHasAudio } from "@/lib/canvas/canvas-media-preview";
 import { bindCanvasVideoHoverPreview } from "@/lib/canvas/canvas-video-hover-preview";
 import { canvasVideoPresentationState } from "@/lib/canvas/canvas-video-presentation";
 import { buildLibTVImagePreviewUrl, buildLibTVVideoSourceUrl } from "@/lib/canvas/libtv-import";
@@ -22,7 +21,8 @@ import type { GenerationTask } from "@/services/api/task-center";
 import { cacheResourceObjectUrl, getCachedResourceObjectUrl, peekCachedResourceObjectUrl, scheduleResourceBlobCache } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { resolveImageUrl } from "@/services/image-storage";
-import { canvasVideoPreviewNeedsHydration, hydrateCanvasVideoPreview } from "@/services/canvas-video-preview";
+import { acquireCanvasVideoPreview, canvasDerivedPreviewSourceKey, canvasVideoPreviewNeedsHydration } from "@/services/canvas-video-preview";
+import { getActiveUserScopeEpoch, subscribeUserScope } from "@/lib/user-scope";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
@@ -202,24 +202,49 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
     const progress = showsProgress && typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
     const statusLabel = hasTaskIdentity ? generationTaskStatusLabel(displayTask) : "等待任务状态";
     const stageLabel = hasTaskIdentity ? generationTaskStageLabel(displayTask) : node.metadata?.processingLabel || "正在创建任务";
-    const elapsed = useTaskElapsed(node.metadata?.taskCreatedAt);
+    const now = useSecondTick(hasTaskIdentity);
+    const createdAt = node.metadata?.taskCreatedAt;
+    const createdAtMs = createdAt ? new Date(createdAt).getTime() : Number.NaN;
+    const elapsed = Number.isFinite(createdAtMs) ? `已用 ${formatGenerationElapsed(now - createdAtMs)}` : "刚刚开始";
+    const progressKey = taskId || node.id;
+    const progressRecord = progress !== null ? rememberProgressChange(progressKey, progress, now) : undefined;
+    const progressView = generationProgressDisplay({
+        status: displayTask.status,
+        progress,
+        progressChangedAt: progressRecord?.changedAt,
+        now,
+        isVideo: node.type === CanvasNodeType.Video,
+    });
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
             {submissionUncertain ? <AlertCircle className="size-10" /> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
             <span className="text-[var(--fs-tiny)] font-semibold">{stageLabel}</span>
             {hasTaskIdentity ? (
                 <div className="flex w-full max-w-[210px] flex-col items-center gap-1.5">
+                    <div className="max-w-full truncate text-sm font-semibold tabular-nums" style={{ color: theme.node.text }}>
+                        <Clock3 className="mr-1 inline size-3.5 align-[-2px]" />{elapsed}
+                    </div>
                     <div className="max-w-full truncate text-[var(--fs-label)] font-medium" style={{ color: theme.node.text }}>
                         {statusLabel}
-                        {progress !== null ? ` · ${progress}%` : ""}
+                        {progressView.percent !== null ? ` · ${progressView.percent}%` : ""}
                     </div>
-                    {progress !== null ? (
+                    {progressView.bar === "determinate" && progressView.percent !== null ? (
                         <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }}>
-                            <div className="h-full rounded-full transition-[width]" style={{ width: `${progress}%`, background: theme.node.activeStroke }} />
+                            <div className="h-full rounded-full transition-[width]" style={{ width: `${progressView.percent}%`, background: theme.node.activeStroke }} />
+                        </div>
+                    ) : null}
+                    {progressView.bar === "indeterminate" ? (
+                        <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }} role="progressbar" aria-label="仍在生成">
+                            <div className="canvas-node-progress-indeterminate h-full rounded-full" style={{ background: theme.node.activeStroke }} />
+                        </div>
+                    ) : null}
+                    {progressView.expectation ? (
+                        <div className="max-w-full text-balance text-[var(--fs-tiny)] leading-snug" style={{ color: theme.node.muted }}>
+                            {progressView.expectation}
                         </div>
                     ) : null}
                     <div className="max-w-full truncate text-[var(--fs-tiny)] tabular-nums" style={{ color: theme.node.muted }}>
-                        <Clock3 className="mr-1 inline size-3" />{elapsed} · {shortTaskId(taskId || "libtv-fixture-task-42")}
+                        {shortTaskId(taskId || "libtv-fixture-task-42")}
                     </div>
                     <div className="mt-0.5 flex items-center gap-1.5">
                         <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium transition-colors" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails?.(node); }}><FileText className="size-3" />详情</button>
@@ -235,18 +260,33 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
     );
 }
 
-function useTaskElapsed(createdAt?: string) {
+function useSecondTick(active: boolean) {
     const [, setTick] = useState(0);
     useEffect(() => {
-        if (!createdAt) return;
+        if (!active) return;
         const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
         return () => window.clearInterval(timer);
-    }, [createdAt]);
-    if (!createdAt) return "刚刚";
-    const seconds = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
-    if (seconds < 60) return `${seconds}秒`;
-    const minutes = Math.floor(seconds / 60);
-    return minutes < 60 ? `${minutes}分${seconds % 60}秒` : `${Math.floor(minutes / 60)}时${minutes % 60}分`;
+    }, [active]);
+    return Date.now();
+}
+
+// 上游百分比最后一次变化的时间，按任务记在内存里。节点滚出视口再回来
+// 重新挂载时不会把「久未变化」清零；上限防止长会话里无限增长。
+const progressChangeByTask = new Map<string, GenerationProgressRecord>();
+const PROGRESS_CHANGE_LIMIT = 200;
+
+function rememberProgressChange(key: string, progress: number, now: number) {
+    const previous = progressChangeByTask.get(key);
+    const next = trackGenerationProgressChange(previous, progress, now);
+    if (next !== previous) {
+        progressChangeByTask.delete(key);
+        progressChangeByTask.set(key, next);
+        if (progressChangeByTask.size > PROGRESS_CHANGE_LIMIT) {
+            const oldest = progressChangeByTask.keys().next().value;
+            if (oldest !== undefined) progressChangeByTask.delete(oldest);
+        }
+    }
+    return next;
 }
 
 function shortTaskId(id: string) {
@@ -549,30 +589,21 @@ function ToggleLine({ label, value, onChange }: { label: string; value: boolean;
     return <label className="flex items-center justify-between text-white/65"><span>{label}</span><button type="button" role="switch" aria-checked={value} className={`relative h-4 w-7 rounded-full ${value ? "bg-white/70" : "bg-white/20"}`} onClick={() => onChange(!value)}><span className={`absolute top-0.5 size-3 rounded-full bg-black transition-transform ${value ? "translate-x-3.5" : "translate-x-0.5"}`} /></button></label>;
 }
 
-function inferVideoHasAudio(metadata: CanvasNodeData["metadata"]): boolean | undefined {
-    if (isSilentDirectorClayVideo(metadata)) return false;
-    if (typeof metadata?.hasAudio === "boolean") return metadata.hasAudio;
-    // Generated nodes from older saves may not have `hasAudio` yet. In that
-    // case an explicit generation setting is the only persisted signal we
-    // have; leave all other videos in the unknown state.
-    const value = metadata?.generateAudio?.trim().toLowerCase();
-    if (["false", "0", "off", "no", "disabled"].includes(value || "")) return false;
-    if (["true", "1", "on", "yes", "enabled"].includes(value || "")) return true;
-    return undefined;
-}
-
 function AudioNodeContent({ node, theme }: CanvasNodeContentProps) {
     if (!node.metadata?.content && !node.metadata?.storageKey) return <EmptyAudioContent theme={theme} />;
     return <CanvasAudioPlayer node={node} theme={theme} />;
 }
 
-function InactiveVideoPreview({ node, theme, onPlay, hoverEnabled = true, showPlayButton = true }: Pick<CanvasNodeContentProps, "node" | "theme"> & { onPlay: () => void; hoverEnabled?: boolean; showPlayButton?: boolean }) {
+export function InactiveVideoPreview({ node, theme, onPlay, hoverEnabled = true, showPlayButton = true }: Pick<CanvasNodeContentProps, "node" | "theme"> & { onPlay: () => void; hoverEnabled?: boolean; showPlayButton?: boolean }) {
     const previewRef = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(previewRef);
-    const previewUrl = canvasNodeVideoPreviewUrl(node);
+    const [scopeEpoch, setScopeEpoch] = useState(getActiveUserScopeEpoch);
+    const sourceKey = canvasDerivedPreviewSourceKey(node);
+    const [derivedPreview, setDerivedPreview] = useState<{ sourceKey: string; epoch: number; content: string }>();
+    const persistedPreviewUrl = canvasNodeVideoPreviewUrl(node);
+    const derivedPreviewUrl = derivedPreview?.sourceKey === sourceKey && derivedPreview.epoch === getActiveUserScopeEpoch() ? derivedPreview.content : "";
     const previewNeedsHydration = canvasVideoPreviewNeedsHydration(node);
-    const { updateMetadata } = useCanvasNodeActions();
-    const updateMetadataRef = useRef(updateMetadata);
+    const previewUrl = previewNeedsHydration ? derivedPreviewUrl || persistedPreviewUrl : persistedPreviewUrl;
     const [hydrating, setHydrating] = useState(false);
 
     useEffect(() => {
@@ -585,30 +616,32 @@ function InactiveVideoPreview({ node, theme, onPlay, hoverEnabled = true, showPl
     }, [hoverEnabled, node.metadata?.content, node.metadata?.storageKey, node.metadata?.importSource?.provider]);
 
     useEffect(() => {
-        updateMetadataRef.current = updateMetadata;
-    }, [updateMetadata]);
+        return subscribeUserScope((epoch) => { setDerivedPreview(undefined); setScopeEpoch(epoch.generation); });
+    }, []);
 
     useEffect(() => {
-        if (!previewNeedsHydration || !nearViewport || (!node.metadata?.content && !node.metadata?.storageKey) || !updateMetadataRef.current) {
+        if (!previewNeedsHydration || !nearViewport || (!node.metadata?.storageKey && !node.metadata?.content)) {
             setHydrating(false);
             return;
         }
-        const controller = new AbortController();
+        let active = true;
+        const lease = acquireCanvasVideoPreview(node);
+        setDerivedPreview(undefined);
         setHydrating(true);
-        void hydrateCanvasVideoPreview(node, controller.signal)
+        void lease.promise
             .then((videoPreview) => {
-                if (!controller.signal.aborted && videoPreview) updateMetadataRef.current?.(node.id, { videoPreview });
+                if (active && scopeEpoch === getActiveUserScopeEpoch() && videoPreview) setDerivedPreview({ sourceKey, epoch: scopeEpoch, content: videoPreview.content });
             })
             .catch(() => undefined)
             .finally(() => {
-                if (!controller.signal.aborted) setHydrating(false);
+                if (active) setHydrating(false);
             });
-        return () => controller.abort();
-    }, [nearViewport, node.id, node.metadata?.content, node.metadata?.storageKey, previewNeedsHydration]);
+        return () => { active = false; lease.release(); };
+    }, [nearViewport, sourceKey, previewNeedsHydration, scopeEpoch]);
 
     if (previewUrl) {
         return <div ref={previewRef} className="group/video-preview relative size-full overflow-hidden rounded-[var(--node-radius)] bg-black">
-            <CachedResourceImage storageKey={node.metadata?.videoPreview?.storageKey} src={previewUrl} alt={`${node.title || "视频"} 静态预览`} loading="lazy" decoding="async" draggable={false} className="pointer-events-none size-full select-none object-contain" fallback={<InactiveMediaCard icon={<Video className="size-7" />} title={node.title || "视频"} hint="首帧暂不可用，点击播放视频" theme={theme} />} loadingFallback={<InactiveMediaCard icon={<Video className="size-7" />} title={node.title || "视频"} hint="正在读取首帧" theme={theme} />} />
+            <CachedResourceImage storageKey={derivedPreviewUrl === previewUrl ? undefined : node.metadata?.videoPreview?.storageKey} src={previewUrl} alt={`${node.title || "视频"} 静态预览`} loading="lazy" decoding="async" draggable={false} className="pointer-events-none size-full select-none object-contain" fallback={<InactiveMediaCard icon={<Video className="size-7" />} title={node.title || "视频"} hint="首帧暂不可用，点击播放视频" theme={theme} />} loadingFallback={<InactiveMediaCard icon={<Video className="size-7" />} title={node.title || "视频"} hint="正在读取首帧" theme={theme} />} />
             {showPlayButton ? <VideoPreviewPlayButton title={node.title || "视频"} onPlay={onPlay} /> : null}
         </div>;
     }
