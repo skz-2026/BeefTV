@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"log"
-	"time"
 
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/playback"
@@ -28,6 +27,14 @@ func (s *Service) playbackRuntime() *playback.Service {
 
 type playbackStore struct {
 	repo *repository.Repository
+}
+
+func (s playbackStore) PlaybackCopiesForUser(userID string) ([]model.Resource, error) {
+	return s.repo.PlaybackCopiesForUser(userID)
+}
+
+func (s playbackStore) ResetPlaybackCopy(userID, id, objectKey string) error {
+	return s.repo.ResetPlaybackCopy(userID, id, objectKey)
 }
 
 func (s playbackStore) ResourceForUser(userID, id string) (*model.Resource, error) {
@@ -72,20 +79,6 @@ func (s playbackStore) ResetStuckPlaybackTranscodes() error {
 	return s.repo.ResetStuckPlaybackTranscodes()
 }
 
-func (s playbackStore) PlaybackPendingVideos(afterCreatedAt time.Time, afterID string, limit int) ([]model.Resource, error) {
-	if s.repo == nil {
-		return nil, nil
-	}
-	return s.repo.PlaybackPendingVideos(afterCreatedAt, afterID, limit)
-}
-
-func (s playbackStore) PlaybackNoneVideos(afterCreatedAt time.Time, afterID string, limit int) ([]model.Resource, error) {
-	if s.repo == nil {
-		return nil, nil
-	}
-	return s.repo.PlaybackNoneVideos(afterCreatedAt, afterID, limit)
-}
-
 type playbackRunner struct {
 	svc *Service
 }
@@ -114,8 +107,8 @@ func (r playbackRunner) Context() context.Context {
 	return w.Context()
 }
 
-func logPlaybackBackfill(err error) {
+func logPlaybackRecovery(err error) {
 	if err != nil {
-		log.Printf("playback backfill: %v", err)
+		log.Printf("playback recovery: %v", err)
 	}
 }

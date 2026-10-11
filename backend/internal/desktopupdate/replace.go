@@ -59,6 +59,9 @@ func swapWindows(req HelperRequest) error {
 		return err
 	}
 	for _, name := range windowsSidecarEntries {
+		if name == "media-runtime" && !pathExists(filepath.Join(req.StagedPath, name)) {
+			continue
+		}
 		target := filepath.Join(targetDir, name)
 		if pathExists(target) {
 			if err := retryIO(func() error { return renamePath(target, filepath.Join(req.BackupPath, name)) }); err != nil {
@@ -75,6 +78,9 @@ func swapWindows(req HelperRequest) error {
 		return errors.Join(err, restoreWindows(req))
 	}
 	for _, name := range windowsSidecarEntries {
+		if name == "media-runtime" && !pathExists(filepath.Join(req.StagedPath, name)) {
+			continue
+		}
 		if err := retryIO(func() error { return renamePath(filepath.Join(req.StagedPath, name), filepath.Join(targetDir, name)) }); err != nil {
 			return errors.Join(err, restoreWindows(req))
 		}
@@ -83,7 +89,7 @@ func swapWindows(req HelperRequest) error {
 }
 
 // windowsSidecarEntries 是 BeefTV.exe 旁边随包发行的资源：升级要整组换，回滚要整组还原。
-var windowsSidecarEntries = []string{pluginDirName, "agent-host", cliDirName}
+var windowsSidecarEntries = []string{pluginDirName, "agent-host", cliDirName, "media-runtime"}
 
 func restoreWindows(req HelperRequest) error {
 	targetDir := filepath.Dir(req.TargetPath)
@@ -193,23 +199,27 @@ func retryIO(op func() error) error {
 }
 
 func relaunchTarget(req HelperRequest) error {
+	args := []string{}
+	if req.DataDir != "" {
+		args = append(args, "--data-dir="+req.DataDir)
+	}
 	switch {
 	case req.Platform == "linux-amd64":
-		cmd := exec.Command(filepath.Join(req.TargetPath, "BeefTV"))
+		cmd := exec.Command(filepath.Join(req.TargetPath, "BeefTV"), args...)
 		cmd.Dir = req.TargetPath
 		if err := cmd.Start(); err != nil {
 			return err
 		}
 		return cmd.Process.Release()
 	case strings.HasPrefix(req.Platform, "darwin"):
-		cmd := exec.Command(filepath.Join(req.TargetPath, "Contents", "MacOS", "BeefTV"))
+		cmd := exec.Command(filepath.Join(req.TargetPath, "Contents", "MacOS", "BeefTV"), args...)
 		cmd.Dir = filepath.Dir(req.TargetPath)
 		if err := cmd.Start(); err != nil {
 			return err
 		}
 		return cmd.Process.Release()
 	case strings.HasPrefix(req.Platform, "windows"):
-		cmd := exec.Command(req.TargetPath)
+		cmd := exec.Command(req.TargetPath, args...)
 		cmd.Dir = filepath.Dir(req.TargetPath)
 		if err := cmd.Start(); err != nil {
 			return err

@@ -5,7 +5,7 @@ import { VideoPlayer } from "@/components/video-player";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { GenerationFailureNotice } from "@/components/generation/generation-failure-notice";
 import { explainGenerationError } from "@/lib/generation-error";
-import { formatGenerationElapsed, generationProgressDisplay, generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel, isGenerationTaskSubmissionUncertain, trackGenerationProgressChange, type GenerationProgressRecord } from "@/lib/generation-task-display";
+import { formatGenerationElapsed, generationProgressDisplay, generationTaskShowsProgress, isGenerationTaskSubmissionUncertain, trackGenerationProgressChange, type GenerationProgressRecord } from "@/lib/generation-task-display";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { loadCanvasDrawingPreview } from "@/lib/canvas/canvas-drawing-storage";
@@ -20,8 +20,10 @@ import { resourceIdFromStorageKey } from "@/services/api/resources";
 import type { GenerationTask } from "@/services/api/task-center";
 import { cacheResourceObjectUrl, getCachedResourceObjectUrl, peekCachedResourceObjectUrl, scheduleResourceBlobCache } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
+import { useResourceVideoPlayback } from "@/hooks/use-resource-video-playback";
 import { resolveImageUrl } from "@/services/image-storage";
 import { acquireCanvasVideoPreview, canvasDerivedPreviewSourceKey, canvasVideoPreviewNeedsHydration } from "@/services/canvas-video-preview";
+import { acquireCanvasVideoSource } from "@/services/canvas-video-source";
 import { getActiveUserScopeEpoch, subscribeUserScope } from "@/lib/user-scope";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -200,8 +202,6 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
     const submissionUncertain = Boolean(taskId) && isGenerationTaskSubmissionUncertain(displayTask);
     const showsProgress = Boolean(taskId) && generationTaskShowsProgress(displayTask);
     const progress = showsProgress && typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
-    const statusLabel = hasTaskIdentity ? generationTaskStatusLabel(displayTask) : "等待任务状态";
-    const stageLabel = hasTaskIdentity ? generationTaskStageLabel(displayTask) : node.metadata?.processingLabel || "正在创建任务";
     const now = useSecondTick(hasTaskIdentity);
     const createdAt = node.metadata?.taskCreatedAt;
     const createdAtMs = createdAt ? new Date(createdAt).getTime() : Number.NaN;
@@ -218,16 +218,13 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
             {submissionUncertain ? <AlertCircle className="size-10" /> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
-            <span className="text-[var(--fs-tiny)] font-semibold">{stageLabel}</span>
+            <span className="text-[var(--fs-tiny)] font-semibold">生成中</span>
             {hasTaskIdentity ? (
                 <div className="flex w-full max-w-[210px] flex-col items-center gap-1.5">
                     <div className="max-w-full truncate text-sm font-semibold tabular-nums" style={{ color: theme.node.text }}>
                         <Clock3 className="mr-1 inline size-3.5 align-[-2px]" />{elapsed}
                     </div>
-                    <div className="max-w-full truncate text-[var(--fs-label)] font-medium" style={{ color: theme.node.text }}>
-                        {statusLabel}
-                        {progressView.percent !== null ? ` · ${progressView.percent}%` : ""}
-                    </div>
+                    {progressView.percent !== null ? <div className="max-w-full truncate text-[var(--fs-label)] font-medium" style={{ color: theme.node.text }}>{progressView.percent}%</div> : null}
                     {progressView.bar === "determinate" && progressView.percent !== null ? (
                         <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }}>
                             <div className="h-full rounded-full transition-[width]" style={{ width: `${progressView.percent}%`, background: theme.node.activeStroke }} />
@@ -238,14 +235,6 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
                             <div className="canvas-node-progress-indeterminate h-full rounded-full" style={{ background: theme.node.activeStroke }} />
                         </div>
                     ) : null}
-                    {progressView.expectation ? (
-                        <div className="max-w-full text-balance text-[var(--fs-tiny)] leading-snug" style={{ color: theme.node.muted }}>
-                            {progressView.expectation}
-                        </div>
-                    ) : null}
-                    <div className="max-w-full truncate text-[var(--fs-tiny)] tabular-nums" style={{ color: theme.node.muted }}>
-                        {shortTaskId(taskId || "libtv-fixture-task-42")}
-                    </div>
                     <div className="mt-0.5 flex items-center gap-1.5">
                         <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium transition-colors" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails?.(node); }}><FileText className="size-3" />详情</button>
                         {onCancelTask && (displayTask.status === "queued" || displayTask.status === "running") ? (
@@ -289,10 +278,7 @@ function rememberProgressChange(key: string, progress: number, now: number) {
     return next;
 }
 
-function shortTaskId(id: string) {
-    if (id.length <= 20) return id;
-    return `${id.slice(0, 14)}...${id.slice(-4)}`;
-}
+
 
 function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenTaskDetails }: Pick<CanvasNodeContentProps, "node" | "theme" | "onRetry" | "onReloadResource" | "onOpenTaskDetails">) {
     const explanation = explainGenerationError({ code: node.metadata?.generationErrorCode || node.metadata?.taskErrorCode, message: node.metadata?.errorDetails }, { taskId: node.metadata?.taskId, model: node.metadata?.model, createdAt: node.metadata?.taskCreatedAt, stage: node.metadata?.taskStage });
@@ -486,15 +472,17 @@ function VideoNodeContent({ node, theme, mediaActive = false, onMediaPlayRequest
     }
     const playerBoxRef = useRef<HTMLDivElement>(null);
     const { updateMediaNode } = useCanvasNodeActions();
-    const { url, loading } = useVideoPlaybackUrl(node, mediaActive);
+    const { url, loading, error, compatible, requestCompatible, retry, retryEpoch } = useVideoPlaybackUrl(node, mediaActive);
     const subtitleEntries = node.metadata?.subtitleEntries || [];
     const subtitleStyle = node.metadata?.subtitleStyle || createDefaultSubtitleStyle();
     const [currentTimeMs, setCurrentTimeMs] = useState(0);
     const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
     const [firstFramePresented, setFirstFramePresented] = useState(false);
+    const [playbackError, setPlaybackError] = useState(false);
 
     useEffect(() => {
         setFirstFramePresented(false);
+        setPlaybackError(false);
     }, [mediaActive, url]);
 
     useEffect(() => {
@@ -504,7 +492,7 @@ function VideoNodeContent({ node, theme, mediaActive = false, onMediaPlayRequest
         const handleLoadedMetadata = () => {
             if (video.videoWidth <= 0 || video.videoHeight <= 0) return;
             setVideoSize({ width: video.videoWidth, height: video.videoHeight });
-            if (node.metadata?.naturalWidth !== video.videoWidth || node.metadata?.naturalHeight !== video.videoHeight) {
+            if (!compatible && (node.metadata?.naturalWidth !== video.videoWidth || node.metadata?.naturalHeight !== video.videoHeight)) {
                 updateMediaNode?.(node.id, (current) => ({ ...current, metadata: { ...current.metadata, naturalWidth: video.videoWidth, naturalHeight: video.videoHeight } }));
             }
         };
@@ -517,7 +505,7 @@ function VideoNodeContent({ node, theme, mediaActive = false, onMediaPlayRequest
             video.removeEventListener("timeupdate", handleTimeUpdate);
             video.removeEventListener("loadedmetadata", handleLoadedMetadata);
         };
-    }, [node.id, node.metadata?.naturalHeight, node.metadata?.naturalWidth, subtitleEntries.length, updateMediaNode, url]);
+    }, [node.id, node.metadata?.naturalHeight, node.metadata?.naturalWidth, subtitleEntries.length, updateMediaNode, url, compatible]);
 
     if (!node.metadata?.content) return <EmptyVideoContent theme={theme} />;
 
@@ -529,15 +517,20 @@ function VideoNodeContent({ node, theme, mediaActive = false, onMediaPlayRequest
     const presentation = canvasVideoPresentationState({ active: mediaActive, hasSource: Boolean(url), firstFramePresented });
 
     return (
-        <div ref={playerBoxRef} className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[var(--node-radius)] bg-black">
+        <div ref={playerBoxRef} className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[var(--node-radius)] bg-black" onErrorCapture={(event) => {
+            // A failed <source> does not bubble a video error to Vidstack.
+            if (event.target instanceof HTMLSourceElement && !requestCompatible()) setPlaybackError(true);
+        }}>
             {node.metadata?.outputParameterWarning ? <div role="status" className="absolute left-2 right-2 top-2 z-[var(--node-z-overlay)] rounded-md px-3 py-2 text-xs leading-relaxed" style={{ background: theme.node.panel, color: theme.node.text }}>{node.metadata.outputParameterWarning}</div> : null}
             <div className={`absolute inset-0 ${presentation.showPoster ? "opacity-100" : "opacity-0"}`}>
                 <InactiveVideoPreview node={node} theme={theme} onPlay={() => onMediaPlayRequest?.(node.id)} hoverEnabled={!mediaActive} showPlayButton={!mediaActive} />
             </div>
-            {presentation.showLoading ? <div role="status" className="pointer-events-none absolute inset-0 z-[var(--node-z-overlay)] grid place-items-center bg-black/15 text-white/75"><LoaderCircle className="size-5 animate-spin" aria-label={loading ? "正在加载视频" : "视频资源不可用"} /></div> : null}
+            {presentation.showLoading ? <div role="status" className="pointer-events-none absolute inset-0 z-[var(--node-z-overlay)] flex flex-col items-center justify-center gap-2 bg-black/15 text-white/75"><LoaderCircle className="size-5 animate-spin" /><span className="text-xs">{loading ? "正在准备视频预览" : "正在加载视频"}</span></div> : null}
+            {error ? <div role="status" className="absolute inset-0 z-[var(--node-z-overlay)] flex flex-col items-center justify-center gap-3 bg-black/80 px-4 text-center text-xs text-white/80"><span>{error}</span><button type="button" data-canvas-no-zoom className="rounded border px-3 py-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); retry(); }}>重新加载</button></div> : null}
+            {playbackError ? <div role="status" className="absolute inset-0 z-[var(--node-z-overlay)] grid place-items-center bg-black/80 px-4 text-center text-xs text-white/80">视频已导入，当前无法播放预览。原文件仍可下载和使用。</div> : null}
             {mediaActive && url ? (
                 <div className={`absolute ${presentation.showVideo ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ width: fitWidth, height: Math.round(fitHeight) }}>
-                    <VideoPlayer src={url} mimeType={node.metadata?.mimeType} title={node.title || "视频"} hasAudio={inferVideoHasAudio(node.metadata)} autoPlay preload="metadata" brandColor={theme.accent.primary} className="h-full w-full rounded-[var(--node-radius)] bg-black" dataCanvasNoZoom compactControls onFirstFramePresented={() => setFirstFramePresented(true)} onPlay={() => scheduleResourceBlobCache(node.metadata?.storageKey || "")} />
+                    <VideoPlayer key={retryEpoch} src={url} mimeType={compatible ? "video/mp4" : node.metadata?.mimeType} title={node.title || "视频"} hasAudio={inferVideoHasAudio(node.metadata)} autoPlay preload="metadata" brandColor={theme.accent.primary} className="h-full w-full rounded-[var(--node-radius)] bg-black" dataCanvasNoZoom compactControls onFirstFramePresented={() => setFirstFramePresented(true)} onError={() => { if (!requestCompatible()) setPlaybackError(true); }} onPlay={() => scheduleResourceBlobCache(node.metadata?.storageKey || "")} />
                     {activeEntry && activeEntry.text.trim() ? <CanvasSubtitleOverlay text={activeEntry.text} highlight={activeHighlight} style={subtitleStyle} /> : null}
                 </div>
             ) : null}
@@ -612,7 +605,7 @@ export function InactiveVideoPreview({ node, theme, onPlay, hoverEnabled = true,
         if (!element) return;
         const content = node.metadata?.content || "";
         const fallback = node.metadata?.importSource?.provider === "libtv" ? buildLibTVVideoSourceUrl(content) : content;
-        return bindCanvasVideoHoverPreview(element, () => resolveMediaUrl(node.metadata?.storageKey, fallback));
+        return bindCanvasVideoHoverPreview(element, (signal) => acquireCanvasVideoSource(node.metadata?.storageKey, fallback, signal));
     }, [hoverEnabled, node.metadata?.content, node.metadata?.storageKey, node.metadata?.importSource?.provider]);
 
     useEffect(() => {
@@ -659,25 +652,7 @@ function useVideoPlaybackUrl(node: CanvasNodeData, active: boolean) {
     const rawContent = node.metadata?.content || "";
     const fallback = node.metadata?.importSource?.provider === "libtv" ? buildLibTVVideoSourceUrl(rawContent) : rawContent;
     const storageKey = node.metadata?.storageKey || "";
-    const [url, setUrl] = useState("");
-    const [loading, setLoading] = useState(false);
-
-    useEffect(() => {
-        let cancelled = false;
-        if (!active) {
-            setUrl("");
-            setLoading(false);
-            return;
-        }
-        setLoading(true);
-        void resolveMediaUrl(storageKey, fallback)
-            .then((resolved) => { if (!cancelled) setUrl(resolved); })
-            .catch((error) => { console.warn("视频资源物化失败，回退到原始地址", error); if (!cancelled) setUrl(fallback); })
-            .finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, [active, fallback, storageKey]);
-
-    return { url, loading };
+    return useResourceVideoPlayback(storageKey, fallback, active);
 }
 
 function InactiveMediaCard({ icon, title, hint, theme }: { icon: ReactNode; title: string; hint: string; theme: CanvasTheme }) {
@@ -703,7 +678,7 @@ function EmptyAudioContent({ theme }: { theme: CanvasTheme }) {
 function ImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: Pick<CanvasNodeContentProps, "node" | "theme" | "isBatchRoot" | "batchCount" | "batchPreviewNodes" | "batchExpanded" | "batchOpening" | "batchRecovering" | "onToggleBatch">) {
     const imageContainerRef = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(imageContainerRef);
-    const { url, loading } = useNodeResourceUrl(node, nearViewport);
+    const { url, loading, error, retry, fail } = useNodeResourceUrl(node, nearViewport);
     const importedFromLibTV = node.metadata?.importSource?.provider === "libtv";
     const { updateMediaNode } = useCanvasNodeActions();
     const measuredSizeRef = useRef<{ width: number; height: number } | null>(null);
@@ -746,7 +721,7 @@ function ImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewNodes,
     return (
         <BatchFrame batchPreviewNodes={batchPreviewNodes} batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
             <div ref={imageContainerRef} className="h-full w-full overflow-hidden rounded-[var(--node-radius)]">
-                {url ? <img src={url} alt={node.title} loading="lazy" decoding="async" draggable={false} onDragStart={(event) => event.preventDefault()} onLoad={(event) => fitToImage(event.currentTarget)} className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`} /> : <div className="grid size-full place-items-center" style={{ color: theme.node.muted }}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : <ImageIcon className="size-5 opacity-45" />}</div>}
+                {error ? <div role="status" className="flex size-full flex-col items-center justify-center gap-2 px-3 text-center text-xs" style={{ color: theme.node.muted }}><span>图片加载失败</span><button type="button" data-canvas-no-zoom className="rounded border px-3 py-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); retry(); }}>重新加载</button></div> : url ? <img src={url} alt={node.title} loading="lazy" decoding="async" draggable={false} onDragStart={(event) => event.preventDefault()} onError={fail} onLoad={(event) => fitToImage(event.currentTarget)} className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`} /> : <div className="grid size-full place-items-center" style={{ color: theme.node.muted }}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : <ImageIcon className="size-5 opacity-45" />}</div>}
             </div>
         </BatchFrame>
     );
@@ -777,9 +752,17 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
     const initialUrl = synchronousUrl || (isRemoteResource || isLazyVisual ? "" : fallback);
     const [url, setUrl] = useState(() => initialUrl);
     const [loading, setLoading] = useState(() => !initialUrl && isRemoteResource && eager);
+    const [error, setError] = useState(false);
+    const [attempt, setAttempt] = useState(0);
+    const reloadRequested = useRef(false);
+    const [scopeEpoch, setScopeEpoch] = useState(getActiveUserScopeEpoch);
+    useEffect(() => subscribeUserScope((epoch) => setScopeEpoch(epoch.generation)), []);
+    const fail = useCallback(() => setError(true), []);
+    const retry = useCallback(() => { reloadRequested.current = true; setError(false); setAttempt((current) => current + 1); }, []);
 
     useEffect(() => {
         let cancelled = false;
+        setError(false);
         if (!isRemoteResource && isLazyVisual && storageKey) {
             if (!eager) {
                 setUrl("");
@@ -792,7 +775,7 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
                     if (!cancelled) setUrl(resolved);
                 })
                 .catch(() => {
-                    if (!cancelled) setUrl("");
+                    if (!cancelled) { setUrl(""); setError(true); }
                 })
                 .finally(() => {
                     if (!cancelled) setLoading(false);
@@ -804,31 +787,33 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
             setLoading(false);
             return;
         }
-        const cachedSync = peekCachedResourceObjectUrl(storageKey);
+        const reload = reloadRequested.current;
+        reloadRequested.current = false;
+        const cachedSync = reload ? "" : peekCachedResourceObjectUrl(storageKey);
         if (cachedSync) {
             setUrl(cachedSync);
             setLoading(false);
             return;
         }
-        if (!url) {
-            setLoading(eager);
-        }
+        setUrl("");
+        setLoading(eager);
         // 只有进入视口或被激活的节点才下载远程媒体；缓存层会复用已有 Blob URL 和 in-flight 请求。
-        const resolve = eager ? cacheResourceObjectUrl(storageKey) : getCachedResourceObjectUrl(storageKey);
+        const resolve = eager ? cacheResourceObjectUrl(storageKey, reload) : getCachedResourceObjectUrl(storageKey);
         void resolve.then((cached) => {
             if (!cancelled && cached) setUrl(cached);
+            if (!cancelled && eager && !cached) setError(true);
             // Never hand a protected resource URL to a native <img> after a
             // cache miss. It cannot attach the auth header and would render
             // as a broken image after relogin.
         }).catch(() => {
-            if (!cancelled && eager) setUrl(synchronousUrl);
+            if (!cancelled && eager) { setUrl(synchronousUrl); setError(true); }
         }).finally(() => {
             if (!cancelled) setLoading(false);
         });
         return () => { cancelled = true; };
-    }, [eager, fallback, isLazyVisual, isRemoteResource, storageKey]);
+    }, [eager, fallback, isLazyVisual, isRemoteResource, storageKey, attempt, scopeEpoch]);
 
-    return { url, loading };
+    return { url, loading, error, retry, fail };
 }
 
 function useNearViewport(ref: RefObject<Element | null>) {

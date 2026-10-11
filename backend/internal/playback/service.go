@@ -2,19 +2,20 @@ package playback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
-	"time"
 
 	"infinite-canvas/backend/internal/assets"
+	"infinite-canvas/backend/internal/mediatools"
 	"infinite-canvas/backend/internal/model"
 )
 
-// Service owns probe, claim, ffmpeg, persist, range, and backfill for
+// Service owns probe, claim, ffmpeg, persist, range, and recovery for
 // local playback copies.
 type Service struct {
 	dataDir        string
@@ -26,12 +27,14 @@ type Service struct {
 	recoveryErr    error
 	lookPath       func(file string) (string, error)
 	transcode      func(ctx context.Context, src string, dst string) error
+	slots          chan struct{}
+	cacheMu        sync.Mutex
 }
 
 func New(deps Deps) *Service {
 	lookPath := deps.LookPath
 	if lookPath == nil {
-		lookPath = exec.LookPath
+		lookPath = func(string) (string, error) { return mediatools.ResolveFFmpeg() }
 	}
 	transcode := deps.Transcode
 	if transcode == nil {
@@ -49,6 +52,7 @@ func New(deps Deps) *Service {
 		runtimeContext: deps.RuntimeContext,
 		lookPath:       lookPath,
 		transcode:      transcode,
+		slots:          make(chan struct{}, 1),
 	}
 }
 
@@ -78,6 +82,12 @@ func (s *Service) MaybeStart(resource *model.Resource) {
 	if s == nil || resource == nil || resource.Kind != "video" {
 		return
 	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.maybeStart(resource)
+}
+
+func (s *Service) maybeStart(resource *model.Resource) {
 	if s.runContext(nil).Err() != nil {
 		return
 	}
@@ -94,8 +104,14 @@ func (s *Service) MaybeStart(resource *model.Resource) {
 		return
 	}
 	if _, err := s.lookPath("ffmpeg"); err != nil {
-		markNone(s.store, resource.ID, resource.PlaybackStatus)
-		return
+		if runtime.GOOS != "darwin" {
+			markNone(s.store, resource.ID, resource.PlaybackStatus)
+			return
+		}
+		if _, nativeErr := s.lookPath("avconvert"); nativeErr != nil {
+			markNone(s.store, resource.ID, resource.PlaybackStatus)
+			return
+		}
 	}
 	src, err := s.sourcePath(resource.ObjectKey)
 	if err != nil {
@@ -133,6 +149,13 @@ func (s *Service) launch(resourceID, src string) {
 
 func (s *Service) runTranscode(ctx context.Context, resourceID string, src string) {
 	ctx = s.runContext(ctx)
+	select {
+	case s.slots <- struct{}{}:
+		defer func() { <-s.slots }()
+	case <-ctx.Done():
+		releaseClaim(s.store, resourceID)
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			if ctx.Err() != nil {
@@ -206,6 +229,8 @@ func (s *Service) OpenRange(userID string, resourceID string) (*assets.ResourceS
 	if s == nil || s.store == nil {
 		return nil, ErrNotReady
 	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	resource, err := s.store.ResourceForUser(userID, resourceID)
 	if err != nil {
 		return nil, err
@@ -219,10 +244,16 @@ func (s *Service) OpenRange(userID string, resourceID string) (*assets.ResourceS
 		return nil, err
 	}
 	if err := ensureSafeExistingPath(s.playbackRoot(), path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrNotReady
+		}
 		return nil, err
 	}
 	body, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotReady
+		}
 		return nil, err
 	}
 	playback := *resource
@@ -241,63 +272,12 @@ func (s *Service) OpenRange(userID string, resourceID string) (*assets.ResourceS
 	}, nil
 }
 
-// Backfill scans local ready videos after process start: empty status is
-// judged, H.265/MPEG-4 claimed, H.264 marked none. Processing leftovers
-// from a crash are reset first. A cursored none-row pass covers codec
-// rule changes that previously marked H.265 as playable, including sets
-// larger than one batch. ctx cancels the scan without writing READY.
-func (s *Service) Backfill(ctx context.Context) error {
-	if s == nil || s.store == nil {
-		return nil
-	}
-	ctx = s.runContext(ctx)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.Recover(); err != nil {
-		return err
-	}
-	if err := s.backfillScan(ctx, s.store.PlaybackPendingVideos); err != nil {
-		return err
-	}
-	return s.backfillScan(ctx, s.store.PlaybackNoneVideos)
-}
-
 // Recover clears claims left by the previous process exactly once, before any
-// new claims from this runtime. Repeated scans must not reset live transcodes.
+// new claims from this runtime. Repeated recovery calls must not reset live transcodes.
 func (s *Service) Recover() error {
 	if s == nil || s.store == nil {
 		return nil
 	}
 	s.recoveryOnce.Do(func() { s.recoveryErr = s.store.ResetStuckPlaybackTranscodes() })
 	return s.recoveryErr
-}
-
-func (s *Service) backfillScan(ctx context.Context, page func(time.Time, string, int) ([]model.Resource, error)) error {
-	var afterTime time.Time
-	var afterID string
-	for range backfillMaxScan {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		items, err := page(afterTime, afterID, backfillBatch)
-		if err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			return nil
-		}
-		last := items[len(items)-1]
-		if last.CreatedAt.Equal(afterTime) && last.ID == afterID {
-			return errBackfillCursor
-		}
-		for i := range items {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			s.MaybeStart(&items[i])
-		}
-		afterTime, afterID = last.CreatedAt, last.ID
-	}
-	return errBackfillBound
 }

@@ -39,7 +39,23 @@ func (s *Service) OpenResourcePlaybackRange(userID string, resourceID string) (*
 	return s.playbackRuntime().OpenRange(userID, resourceID)
 }
 
-// BackfillPlaybackTranscodes uses the same runtime instance as ready callbacks.
-func (s *Service) BackfillPlaybackTranscodes() {
-	logPlaybackBackfill(s.playbackRuntime().Backfill(nil))
+// RecoverPlaybackTranscodes recovers interrupted claims without eagerly
+// converting the library. The browser requests a copy only when needed.
+func (s *Service) RecoverPlaybackTranscodes() {
+	logPlaybackRecovery(s.playbackRuntime().Recover())
+}
+
+func (s *Service) PrepareResourcePlayback(userID, resourceID string) (*model.Resource, error) {
+	resource, err := s.Resource(userID, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.playbackRuntime().Prepare(resource); err != nil {
+		return nil, err
+	}
+	return s.Resource(userID, resourceID)
+}
+
+func (s *Service) ClearVideoPreviewCache(userID string) (int, error) {
+	return s.playbackRuntime().ClearCache(userID)
 }
