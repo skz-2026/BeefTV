@@ -419,7 +419,7 @@ describe("画布文档提交日记", () => {
         expect(useCanvasStore.getState().openProject("c1")?.revision).toBe(1);
     });
 
-    test("干净缓存采用后端，脏草稿相对已记录基线保留", () => {
+    test("后端优先：无排队写入时采用后端；写入排队中才保留本地", async () => {
         const localClean = canvas("基线", 1);
         const backend = canvas("助手改过", 2);
         recordCanvasDocumentBase(localClean);
@@ -427,6 +427,16 @@ describe("画布文档提交日记", () => {
 
         const localDirty = canvas("本地草稿", 1);
         recordCanvasDocumentBase(canvas("基线", 1));
+        expect(selectPreferredCanvasProject(localDirty, backend).title).toBe("助手改过");
+
+        await saveCanvasOperationJournal({
+            userScope: "guest",
+            canvasId: "c1",
+            confirmedRevision: 1,
+            confirmedSnapshot: canvas("基线", 1),
+            inFlight: null,
+            pendingProjection: { identity: "proj-local", revision: 1, base: canvas("基线", 1), remote: localDirty },
+        });
         expect(selectPreferredCanvasProject(localDirty, backend).title).toBe("本地草稿");
     });
 
@@ -664,7 +674,7 @@ describe("画布文档提交日记", () => {
         await loadCanvasOperationJournal("c1");
         useCanvasStore.setState({ projects: [canvas("未确认草稿", 1)] });
         expect(hasUnconfirmedCanvasEdits("c1")).toBe(true);
-        expect(selectPreferredCanvasProject(canvas("未确认草稿", 1), canvas("助手改过", 2)).title).toBe("未确认草稿");
+        expect(selectPreferredCanvasProject(canvas("未确认草稿", 1), canvas("助手改过", 2)).title).toBe("助手改过");
     });
 
     test("损坏的日记 fail-closed，不发明空操作", async () => {
@@ -757,7 +767,7 @@ describe("画布文档提交日记", () => {
         expect((server.document as { title: string }).title).toBe("助手改过");
     });
 
-    test("外部新增节点时本地改了另一节点：keep-local 后自动保存不得丢掉外部节点", async () => {
+    test("外部新增节点时本地改了另一节点：后端优先三方合并，本地改名与外部节点都保留", async () => {
         const localNode = node("n1", "镜头1");
         const remoteAdded = node("n2", "助手加的");
         useCanvasStore.setState({ projects: [canvas("基线", 1, { nodes: [localNode] })] });
@@ -773,19 +783,23 @@ describe("画布文档提交日记", () => {
 
         server.revision = 5;
         server.document = canvas("助手加了节点", 5, { nodes: [localNode, remoteAdded] });
-        expect(await refreshLocalCanvasProjectIfChanged("c1")).toBeUndefined();
+        const applied = await refreshLocalCanvasProjectIfChanged("c1");
+        expect(applied?.title).toBe("助手加了节点");
 
         const live = useCanvasStore.getState().projects[0];
-        expect(live.nodes.map((item) => item.id)).toEqual(["n1"]);
+        expect(live.title).toBe("助手加了节点");
+        expect(live.nodes.map((item) => item.id)).toEqual(["n1", "n2"]);
         expect(live.nodes[0].title).toBe("本地改名");
-        expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(1);
-        expect(canvasDocumentBase("c1")?.snapshot.title).toBe("基线");
-        expect(canvasBackendSubmitPaused("c1")).toBe(true);
-        expect(projectSyncProgress("c1")?.phase).toBe("conflict");
+        expect((await loadCanvasOperationJournal("c1")).confirmedRevision).toBe(5);
+        expect(canvasDocumentBase("c1")?.snapshot.title).toBe("助手加了节点");
+        expect(canvasBackendSubmitPaused("c1")).toBe(false);
+        expect(canvasExternalRevisionConflict("guest", "c1")).toBeUndefined();
+        expect(projectSyncProgress("c1")?.phase).not.toBe("conflict");
 
-        await expect(syncLocalCanvasProjectToBackend("c1")).rejects.toBeInstanceOf(CanvasBackendSubmitPausedError);
-        expect(server.commits).toEqual([]);
+        // 合并后无未确认编辑，自动保存直接把合并结果提交到服务端
+        await syncLocalCanvasProjectToBackend("c1");
         expect((server.document as { nodes: Array<{ id: string }> }).nodes.map((item) => item.id)).toEqual(["n1", "n2"]);
+        expect((server.document as { nodes: Array<{ title: string }> }).nodes[0].title).toBe("本地改名");
         expect(useCanvasStore.getState().projects[0].nodes[0].title).toBe("本地改名");
     });
 

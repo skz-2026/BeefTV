@@ -1329,6 +1329,10 @@ func matchPersistedCategory(text string) FailureCategory {
 	if strings.HasPrefix(text, "当前账号额度不足") {
 		return CategoryQuotaUser
 	}
+	if strings.HasPrefix(text, "本地生图等待超时") {
+		// 本地/免费网关的生图等待超时：没有付费提交风险，保持任务可重试。
+		return CategoryProviderUnavailable
+	}
 	if strings.HasPrefix(text, "提示词或参考素材未通过内容安全审核") {
 		return CategoryModerationInput
 	}

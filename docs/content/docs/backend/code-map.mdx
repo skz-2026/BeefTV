@@ -41,6 +41,7 @@ Wails / local dev
 | 企业连接 | `backend/internal/beefapi` | 设备授权、本机密钥和连接状态 |
 | 本机 MCP | `backend/cmd/beeftv` | `beeftv mcp serve` 使用官方 MCP SDK，经 `/api/ops` 访问本机工作区 |
 | 桌面更新发布 | `backend/cmd/update-release` | 生成更新密钥、打包 zip、签署 `desktop-update.json` |
+| 本机控制看板 | `backend/cmd/dashboard` | 单 exe 看板：启停后端/owner 代理/Vite/视频网关/ComfyUI（计划任务），复用 `internal/systemstats` 展示硬件与 ComfyUI 显存/队列遥测，只监听 127.0.0.1 |
 | 前端 | `web/src` | React 画布、项目、素材、模型配置与插件 UI |
 
 ## 硬边界

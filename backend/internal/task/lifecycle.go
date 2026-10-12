@@ -45,8 +45,11 @@ func (s *Service) Retry(userID, id string) (*model.Task, error) {
 	if s.deps.Failures.IsModeration(task.Error) {
 		return nil, kernel.BadAuthRequest(ContentModerationRetryMessage)
 	}
-	if s.deps.Failures.BlocksRetry(task.Error, task.Stage) {
-		category := s.deps.Failures.Category(task.Error, task.Stage)
+	category := s.deps.Failures.Category(task.Error, task.Stage)
+	if task.Type == "canvas_image" && s.deps.Images.AllowsRetryUnlock(task) {
+		// 本地/免费网关的图片任务没有重复计费风险：失败不锁定重试，
+		// 直接放行（内容审核拦截已在上方独立判断）。
+	} else if s.deps.Failures.BlocksRetry(task.Error, task.Stage) {
 		if task.Stage == "submission_unknown" || category == generation.CategorySubmissionUncertain {
 			return nil, kernel.BadAuthRequest(SubmissionUncertainRetryMessage)
 		}

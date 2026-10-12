@@ -3,7 +3,8 @@
     "MiniMax-H3 图生视频（I2VA 首帧驱动），基于 T8 示例基础链路转为 API 格式。",
     "与文生视频的差异：task_type=I2VA，新增 LoadImage 节点接 first_frame；",
     "宽高由 ref_image_size=match 跟随首帧，{{WIDTH}}/{{HEIGHT}} 仅作兜底。",
-    "{{IMAGE}} 为网关上传到 ComfyUI input 目录后的文件名。"
+    "{{IMAGE}} 为网关上传到 ComfyUI input 目录后的文件名。",
+    "2026-10-12 修复：first_frame 原误接 13 号 MiniMaxH3TurboSampler（SAMPLER 类型），且模板缺失 LoadImage 节点——ComfyUI 校验必拒、该模型从未可用。现补 15 号 LoadImage({{IMAGE}}) 直连 first_frame（对齐 image-to-video 模板；T8 conditioning 内部负责缩放）。"
   ],
   "1": {
     "class_type": "UNETLoader",
@@ -64,7 +65,7 @@
         0
       ],
       "first_frame": [
-        "13",
+        "15",
         0
       ],
       "prompt": "{{PROMPT}}",
@@ -192,6 +193,13 @@
       "scheduler": "simple",
       "steps": 6,
       "denoise": 1.0
+    }
+  },
+  "15": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE}}",
+      "upload": "image"
     }
   }
 }

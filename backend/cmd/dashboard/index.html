@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeefTV 控制看板</title>
+<style>
+    :root {
+        --bg: #0e1116; --card: #171b23; --card-2: #1e232e; --border: #2a3040;
+        --text: #e6e9ef; --muted: #8b93a5; --accent: #4f8cff; --green: #34d399;
+        --amber: #fbbf24; --red: #f87171; --blue: #60a5fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        padding: 20px clamp(12px, 3vw, 36px) 40px;
+    }
+    header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
+    header h1 { font-size: 20px; margin: 0; letter-spacing: .5px; }
+    header .repo { color: var(--muted); font-size: 12px; }
+    .spacer { flex: 1; }
+    button {
+        background: var(--card-2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px;
+        transition: background .15s, border-color .15s;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h2 { font-size: 15px; color: var(--muted); margin: 26px 0 10px; font-weight: 600; }
+    .grid { display: grid; gap: 12px; }
+    .services { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .card {
+        background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    }
+    .svc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+    .svc-head .name { font-size: 15px; font-weight: 600; }
+    .pill {
+        font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid transparent;
+    }
+    .pill.running  { color: var(--green); background: rgba(52,211,153,.12); border-color: rgba(52,211,153,.35); }
+    .pill.starting { color: var(--amber); background: rgba(251,191,36,.12);  border-color: rgba(251,191,36,.35); }
+    .pill.stopped  { color: var(--muted); background: rgba(139,147,165,.1);  border-color: rgba(139,147,165,.3); }
+    .pill.external { color: var(--blue);  background: rgba(96,165,250,.12);  border-color: rgba(96,165,250,.35); }
+    .pill.failed   { color: var(--red);   background: rgba(248,113,113,.12); border-color: rgba(248,113,113,.35); }
+    .pill.cancelled{ color: var(--amber); background: rgba(251,191,36,.12);  border-color: rgba(251,191,36,.35); }
+    .svc-meta { color: var(--muted); font-size: 12px; min-height: 18px; }
+    .svc-err { color: var(--red); font-size: 12px; margin-top: 4px; word-break: break-all; }
+    .svc-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+    .hw { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+    .hw .label { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; }
+    .hw .value { font-size: 22px; font-weight: 600; margin: 2px 0 6px; }
+    .hw .value small { font-size: 12px; color: var(--muted); font-weight: 400; }
+    .bar { height: 6px; border-radius: 4px; background: #262c39; overflow: hidden; }
+    .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s; }
+    .bar > i.hot { background: var(--amber); }
+    .bar > i.crit { background: var(--red); }
+    .kv { color: var(--muted); font-size: 12px; margin-top: 8px; line-height: 1.7; }
+    .kv b { color: var(--text); font-weight: 600; }
+    canvas.spark { width: 100%; height: 44px; margin-top: 8px; }
+    .disks { margin-top: 6px; }
+    .disk-row { margin-bottom: 8px; }
+    .log-panel {
+        background: #10131a; border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    }
+    .log-tabs { display: flex; gap: 4px; padding: 8px 10px 0; border-bottom: 1px solid var(--border); align-items: center; }
+    .log-tabs button {
+        border: none; background: transparent; color: var(--muted); padding: 8px 14px; border-radius: 8px 8px 0 0;
+    }
+    .log-tabs button.active { color: var(--text); background: var(--card-2); }
+    .log-tabs .follow { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; padding-bottom: 6px; }
+    .log-tabs .follow input { accent-color: var(--accent); }
+    pre#logview {
+        margin: 0; padding: 12px 14px; height: 300px; overflow: auto; font: 12px/1.55 Consolas, monospace;
+        white-space: pre-wrap; word-break: break-all; color: #c4cbd8;
+    }
+    .toast {
+        position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+        background: var(--card-2); border: 1px solid var(--border); color: var(--text);
+        padding: 9px 18px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .25s;
+        pointer-events: none; box-shadow: 0 6px 24px rgba(0,0,0,.4);
+    }
+    .toast.show { opacity: 1; }
+    footer { margin-top: 30px; color: var(--muted); font-size: 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .guardian { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+    .guardian input { accent-color: var(--green); }
+    .guardian.on { color: var(--green); }
+    .guardian-note { color: var(--muted); font-size: 12px; }
+    .tasks-card { padding: 0; overflow: hidden; }
+    table.tasks { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.tasks th {
+        text-align: left; color: var(--muted); font-weight: 500; font-size: 12px;
+        padding: 10px 14px 8px; border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    table.tasks td { padding: 8px 14px; border-bottom: 1px solid rgba(42,48,64,.5); vertical-align: top; }
+    table.tasks tr:last-child td { border-bottom: none; }
+    td.t-prompt { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    td.t-meta { color: var(--muted); white-space: nowrap; }
+    td.t-meta b { color: var(--text); font-weight: 600; }
+    .task-summary { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+    .task-summary b.run { color: var(--blue); } .task-summary b.bad { color: var(--red); }
+    .tasks-empty { padding: 26px 14px; color: var(--muted); font-size: 13px; text-align: center; }
+    .tprog { display: inline-block; min-width: 52px; color: var(--muted); font-size: 12px; }
+    .gpu-procs { margin-top: 8px; font-size: 12px; color: var(--muted); line-height: 1.8; }
+    .gpu-procs b { color: var(--text); }
+</style>
+</head>
+<body>
+<header>
+    <h1>BeefTV 控制看板</h1>
+    <span class="pill" id="ver"></span>
+    <label class="guardian" title="ComfyUI 崩溃后自动归档日志并重新拉起（看板需保持运行）；手动停止 ComfyUI 后守护暂停 15 分钟">
+        <input type="checkbox" id="guardian"> 过夜守护
+    </label>
+    <span class="guardian-note" id="guardian-note"></span>
+    <span class="repo" id="repo"></span>
+    <span class="spacer"></span>
+    <button class="primary" id="btn-start-all">一键启动</button>
+    <button id="btn-stop-all">一键停止</button>
+    <button id="btn-open-frontend">打开工作台</button>
+    <button class="danger" id="btn-shutdown">退出看板</button>
+</header>
+
+<h2>服务</h2>
+<div class="grid services" id="services"></div>
+
+<h2>硬件监控</h2>
+<div class="grid hw">
+    <div class="card">
+        <div class="label"><span>CPU</span><span id="cpu-pct">—</span></div>
+        <div class="value" id="cpu-text">—</div>
+        <div class="bar"><i id="cpu-bar"></i></div>
+        <canvas class="spark" id="cpu-spark"></canvas>
+    </div>
+    <div class="card">
+        <div class="label"><span>内存</span><span id="mem-pct">—</span></div>
+        <div class="value" id="mem-text">—</div>
+        <div class="bar"><i id="mem-bar"></i></div>
+        <canvas class="spark" id="mem-spark"></canvas>
+    </div>
+    <div class="card">
+        <div class="label"><span>GPU</span><span id="gpu-util">—</span></div>
+        <div class="value" id="gpu-name"><small>—</small></div>
+        <div class="bar"><i id="gpu-bar"></i></div>
+        <div class="kv" id="gpu-kv">—</div>
+        <div class="gpu-procs" id="gpu-procs">—</div>
+    </div>
+    <div class="card">
+        <div class="label"><span>温度</span><span id="temp-max">—</span></div>
+        <div class="value" id="temp-main">—</div>
+        <div class="bar"><i id="temp-bar"></i></div>
+        <div class="kv" id="temp-kv">暂无传感器数据</div>
+    </div>
+    <div class="card">
+        <div class="label"><span>ComfyUI 显存</span><span id="comfy-queue">—</span></div>
+        <div class="value" id="comfy-main">—</div>
+        <div class="bar"><i id="comfy-bar"></i></div>
+        <div class="kv" id="comfy-kv">—</div>
+    </div>
+    <div class="card">
+        <div class="label"><span>磁盘</span><span></span></div>
+        <div class="disks" id="disks">—</div>
+    </div>
+</div>
+
+<h2>生成任务 <span class="task-summary" id="task-summary"></span></h2>
+<div class="card tasks-card" id="tasks-card">
+    <table class="tasks">
+        <thead><tr><th>状态</th><th>类型 / 模型</th><th>内容</th><th>进度</th><th>更新</th></tr></thead>
+        <tbody id="tasks-body"></tbody>
+    </table>
+    <div class="tasks-empty" id="tasks-empty">加载中…</div>
+</div>
+
+<h2>日志</h2>
+<div class="log-panel">
+    <div class="log-tabs" id="log-tabs">
+        <button data-name="backend" class="active">后端</button>
+        <button data-name="proxy">Owner 代理</button>
+        <button data-name="frontend">前端</button>
+        <button data-name="gateway">视频网关</button>
+        <button data-name="comfy">ComfyUI</button>
+        <label class="follow"><input type="checkbox" id="follow" checked> 自动滚动</label>
+    </div>
+    <pre id="logview"></pre>
+</div>
+
+<footer>
+    <button id="btn-rebuild">重新编译后端 exe</button>
+    <button id="btn-open-datadir">数据目录</button>
+    <button id="btn-open-localdir">.local 目录</button>
+    <button id="btn-open-comfy">ComfyUI 界面</button>
+    <span id="foot-hint">退出看板只会停止由看板启动的服务，外部启动的服务不受影响。</span>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = (id) => document.getElementById(id);
+const state = { services: [], cursor: { backend: 0, proxy: 0, frontend: 0, gateway: 0, comfy: 0 }, activeTab: "backend",
+                cpuHist: [], memHist: [], frontendUrl: "http://localhost:3000" };
+
+async function api(path, method = "GET", body) {
+    const res = await fetch(path, {
+        method, headers: { "Content-Type": "application/json", "X-Dashboard-Token": TOKEN },
+        body: body ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 403) { location.reload(); throw new Error("token expired"); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    return data;
+}
+
+function toast(msg) {
+    const el = $("toast");
+    el.textContent = msg; el.classList.add("show");
+    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+const NAME_MAP = { backend: "后端服务", proxy: "Owner 代理", frontend: "前端 Vite", gateway: "视频网关", comfy: "ComfyUI" };
+function renderServices(list) {
+    const box = $("services");
+    if (box.children.length !== list.length) {
+        box.innerHTML = "";
+        for (const svc of list) {
+            const card = document.createElement("div");
+            card.className = "card";
+            card.innerHTML = `
+                <div class="svc-head"><span class="name">${NAME_MAP[svc.name] || svc.name}</span>
+                    <span class="pill" data-role="pill"></span></div>
+                <div class="svc-meta" data-role="meta"></div>
+                <div class="svc-err" data-role="err" hidden></div>
+                <div class="svc-actions">
+                    <button data-role="start" class="primary">启动</button>
+                    <button data-role="stop" class="danger">停止</button>
+                    <a data-role="open" target="_blank" rel="noreferrer">打开链接</a>
+                </div>`;
+            card.querySelector('[data-role="start"]').onclick = async () => {
+                try { await api("/api/start", "POST", { name: svc.name }); toast(NAME_MAP[svc.name] + " 启动中…"); }
+                catch (e) { toast("启动失败：" + e.message); }
+            };
+            card.querySelector('[data-role="stop"]').onclick = async () => {
+                const external = card._svc && card._svc.status === "external";
+                if (external && !confirm(`该服务由外部启动（${card._svc.externalName || "未知进程"}，PID ${card._svc.externalPid}），确定要停止它吗？`)) return;
+                try { await api("/api/stop", "POST", { name: svc.name }); toast(NAME_MAP[svc.name] + " 停止中…"); }
+                catch (e) { toast("停止失败：" + e.message); }
+            };
+            box.appendChild(card);
+        }
+    }
+    list.forEach((svc, i) => {
+        const card = box.children[i];
+        card._svc = svc;
+        const pill = card.querySelector('[data-role="pill"]');
+        pill.textContent = { running: "运行中", starting: "启动中", stopped: "已停止", external: "外部运行中" }[svc.status] || svc.status;
+        pill.className = "pill " + svc.status;
+        let meta;
+        if (svc.status === "external") {
+            meta = `外部进程 ${svc.externalName || "未知"}（PID ${svc.externalPid ?? "—"}）`;
+        } else {
+            const uptime = svc.uptimeSec != null && (svc.status === "running" || svc.status === "starting")
+                ? ` · 已运行 ${fmtDur(svc.uptimeSec)}` : "";
+            meta = (svc.pid ? "PID " + svc.pid : "PID —") + uptime;
+        }
+        card.querySelector('[data-role="meta"]').textContent = meta;
+        const err = card.querySelector('[data-role="err"]');
+        err.hidden = !svc.exitError;
+        err.textContent = svc.exitError ? "上次退出：" + svc.exitError : "";
+        const managed = svc.status === "running" || svc.status === "starting";
+        const stopBtn = card.querySelector('[data-role="stop"]');
+        card.querySelector('[data-role="start"]').disabled = managed || svc.status === "external";
+        stopBtn.disabled = !managed && svc.status !== "external";
+        stopBtn.textContent = svc.status === "external" ? "停止外部进程" : "停止";
+        const link = card.querySelector('[data-role="open"]');
+        link.hidden = !svc.openUrl;
+        if (svc.openUrl) { link.href = svc.openUrl; link.textContent = svc.openUrl; }
+    });
+}
+
+function fmtDur(sec) {
+    if (sec < 60) return sec + " 秒";
+    if (sec < 3600) return Math.floor(sec / 60) + " 分 " + (sec % 60) + " 秒";
+    return Math.floor(sec / 3600) + " 时 " + Math.floor((sec % 3600) / 60) + " 分";
+}
+function fmtGB(bytes) { return (bytes / 1024 ** 3).toFixed(1) + " GB"; }
+
+function setBar(el, pct) {
+    pct = Math.max(0, Math.min(100, pct));
+    el.style.width = pct + "%";
+    el.className = pct >= 90 ? "crit" : pct >= 70 ? "hot" : "";
+}
+
+function drawSpark(canvas, hist, color) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (hist.length < 2) return;
+    ctx.beginPath();
+    hist.forEach((v, i) => {
+        const x = (i / (hist.length - 1)) * w;
+        const y = h - 2 - (v / 100) * (h - 4);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+    ctx.fillStyle = color + "22"; ctx.fill();
+}
+
+function renderHardware(hw) {
+    const cpu = hw.cpu?.percent ?? 0;
+    $("cpu-pct").textContent = cpu.toFixed(0) + "%";
+    $("cpu-text").innerHTML = cpu.toFixed(0) + "<small> %</small>";
+    setBar($("cpu-bar"), cpu);
+    state.cpuHist.push(cpu); if (state.cpuHist.length > 60) state.cpuHist.shift();
+    drawSpark($("cpu-spark"), state.cpuHist, "#4f8cff");
+
+    const mem = hw.memory || {};
+    $("mem-pct").textContent = (mem.percent ?? 0).toFixed(0) + "%";
+    $("mem-text").innerHTML = fmtGB(mem.usedBytes || 0) + "<small> / " + fmtGB(mem.totalBytes || 0) + "</small>";
+    setBar($("mem-bar"), mem.percent || 0);
+    state.memHist.push(mem.percent || 0); if (state.memHist.length > 60) state.memHist.shift();
+    drawSpark($("mem-spark"), state.memHist, "#34d399");
+
+    const gpu = hw.gpu;
+    if (gpu) {
+        $("gpu-name").innerHTML = `<small>${gpu.name || "—"}</small>`;
+        const util = gpu.utilizationPercent;
+        $("gpu-util").textContent = util == null ? "—" : util.toFixed(0) + "%";
+        setBar($("gpu-bar"), util ?? 0);
+        const parts = [`显存 <b>${fmtGB(gpu.vramUsedBytes || 0)} / ${fmtGB(gpu.vramTotalBytes || 0)}</b>`];
+        if (gpu.temperatureC != null) parts.push(`温度 <b>${gpu.temperatureC.toFixed(0)}°C</b>`);
+        $("gpu-kv").innerHTML = parts.join("　");
+    } else {
+        $("gpu-name").innerHTML = "<small>nvidia-smi 不可用</small>";
+        $("gpu-util").textContent = "—"; setBar($("gpu-bar"), 0);
+        $("gpu-kv").textContent = "未检测到 NVIDIA GPU";
+    }
+
+    const zones = hw.thermalZones || [];
+    const diskTemps = (hw.disks || []).filter(d => d.temperatureC != null);
+    const temps = [];
+    if (gpu?.temperatureC != null) temps.push({ name: "GPU", t: gpu.temperatureC });
+    for (const z of zones) temps.push({ name: z.name, t: z.temperatureC });
+    for (const d of diskTemps) temps.push({ name: "磁盘 " + d.mount, t: d.temperatureC });
+    if (temps.length) {
+        temps.sort((a, b) => b.t - a.t);
+        $("temp-main").innerHTML = temps[0].t.toFixed(0) + `<small> °C · ${temps[0].name}</small>`;
+        $("temp-max").textContent = temps[0].t.toFixed(0) + "°C";
+        setBar($("temp-bar"), temps[0].t);
+        $("temp-kv").innerHTML = temps.map(t => `${t.name} <b>${t.t.toFixed(0)}°C</b>`).join("　");
+    } else {
+        $("temp-main").textContent = "—";
+        $("temp-max").textContent = "—"; setBar($("temp-bar"), 0);
+    }
+
+    const disks = hw.disks || [];
+    $("disks").innerHTML = disks.length ? disks.map(d => {
+        const temp = d.temperatureC != null ? ` <span style="color:var(--muted)">${d.temperatureC.toFixed(0)}°C</span>` : "";
+        return `<div class="disk-row">
+            <div class="label"><span>${d.mount}</span><span>${d.percent.toFixed(0)}%${temp}</span></div>
+            <div class="bar"><i class="${d.percent >= 90 ? "crit" : d.percent >= 70 ? "hot" : ""}" style="width:${d.percent}%"></i></div>
+            <div class="kv"><b>${fmtGB(d.usedBytes)}</b> 可用 ${fmtGB(d.totalBytes - d.usedBytes)}</div>
+        </div>`;
+    }).join("") : "—";
+}
+
+async function pollState() {
+    try {
+        const s = await api("/api/state");
+        $("ver").textContent = "v" + s.version;
+        $("repo").textContent = s.repo;
+        state.frontendUrl = s.frontendUrl || state.frontendUrl;
+        renderServices(s.services);
+        renderGuardian(s.guardian);
+        $("foot-hint").textContent = s.backendExeExists
+            ? "后端使用 .local/tools/infinite-canvas-backend.exe。"
+            : "后端 exe 不存在，启动时会自动用内置 Go 编译。";
+    } catch (e) { /* state 轮询失败忽略，下轮重试 */ }
+}
+
+async function pollHw() {
+    try { renderHardware(await api("/api/hw")); } catch (e) { /* 同上 */ }
+}
+
+function renderComfy(c) {
+    if (!c.up) {
+        $("comfy-queue").textContent = "离线";
+        $("comfy-main").textContent = "—";
+        $("comfy-kv").textContent = "ComfyUI 未运行（127.0.0.1:8188），可在上方服务卡片启动";
+        setBar($("comfy-bar"), 0);
+        return;
+    }
+    const q = c.queueRunning != null ? `运行 ${c.queueRunning} · 排队 ${c.queuePending}` : "—";
+    $("comfy-queue").textContent = q;
+    const used = Math.max(0, (c.vramTotal || 0) - (c.vramFree || 0));
+    const pct = c.vramTotal ? used / c.vramTotal * 100 : 0;
+    $("comfy-main").innerHTML = fmtGB(used) + "<small> / " + fmtGB(c.vramTotal || 0) + "</small>";
+    setBar($("comfy-bar"), pct);
+    const parts = [];
+    if (c.version) parts.push("ComfyUI <b>v" + c.version + "</b>");
+    if (c.deviceName) parts.push(c.deviceName);
+    if (c.ramFree != null) parts.push("RAM 空闲 " + fmtGB(c.ramFree));
+    parts.push(`网关 :${c.gatewayPort ?? "8765"}`);
+    $("comfy-kv").innerHTML = parts.join("　");
+}
+
+async function pollComfy() {
+    try { renderComfy(await api("/api/comfy")); } catch (e) { /* 同上 */ }
+}
+
+// ---------- 生成任务流 ----------
+const TASK_STATUS = {
+    queued:    ["排队", "stopped"],
+    running:   ["运行中", "starting"],
+    succeeded: ["完成", "running"],
+    failed:    ["失败", "failed"],
+    cancelled: ["取消", "cancelled"],
+};
+
+function renderTasks(d) {
+    const body = $("tasks-body"), empty = $("tasks-empty"), summary = $("task-summary");
+    const tasks = d.tasks || [];
+    if (!d.available) {
+        body.innerHTML = ""; empty.hidden = false;
+        empty.textContent = "任务不可用：" + (d.reason || "未知原因");
+        summary.textContent = "";
+        return;
+    }
+    if (!tasks.length) {
+        body.innerHTML = ""; empty.hidden = false;
+        empty.textContent = "暂无生成任务";
+        summary.textContent = "";
+        return;
+    }
+    empty.hidden = true;
+    const running = tasks.filter(t => t.status === "running" || t.status === "queued").length;
+    const failed = tasks.filter(t => t.status === "failed").length;
+    summary.innerHTML = `<b class="run">${running} 进行中</b> · <b class="bad">${failed} 失败</b> · 最近 ${tasks.length} 条`;
+    body.innerHTML = tasks.map(t => {
+        const [label, cls] = TASK_STATUS[t.status] || [t.status, "stopped"];
+        const meta = [t.type, t.model].filter(Boolean).join(" · ");
+        const prog = t.status === "running" && t.progress != null
+            ? `<span class="tprog">${Math.round(t.progress)}%</span>${t.stage ? " " + t.stage : ""}` : "";
+        const err = t.status === "failed" ? `<div style="color:var(--red);font-size:12px;margin-top:2px">${t.error || t.errorCode || ""}</div>` : "";
+        return `<tr>
+            <td><span class="pill ${cls}">${label}</span></td>
+            <td class="t-meta"><b>${meta || "—"}</b></td>
+            <td class="t-prompt">${escapeHtml(t.prompt || "")}${err}</td>
+            <td class="t-meta">${prog}</td>
+            <td class="t-meta">${relTime(t.updatedAt || t.createdAt)}</td>
+        </tr>`;
+    }).join("");
+}
+
+function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function relTime(iso) {
+    if (!iso) return "—";
+    const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (sec < 60) return Math.floor(sec) + " 秒前";
+    if (sec < 3600) return Math.floor(sec / 60) + " 分钟前";
+    if (sec < 86400) return Math.floor(sec / 3600) + " 小时前";
+    return Math.floor(sec / 86400) + " 天前";
+}
+
+async function pollTasks() {
+    try { renderTasks(await api("/api/tasks")); } catch (e) { /* 静默重试 */ }
+}
+
+// ---------- GPU 进程 ----------
+async function pollGpuProcs() {
+    try {
+        const d = await api("/api/gpu-procs");
+        const el = $("gpu-procs");
+        if (!d.procs || !d.procs.length) { el.innerHTML = "暂无进程占用显存"; return; }
+        el.innerHTML = d.procs.slice(0, 4).map(p =>
+            `<div>${escapeHtml(p.name)} ${p.memMiB > 0 ? "<b>" + (p.memMiB / 1024).toFixed(1) + " GB</b>" : '<span style="opacity:.55">(WDDM 未上报占用)</span>'} <span style="opacity:.6">pid ${p.pid}</span></div>`).join("");
+    } catch (e) { /* 静默 */ }
+}
+
+// ---------- 过夜守护 ----------
+function renderGuardian(g) {
+    if (!g) return;
+    const box = $("guardian");
+    box.checked = !!g.enabled;
+    box.closest(".guardian").classList.toggle("on", !!g.enabled);
+    const bits = [];
+    if (g.restarts > 0) bits.push(`本次已重启 ${g.restarts} 次`);
+    if (g.lastNote) bits.push(g.lastNote);
+    $("guardian-note").textContent = bits.join(" · ");
+}
+
+$("guardian").addEventListener("change", async () => {
+    try {
+        const g = await api("/api/guardian", "POST", { enabled: $("guardian").checked });
+        renderGuardian(g);
+        toast(g.enabled ? "过夜守护已开启（需保持看板运行）" : "过夜守护已关闭");
+    } catch (e) { toast("切换失败：" + e.message); }
+});
+
+async function pollLogs() {
+    const name = state.activeTab;
+    try {
+        const data = await api(`/api/logs?name=${name}&after=${state.cursor[name]}`);
+        if (data.lines.length) {
+            state.cursor[name] = data.next;
+            const view = $("logview");
+            const stick = $("follow").checked &&
+                view.scrollTop + view.clientHeight >= view.scrollHeight - 30;
+            view.textContent += data.lines.map(l => l.text).join("\n") + "\n";
+            if (stick) view.scrollTop = view.scrollHeight;
+        }
+    } catch (e) { /* 日志失败忽略 */ }
+}
+
+$("log-tabs").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-name]");
+    if (!btn) return;
+    document.querySelectorAll("#log-tabs button").forEach(b => b.classList.toggle("active", b === btn));
+    state.activeTab = btn.dataset.name;
+    $("logview").textContent = "";
+});
+
+$("btn-start-all").onclick = async () => {
+    try { await api("/api/start", "POST", { name: "all" }); toast("依序启动：后端 → Owner 代理 → 前端"); }
+    catch (e) { toast("启动失败：" + e.message); }
+};
+$("btn-stop-all").onclick = async () => {
+    if (!confirm("将停止后端、Owner 代理和前端（包括外部方式启动的进程），确认？")) return;
+    try { await api("/api/stop", "POST", { name: "all" }); toast("停止所有服务…"); }
+    catch (e) { toast("停止失败：" + e.message); }
+};
+$("btn-open-frontend").onclick = async () => {
+    try { await api("/api/open", "POST", { name: "frontend" }); }
+    catch (e) { toast("打开失败：" + e.message); }
+};
+const openTarget = (name) => async () => {
+    try { await api("/api/open", "POST", { name }); } catch (e) { toast("打开失败：" + e.message); }
+};
+$("btn-open-datadir").onclick = openTarget("datadir");
+$("btn-open-localdir").onclick = openTarget("localdir");
+$("btn-open-comfy").onclick = openTarget("comfy");
+$("btn-rebuild").onclick = async () => {
+    $("btn-rebuild").disabled = true;
+    toast("正在编译后端（约 30–90 秒）…");
+    try {
+        await api("/api/rebuild-backend", "POST");
+        toast("后端编译完成");
+    } catch (e) { toast("编译失败：" + e.message); }
+    $("btn-rebuild").disabled = false;
+};
+$("btn-shutdown").onclick = async () => {
+    if (!confirm("退出看板？由看板启动的服务会被停止；外部启动的服务不受影响。")) return;
+    try { await api("/api/shutdown", "POST"); } catch (e) { /* 进程即将退出 */ }
+    toast("看板已退出，本页将不可用");
+};
+
+pollState(); pollHw(); pollComfy(); pollTasks(); pollGpuProcs(); pollLogs();
+setInterval(pollState, 2000);
+setInterval(pollHw, 2000);
+setInterval(pollComfy, 2000);
+setInterval(pollTasks, 3000);
+setInterval(pollGpuProcs, 3000);
+setInterval(pollLogs, 1500);
+</script>
+</body>
+</html>

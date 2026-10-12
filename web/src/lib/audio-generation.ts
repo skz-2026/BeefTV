@@ -1,4 +1,5 @@
 export const audioVoiceOptions = [
+    { value: "design", label: "音色设计（描述→新音色）" },
     { value: "alloy", label: "Alloy" },
     { value: "ash", label: "Ash" },
     { value: "ballad", label: "Ballad" },

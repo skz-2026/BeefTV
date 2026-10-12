@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"infinite-canvas/backend/internal/sysproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,7 @@ func PrepareWAV(ctx context.Context, reader io.Reader, mime string) (string, fun
 	}
 	wavPath := filepath.Join(tmpDir, "audio16k.wav")
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-y", "-i", inPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath)
+	sysproc.HideConsole(cmd)
 	output, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		cleanup()

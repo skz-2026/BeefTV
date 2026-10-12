@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"infinite-canvas/backend/internal/sysproc"
 	"math"
 	"os/exec"
 	"strconv"
@@ -19,6 +20,7 @@ func Probe(ctx context.Context, path string) (SourceFacts, error) {
 	cmd := exec.CommandContext(ctx, bin,
 		"-v", "error", "-show_entries", "stream=codec_type:format=duration",
 		"-of", "json", path)
+	sysproc.HideConsole(cmd)
 	output, runErr := cmd.Output()
 	if runErr != nil {
 		return SourceFacts{}, fmt.Errorf("媒体音轨探测失败: %w", runErr)

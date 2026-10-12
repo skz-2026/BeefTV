@@ -110,10 +110,11 @@ func DefaultRuntimePolicy() RuntimePolicySetting {
 			RecycleBinRetentionDays: 30,
 		},
 		Task: RuntimeTaskPolicy{
-			WorkerConcurrency:        effectiveChannelConcurrencyLimit(envInt("CANVAS_WORKER_CONCURRENCY", TaskWorkerConcurrency)),
-			ChannelConcurrency:       defaultChannelConcurrencyLimit(),
-			ActiveTaskLimit:          5,
-			ImageTimeoutMinutes:      8,
+			WorkerConcurrency:  effectiveChannelConcurrencyLimit(envInt("CANVAS_WORKER_CONCURRENCY", TaskWorkerConcurrency)),
+			ChannelConcurrency: defaultChannelConcurrencyLimit(),
+			ActiveTaskLimit:    5,
+			// 生图等待时长应覆盖本地 GPU 被视频任务占用的最坏情况，可用环境变量放宽。
+			ImageTimeoutMinutes:      envInt("CANVAS_IMAGE_TIMEOUT_MINUTES", 8),
 			TextTimeoutMinutes:       8,
 			AudioTimeoutMinutes:      8,
 			VideoTimeoutMinutes:      60,

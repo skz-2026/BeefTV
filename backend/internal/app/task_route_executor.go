@@ -21,6 +21,7 @@ type taskRouteExecutionPort interface {
 	finishTaskRouteAttempt(attempt *model.RouteAttempt, task *model.Task, taskErr error)
 	nextRouteAttemptAfterFailure(task *model.Task, attempt *model.RouteAttempt, taskErr error) (*model.RouteAttempt, error)
 	log(userID string, taskID string, level string, message string, payload string) error
+	usesPaidImageChannel(channelID string, taskModelRef string) bool
 }
 
 type taskRouteExecutionResult struct {
@@ -37,6 +38,15 @@ type taskRouteServiceAdapter struct {
 	finishAttempt    func(*model.RouteAttempt, *model.Task, error)
 	nextAfterFailure func(*model.Task, *model.RouteAttempt, error) (*model.RouteAttempt, error)
 	writeLog         func(string, string, string, string, string) error
+	paidImageChannel func(channelID string, taskModelRef string) bool
+}
+
+// usesPaidImageChannel 委托给可替换的判断函数；未注入（如旧测试桩）时按付费渠道处理，保持原有锁定行为。
+func (a taskRouteServiceAdapter) usesPaidImageChannel(channelID string, taskModelRef string) bool {
+	if a.paidImageChannel == nil {
+		return true
+	}
+	return a.paidImageChannel(channelID, taskModelRef)
 }
 
 func (a taskRouteServiceAdapter) markRouteAttemptDispatching(attempt *model.RouteAttempt) error {
@@ -68,6 +78,7 @@ func newTaskRouteExecutor(s *Service) *taskRouteExecutor {
 		markDispatching: s.markRouteAttemptDispatching, process: s.processTask,
 		refreshState: s.refreshTaskProviderState, finishAttempt: s.finishTaskRouteAttempt,
 		nextAfterFailure: s.nextRouteAttemptAfterFailure, writeLog: s.log,
+		paidImageChannel: s.channelUsesPaidImageSubmission,
 	}}
 }
 
@@ -97,7 +108,13 @@ func (e *taskRouteExecutor) execute(ctx context.Context, task *model.Task, attem
 			break
 		}
 		if task.Type == "canvas_image" && attempt != nil && attempt.DispatchState == "submission_unknown" && !isImageRecoveryError(execution.err) {
-			execution.err = imageRecoveryError{execution.err}
+			// 付费渠道：请求已发出但结果未知，必须锁定防止重复扣费；
+			// 本地/免费网关没有计费风险，按「本地忙碌」处理保持可重试。
+			if e.port.usesPaidImageChannel(attempt.ChannelID, task.Model) {
+				execution.err = imageRecoveryError{execution.err}
+			} else {
+				execution.err = localImageBusyError{execution.err}
+			}
 		}
 		var upstream providerHTTPError
 		if task.Type == "canvas_image" && attempt != nil && attempt.AttemptNumber < 3 && definiteImageThrottle(execution.err) && errors.As(execution.err, &upstream) {

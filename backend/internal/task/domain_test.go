@@ -211,9 +211,14 @@ func (r *drainRuntime) Dispatch(fn func()) bool {
 	return true
 }
 
-type imageGuard struct{ err error }
+type imageGuard struct {
+	err            error
+	allowUncertain bool
+}
 
 func (g imageGuard) ValidateRetry(*model.Task) error { return g.err }
+
+func (g imageGuard) AllowsRetryUnlock(*model.Task) bool { return g.allowUncertain }
 
 type failClass struct {
 	block      bool

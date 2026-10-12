@@ -2,6 +2,7 @@ package systemstats
 
 import (
 	"context"
+	"infinite-canvas/backend/internal/sysproc"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -16,7 +17,9 @@ const gpuProbeTimeout = 3 * time.Second
 func probeGPU(ctx context.Context) *GPUStatus {
 	probeCtx, cancel := context.WithTimeout(ctx, gpuProbeTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(probeCtx, "nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits").Output()
+	cmd := exec.CommandContext(probeCtx, "nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits")
+	sysproc.HideConsole(cmd)
+	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

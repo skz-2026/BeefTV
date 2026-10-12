@@ -1,0 +1,262 @@
+{
+  "_README": [
+    "稳定版 dub+flf：结构与 hybrid-dub-flf 完全一致，仅两处差异——",
+    "1) 去掉 turbo LoRA：官方 docs.comfy.org 明确参考图驱动镜头应关闭 Lightning/Turbo 加速件，",
+    "   低步数下参考图 barely applied，是身份/画风漂移（不稳定）的主因；",
+    "2) 步数 6 -> 20：官方基线非加速 20 步（参考漂移严重可升 25）。",
+    "代价：采样时间约为 turbo 6 步的 3~3.5 倍。分辨率建议显式传 1344x768（原生 768 短边约 1MP）。",
+    "音频为 lock_source+denoise 0 直通，步数不影响台词音色。",
+    "2026-10-12 修复参考槽错位（与 hybrid-dub-flf 同源 bug）：T8 的 <Picture N> 编号=[first_frame, last_frame, ref_image_1...]，",
+    "原接线参考槽从 IMAGE_2 起（与 last_frame 重复），提示词里 <Picture 3/4> 的角色稿描述整体错一格。现改为 IMAGE_3..IMAGE_7，",
+    "连线顺序 [首帧, 尾帧, 稿A, 稿B...] → Picture 1=首帧 / 2=尾帧 / 3+=角色稿。"
+  ],
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+  },
+  "21": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE}}",
+      "upload": "image"
+    }
+  },
+  "22": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_3}}",
+      "upload": "image"
+    }
+  },
+  "23": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_4}}",
+      "upload": "image"
+    }
+  },
+  "24": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_5}}",
+      "upload": "image"
+    }
+  },
+  "25": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_6}}",
+      "upload": "image"
+    }
+  },
+  "26": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_7}}",
+      "upload": "image"
+    }
+  },
+  "6": {
+    "class_type": "MiniMaxH3AudioConditioningT8",
+    "inputs": {
+      "clip": [
+        "3",
+        0
+      ],
+      "video_vae": [
+        "4",
+        0
+      ],
+      "audio_vae": [
+        "5",
+        0
+      ],
+      "first_frame": [
+        "21",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "22",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "23",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "24",
+        0
+      ],
+      "ref_images.ref_image_3": [
+        "25",
+        0
+      ],
+      "ref_images.ref_image_4": [
+        "26",
+        0
+      ],
+      "prompt": "{{PROMPT}}, strict style lock: keep the exact art style of the first frame and the character reference sheets throughout; every face stays locked to its sheet, no style or identity drift.",
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "length": "{{FRAMES}}",
+      "task_type": "Hybrid",
+      "audio_mode": "lock_source",
+      "audio_denoise_strength": 0.0,
+      "add_source_as_reference": true,
+      "prompt_primary_audio_ordinal": 1,
+      "strict_prompt_tags": true,
+      "ref_image_size": "match",
+      "reference_video_policy": "official_2_to_15s",
+      "drive_audio": [
+        "31",
+        0
+      ],
+      "last_frame": [
+        "27",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "MiniMaxH3DualClockSamplerT8",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "av_latent": [
+        "6",
+        1
+      ],
+      "steps": 20,
+      "shift_video": 12,
+      "shift_audio": 3
+    }
+  },
+  "8": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "7",
+        0
+      ],
+      "conditioning": [
+        "6",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": "{{SEED}}",
+      "control": "fixed"
+    }
+  },
+  "10": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "9",
+        0
+      ],
+      "guider": [
+        "8",
+        0
+      ],
+      "sampler": [
+        "7",
+        1
+      ],
+      "sigmas": [
+        "7",
+        2
+      ],
+      "latent_image": [
+        "6",
+        1
+      ]
+    }
+  },
+  "11": {
+    "class_type": "MiniMaxH3AVDecodeT8",
+    "inputs": {
+      "av_latent": [
+        "10",
+        0
+      ],
+      "video_vae": [
+        "4",
+        0
+      ],
+      "audio_vae": [
+        "5",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "audio": [
+        "11",
+        1
+      ],
+      "frame_rate": 24,
+      "loop_count": 0,
+      "filename_prefix": "MiniMaxH3/beeftv_hybrid_steady",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 19,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true
+    }
+  },
+  "31": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "{{AUDIO}}"
+    },
+    "_meta": {
+      "title": "台词驱动"
+    }
+  },
+  "27": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_2}}"
+    },
+    "_meta": {
+      "title": "尾帧"
+    }
+  }
+}

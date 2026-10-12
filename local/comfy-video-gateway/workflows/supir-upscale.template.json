@@ -1,0 +1,173 @@
+{
+  "22": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "SDXL\\sd_xl_base_1.0_0.9vae.safetensors"
+    }
+  },
+  "21": {
+    "class_type": "SUPIR_model_loader_v2",
+    "inputs": {
+      "model": [
+        "22",
+        0
+      ],
+      "clip": [
+        "22",
+        1
+      ],
+      "vae": [
+        "22",
+        2
+      ],
+      "supir_model": "SUPIR-v0F_fp16.safetensors",
+      "fp8_unet": false,
+      "diffusion_dtype": "auto",
+      "high_vram": false
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE}}",
+      "upload": "image"
+    }
+  },
+  "13": {
+    "class_type": "ImageResizeKJv2",
+    "inputs": {
+      "image": [
+        "2",
+        0
+      ],
+      "width": "{{WIDTH}}",
+      "height": "{{HEIGHT}}",
+      "upscale_method": "lanczos",
+      "keep_proportion": "stretch",
+      "pad_color": "0, 0, 0",
+      "crop_position": "center",
+      "divisible_by": 16
+    }
+  },
+  "5": {
+    "class_type": "SUPIR_first_stage",
+    "inputs": {
+      "SUPIR_VAE": [
+        "21",
+        1
+      ],
+      "image": [
+        "13",
+        0
+      ],
+      "use_tiled_vae": true,
+      "encoder_tile_size": 512,
+      "decoder_tile_size": 512,
+      "encoder_dtype": "auto"
+    }
+  },
+  "11": {
+    "class_type": "SUPIR_encode",
+    "inputs": {
+      "SUPIR_VAE": [
+        "21",
+        1
+      ],
+      "image": [
+        "5",
+        1
+      ],
+      "use_tiled_vae": true,
+      "encoder_tile_size": 512,
+      "encoder_dtype": "auto"
+    }
+  },
+  "9": {
+    "class_type": "SUPIR_conditioner",
+    "inputs": {
+      "SUPIR_model": [
+        "21",
+        0
+      ],
+      "latents": [
+        "11",
+        0
+      ],
+      "positive_prompt": "masterpiece, best quality, 2D anime style, clean crisp lineart, sharp detailed anime eyes, vivid colors, high resolution cel shading",
+      "negative_prompt": "bad quality, blurry, messy, photograph, realistic, noisy, low resolution, watermark, text"
+    }
+  },
+  "7": {
+    "class_type": "SUPIR_sample",
+    "inputs": {
+      "SUPIR_model": [
+        "21",
+        0
+      ],
+      "latents": [
+        "11",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "9",
+        1
+      ],
+      "seed": 42,
+      "steps": 30,
+      "cfg_scale_start": 4.0,
+      "cfg_scale_end": 4.0,
+      "EDM_s_churn": 5,
+      "s_noise": 1.003,
+      "DPMPP_eta": 1.0,
+      "control_scale_start": 1.0,
+      "control_scale_end": 0.9,
+      "restore_cfg": 1.0,
+      "keep_model_loaded": false,
+      "sampler": "RestoreDPMPP2MSampler"
+    }
+  },
+  "10": {
+    "class_type": "SUPIR_decode",
+    "inputs": {
+      "SUPIR_VAE": [
+        "21",
+        1
+      ],
+      "latents": [
+        "7",
+        0
+      ],
+      "use_tiled_vae": true,
+      "decoder_tile_size": 512
+    }
+  },
+  "14": {
+    "class_type": "ColorMatch",
+    "inputs": {
+      "image_ref": [
+        "2",
+        0
+      ],
+      "image_target": [
+        "10",
+        0
+      ],
+      "method": "mkl",
+      "strength": 1.0
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "10",
+        0
+      ],
+      "filename_prefix": "supir_hd"
+    }
+  }
+}

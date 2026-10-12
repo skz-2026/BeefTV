@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"infinite-canvas/backend/internal/mediatools"
+	"infinite-canvas/backend/internal/sysproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,7 @@ func TestBundledWindowsHEVCWithoutSystemFFmpeg(t *testing.T) {
 	}
 	src, dst := filepath.Join(t.TempDir(), "源视频.mp4"), filepath.Join(t.TempDir(), "预览.mp4")
 	cmd := exec.Command(binary, "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x48:r=5:d=0.4", "-c:v", "libx265", "-x265-params", "pools=1:frame-threads=1", "-tag:v", "hvc1", "-pix_fmt", "yuv420p", src)
-	mediatools.HideConsole(cmd)
+	sysproc.HideConsole(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("HEVC fixture: %s %v", out, err)
 	}

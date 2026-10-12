@@ -1,0 +1,51 @@
+{
+ "1": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "{{IMAGE}}",
+   "upload": "image"
+  }
+ },
+ "2": {
+  "class_type": "UpscaleModelLoader",
+  "inputs": {
+   "model_name": "2x-AnimeSharpV4_Fast_RCAN_PU.safetensors"
+  }
+ },
+ "3": {
+  "class_type": "ImageUpscaleWithModel",
+  "inputs": {
+   "upscale_model": [
+    "2",
+    0
+   ],
+   "image": [
+    "1",
+    0
+   ]
+  }
+ },
+ "4": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "3",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "width": 1280,
+   "height": 704,
+   "crop": "center"
+  }
+ },
+ "5": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "4",
+    0
+   ],
+   "filename_prefix": "animesharp_hd"
+  }
+ }
+}

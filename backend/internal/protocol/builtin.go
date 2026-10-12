@@ -192,6 +192,15 @@ func openAIVideosAdapter() Adapter {
 		if r.AspectRatio != "" {
 			body["size"] = r.AspectRatio
 		}
+		copyIf(body, "resolution_name", r.Resolution)
+		// 采样参数覆盖：与 openai-videos 声明式插件契约一致，只透传 providerOptions.newapi 命名空间。
+		if namespace, ok := r.ProviderOptions["newapi"]; ok {
+			for _, key := range []string{"steps", "shift_video", "shift_audio"} {
+				if value, present := namespace[key]; present {
+					body[key] = value
+				}
+			}
+		}
 		if len(r.Images) > 0 {
 			body["input_reference"] = mediaValues(r.Images)
 		}
@@ -208,7 +217,7 @@ func openAIVideoParams() []Parameter {
 		{Name: "aspectRatio", Type: "string", Mapping: "size", Description: "视频尺寸，例如 1280x720；该协议使用 size 而不是独立的 aspect_ratio。"},
 		{Name: "videos", Type: "media[]", Mapping: "unsupported", Description: "OpenAI Videos 当前适配器不发送参考视频。"},
 		{Name: "audios", Type: "media[]", Mapping: "unsupported", Description: "OpenAI Videos 当前适配器不发送参考音频。"},
-		{Name: "resolution", Type: "string", Mapping: "unsupported", Description: "分辨率通过 size 表达。"},
+		{Name: "resolution", Type: "string", Mapping: "resolution", Description: "分辨率档位，例如 480P/720P；与 size 的比例共同决定最终分辨率，由服务端换算。"},
 		{Name: "generateAudio", Type: "boolean", Mapping: "unsupported", Description: "当前适配器不额外发送该字段。"},
 		{Name: "watermark", Type: "boolean", Mapping: "unsupported", Description: "当前适配器不额外发送该字段。"},
 	}

@@ -27,6 +27,15 @@ func applyAppFailureWrappers(err error, failure generation.Failure) generation.F
 		failure.Action = "请保留任务记录并联系支持查询结果，不要重复提交"
 		return failure
 	}
+	var busy localImageBusyError
+	if errors.As(err, &busy) {
+		// 本地/免费网关的生图失败没有计费风险：保持任务可重试，不进 submission_uncertain。
+		failure.Category = generation.CategoryProviderUnavailable
+		failure.Uncertain = false
+		failure.Reason = "本地生图等待超时"
+		failure.Action = "GPU 可能正在渲染视频任务，请等其完成后在任务上重试"
+		return failure
+	}
 	var unknown providerSubmissionUnknownError
 	if errors.As(err, &unknown) {
 		failure.Category = generation.CategorySubmissionUncertain

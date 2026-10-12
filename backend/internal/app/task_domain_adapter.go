@@ -231,6 +231,13 @@ func (a taskImagesAdapter) ValidateRetry(task *model.Task) error {
 	return a.s.validateImageTaskRetry(task)
 }
 
+func (a taskImagesAdapter) AllowsRetryUnlock(task *model.Task) bool {
+	if task == nil || task.Type != "canvas_image" {
+		return false
+	}
+	return !a.s.channelUsesPaidImageSubmission("", task.Model)
+}
+
 type taskFailuresAdapter struct{}
 
 func (taskFailuresAdapter) BlocksRetry(message, stage string) bool {

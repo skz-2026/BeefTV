@@ -40,6 +40,14 @@
     "jobTtlHours": 24,
     "imageModels": [
         "qwen-image-2.1",
-        "qwen-image-2.1-uncensored"
-    ]
+        "qwen-image-2.1-turbo",
+        "qwen-image-2.1-full",
+        "qwen-image-2.1-uncensored",
+        "qwen-image-2.1-uc-gguf"
+    ],
+    "modelImageWorkflows": {
+        "qwen-image-2.1-turbo": "workflows/qwen-t2i-turbo.template.json",
+        "qwen-image-2.1-full": "workflows/qwen-t2i-full.template.json",
+        "qwen-image-2.1-uc-gguf": "workflows/qwen-t2i-uc-gguf.template.json"
+    }
 }

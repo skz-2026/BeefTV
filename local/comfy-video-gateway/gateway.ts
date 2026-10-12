@@ -12,6 +12,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 type ExecutorKind = "comfyui" | "mock";
@@ -38,6 +39,8 @@ type GatewayConfig = {
     defaultImageTextEncoder: string;
     workflows: { text: string; image: string; imageGen: string };
     modelWorkflows: Record<string, string>;
+    // 图片模型按模型名切模板（如 UC 去审查 GGUF 用独立加载节点），未命中时回退 workflows.imageGen。
+    modelImageWorkflows: Record<string, string>;
     jobsDir: string;
     jobTtlHours: number;
 };
@@ -108,6 +111,7 @@ async function loadConfig(): Promise<GatewayConfig> {
             imageGen: String(parsed.workflows?.imageGen ?? "workflows/qwen-t2i.template.json"),
         },
         modelWorkflows: parsed.modelWorkflows ?? {},
+        modelImageWorkflows: parsed.modelImageWorkflows ?? {},
         jobsDir: path.resolve(scriptDir, String(parsed.jobsDir ?? "jobs")),
         jobTtlHours: Math.max(1, Number(parsed.jobTtlHours ?? 24)),
     };
@@ -122,25 +126,54 @@ const jobs = new Map<string, Job>();
 // 连续同类任务复用已加载模型，任务类型（模板）切换时先 /free 卸载显存。
 // 96GB 内存下 free_memory 保持 false：权重缓存留在内存，切回时免磁盘重读
 //（官方/无审查两套编码器 + DiT 合计约 68GB，内存缓存得住）。
-let gpuQueue: Promise<void> = Promise.resolve();
+let gpuRunning = false;
 let lastWorkload: string | null = null;
 
-function enqueueGpuWork<T>(workloadKey: string, task: () => Promise<T>, config: GatewayConfig): Promise<T> {
-    const run = async () => {
-        if (lastWorkload !== workloadKey) {
-            log(`切换生成负载（${lastWorkload ?? "空"} -> ${workloadKey.split(/[\\/]/).pop()}），先卸载已加载模型…`);
-            await fetch(`${config.comfyuiUrl}/free`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ unload_models: true, free_memory: false }),
-            }).catch(() => undefined);
-            lastWorkload = workloadKey;
+// 生图走优先车道：插到排队视频前面（正在执行的任务无法抢占），
+// 避免视频连发时画布生图被堵到上游超时。同车道内保持 FIFO。
+type GPULane = "image" | "video";
+type GPUPendingJob = {
+    workloadKey: string;
+    lane: GPULane;
+    task: () => Promise<unknown>;
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
+};
+const gpuPending: GPUPendingJob[] = [];
+
+function enqueueGpuWork<T>(workloadKey: string, task: () => Promise<T>, config: GatewayConfig, lane: GPULane = "video"): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        gpuPending.push({ workloadKey, lane, task: task as () => Promise<unknown>, resolve: resolve as (value: unknown) => void, reject });
+        pumpGpuQueue(config);
+    });
+}
+
+function pumpGpuQueue(config: GatewayConfig): void {
+    if (gpuRunning || gpuPending.length === 0) return;
+    const index = gpuPending.some((job) => job.lane === "image")
+        ? gpuPending.findIndex((job) => job.lane === "image")
+        : 0;
+    const [next] = gpuPending.splice(index, 1);
+    gpuRunning = true;
+    void (async () => {
+        try {
+            if (lastWorkload !== next.workloadKey) {
+                log(`切换生成负载（${lastWorkload ?? "空"} -> ${next.workloadKey.split(/[\\/]/).pop()}），先卸载已加载模型…`);
+                await fetch(`${config.comfyuiUrl}/free`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ unload_models: true, free_memory: false }),
+                }).catch(() => undefined);
+                lastWorkload = next.workloadKey;
+            }
+            next.resolve(await next.task());
+        } catch (error) {
+            next.reject(error);
+        } finally {
+            gpuRunning = false;
+            pumpGpuQueue(config);
         }
-        return task();
-    };
-    const next = gpuQueue.then(run, run);
-    gpuQueue = next.then(() => undefined, () => undefined);
-    return next;
+    })();
 }
 
 function templateAbsolutePath(config: GatewayConfig, workflowPath: string): string {
@@ -206,7 +239,53 @@ function text(form: FormData, key: string): string {
     return typeof value === "string" ? value.trim() : "";
 }
 
+// ComfyUI 按需拉起：点击生成时若 ComfyUI 未运行，自动启动并等待就绪（无需定时检查）
+let comfyRevival: Promise<boolean> | null = null;
+let lastComfySpawn = 0;
+async function probeComfy(config: GatewayConfig): Promise<boolean> {
+    // 快速拒绝(<1.5s)=真死；超时=忙但活着（渲染中响应会变慢，不能误判）
+    const t0 = Date.now();
+    try {
+        const r = await fetch(`${config.comfyuiUrl}/system_stats`, { signal: AbortSignal.timeout(15000) });
+        return r.ok;
+    } catch {
+        return Date.now() - t0 < 1500;
+    }
+}
+async function ensureComfy(config: GatewayConfig): Promise<void> {
+    if (await probeComfy(config)) return;
+    if (Date.now() - lastComfySpawn < 180_000) {
+        log("拉起冷却中（180 秒内已拉起过），等待现有实例就绪");
+        return;
+    }
+    if (!comfyRevival) {
+        log("ComfyUI 不可达 - 按需自动拉起");
+        lastComfySpawn = Date.now();
+        comfyRevival = (async () => {
+            try {
+                spawn("schtasks", ["/Run", "/TN", "ComfyUI-Start"], { detached: true, stdio: "ignore" }).unref();
+            } catch (e) {
+                log(`拉起失败：${e instanceof Error ? e.message : String(e)}`);
+            }
+            const deadline = Date.now() + 150_000;
+            while (Date.now() < deadline) {
+                await new Promise((r) => setTimeout(r, 3000));
+                if (await probeComfy(config)) {
+                    log("ComfyUI 已按需恢复上线");
+                    comfyRevival = null;
+                    return;
+                }
+            }
+            comfyRevival = null;
+            log("ComfyUI 按需拉起超时（150 秒未上线）");
+        })();
+    }
+    const ok = await comfyRevival;
+    if (!ok) throw new Error("ComfyUI 按需拉起失败（150 秒未上线），请检查 start-comfy-detached.cmd");
+}
+
 async function uploadReferenceToComfy(config: GatewayConfig, file: File, index: number): Promise<string> {
+    await ensureComfy(config);
     const suffix = path.extname(file.name || "") || ".png";
     const uploadName = `beeftv-ref-${randomUUID()}${suffix}`;
     const form = new FormData();
@@ -324,14 +403,14 @@ function pruneEmptyRefSlots(workflow: Record<string, unknown>) {
 
 // 音频模板：删除没有实际音频的 LoadAudio 节点和 ref_audios.ref_audio_N / drive_audio 槽位。
 function pruneEmptyAudioSlots(workflow: Record<string, unknown>) {
-    const droppedNodes = new Set<string>();
+    const dropped = new Set<string>();
     for (const [id, node] of Object.entries(workflow)) {
         if (!node || typeof node !== "object") continue;
         const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
         if (typed.class_type !== "LoadAudio" || !typed.inputs) continue;
-        if (typeof typed.inputs.audio === "string" && !typed.inputs.audio.trim()) droppedNodes.add(id);
+        if (typeof typed.inputs.audio === "string" && !typed.inputs.audio.trim()) dropped.add(id);
     }
-    if (!droppedNodes.size) return;
+    if (!dropped.size) return;
     for (const [id, node] of Object.entries(workflow)) {
         if (!node || typeof node !== "object") continue;
         const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
@@ -339,12 +418,42 @@ function pruneEmptyAudioSlots(workflow: Record<string, unknown>) {
         for (const key of Object.keys(typed.inputs)) {
             if (key === "drive_audio" || /^ref_audios\.ref_audio_\d+$/.test(key)) {
                 const link = typed.inputs[key];
-                if (Array.isArray(link) && droppedNodes.has(String(link[0]))) delete typed.inputs[key];
+                if (Array.isArray(link) && dropped.has(String(link[0]))) delete typed.inputs[key];
             }
         }
     }
-    for (const id of droppedNodes) delete workflow[id];
-    if (droppedNodes.size) log(`音频模板：剪除 ${droppedNodes.size} 个空音频槽位`);
+    for (const id of dropped) delete workflow[id];
+    if (dropped.size) log(`音频模板：剪除 ${dropped.size} 个空音频槽位`);
+}
+
+// 兜底剪枝：删除仍带空文件名的 LoadImage/LoadAudio（如只连 1 张图时 last_frame 落空），
+// 并摘掉条件节点上指向已删节点的可选媒体槽（keyframe / ref / drive_audio / edit 槽）。
+// 保证网关在任何请求形态下都不会把带空文件名加载器的图提交给 ComfyUI。
+function pruneEmptyMediaNodes(workflow: Record<string, unknown>) {
+    const dropped = new Set<string>();
+    for (const [id, node] of Object.entries(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: { image?: unknown; audio?: unknown } };
+        const emptyImage = typed.class_type === "LoadImage" && typeof typed.inputs?.image === "string" && !typed.inputs.image.trim();
+        const emptyAudio = typed.class_type === "LoadAudio" && typeof typed.inputs?.audio === "string" && !typed.inputs.audio.trim();
+        if (emptyImage || emptyAudio) dropped.add(id);
+    }
+    if (!dropped.size) return;
+    for (const node of Object.values(workflow)) {
+        if (!node || typeof node !== "object") continue;
+        const typed = node as { class_type?: string; inputs?: Record<string, unknown> };
+        if (typed.class_type !== "MiniMaxH3AudioConditioningT8" && typed.class_type !== "TextEncodeQwenImage21") continue;
+        for (const key of Object.keys(typed.inputs ?? {})) {
+            const optionalMediaSlot =
+                key.startsWith("ref_images.") || key.startsWith("ref_audios.") || key.startsWith("images.image_") ||
+                key === "drive_audio" || key === "first_frame" || key === "last_frame";
+            if (!optionalMediaSlot) continue;
+            const link = typed.inputs?.[key];
+            if (Array.isArray(link) && dropped.has(String(link[0]))) delete typed.inputs?.[key];
+        }
+    }
+    for (const id of dropped) delete workflow[id];
+    if (dropped.size) log(`媒体槽兜底剪枝：删除 ${dropped.size} 个空加载节点（请求未提供对应素材）`);
 }
 
 function assertNoLeftoverPlaceholders(workflow: unknown) {    const leftovers = new Set<string>();
@@ -360,6 +469,23 @@ function assertNoLeftoverPlaceholders(workflow: unknown) {    const leftovers = 
     walk(workflow);
     if (leftovers.size > 0) {
         throw new Error(`工作流模板中存在未识别或缺少输入的占位符：${[...leftovers].join("、")}。请检查请求参数或模板字段。`);
+    }
+}
+
+// 图完整性防线：剪槽后若仍有链接指向不存在的节点（模板存在网关未覆盖的挂载形态），
+// 宁可 400 报错也不把坏图提交给 ComfyUI——这是"任何请求形态都不会提交坏图"的结构性保证。
+function assertNoDanglingLinks(workflow: unknown) {
+    if (!workflow || typeof workflow !== "object") return;
+    const ids = new Set(Object.keys(workflow as Record<string, unknown>));
+    const dangling: string[] = [];
+    for (const [id, node] of Object.entries(workflow as Record<string, unknown>)) {
+        if (!node || typeof node !== "object") continue;
+        for (const [key, value] of Object.entries((node as { inputs?: Record<string, unknown> }).inputs ?? {})) {
+            if (Array.isArray(value) && !ids.has(String(value[0]))) dangling.push(`${id}.${key}->${value[0]}`);
+        }
+    }
+    if (dangling.length) {
+        throw new Error(`工作流存在悬空链接（模板挂载形态未被剪槽逻辑覆盖）：${dangling.join("、")}`);
     }
 }
 
@@ -394,14 +520,46 @@ async function loadTemplate(config: GatewayConfig, job: Job) {
     return { templatePath, workflow: parsed };
 }
 
+// 采样参数覆盖：BeefTV 渠道模型 defaultOptions 经 openai-videos 插件转成表单字段（providerOptions.newapi）。
+// 缺省字段保持模板值；steps/shift_video/shift_audio 只作用于 MiniMaxH3DualClockSamplerT8 采样器节点。
+function applySamplerOverrides(workflow: Record<string, unknown>, form: FormData, jobId: string) {
+    const overrides: Record<string, number> = {};
+    const numeric = (key: string, min: number, max: number) => {
+        const raw = Number(text(form, key));
+        if (!Number.isFinite(raw) || raw <= 0) return;
+        overrides[key] = Math.min(max, Math.max(min, raw));
+    };
+    numeric("steps", 2, 12);
+    numeric("shift_video", 1, 25);
+    numeric("shift_audio", 1, 10);
+    if (!Object.keys(overrides).length) return;
+    let touched = 0;
+    for (const value of Object.values(workflow)) {
+        if (value && typeof value === "object" && (value as { class_type?: unknown }).class_type === "MiniMaxH3DualClockSamplerT8") {
+            const inputs = (value as { inputs: Record<string, unknown> }).inputs;
+            for (const [key, val] of Object.entries(overrides)) inputs[key] = val;
+            touched += 1;
+        }
+    }
+    if (touched) log(`任务 ${jobId} 采样覆盖：${JSON.stringify(overrides)}（${touched} 个采样器节点）`);
+}
+
 async function parseSize(form: FormData, config: GatewayConfig): Promise<{ width: number; height: number; size: string }> {
     const raw = text(form, "size");
     // H3 等本地模型要求宽高被 32 整除；对请求尺寸向下取整对齐，保持画幅且不放大显存需求。
     const snap32 = (value: number) => Math.max(32, Math.floor(value / 32) * 32);
-    // 画幅别名（BeefTV 节点会传 "16:9" 这类比例字符串）→ 32 对齐的默认分辨率
+    // 画幅别名（BeefTV 节点会传 "16:9" 这类比例字符串）→ 32 对齐的基准分辨率（720P 档）
     const aspectAlias: Record<string, [number, number]> = {
         "16:9": [1280, 704], "9:16": [704, 1280], "1:1": [960, 960], "4:3": [1024, 768], "3:4": [768, 1024], "21:9": [1344, 576],
     };
+    // 分辨率档位（后端 vquality，如 480p/720p）只在比例别名换算时生效；显式 WxH 以请求为准。
+    // 480P=基准的 0.625 倍线性缩放后取整对齐；720P 及未知档位回落基准。1080P 在 16GB 显存上易 OOM，同样回落。
+    const tierRaw = (text(form, "resolution") || text(form, "resolution_name")).trim().toLowerCase();
+    const tierScale = tierRaw === "480p" || tierRaw === "480" ? 0.625 : 1;
+    const scaleAlias = (alias: [number, number]): [number, number] => [
+        Math.max(32, Math.round((alias[0] * tierScale) / 32) * 32),
+        Math.max(32, Math.round((alias[1] * tierScale) / 32) * 32),
+    ];
     const match = raw.match(/^(\d+)x(\d+)$/i);
     if (match) {
         const width = snap32(Number(match[1]));
@@ -410,7 +568,9 @@ async function parseSize(form: FormData, config: GatewayConfig): Promise<{ width
     }
     const alias = aspectAlias[raw.trim()];
     if (alias) {
-        return { width: alias[0], height: alias[1], size: `${alias[0]}x${alias[1]}` };
+        const [width, height] = scaleAlias(alias);
+        if (tierScale !== 1) log(`分辨率档位 ${tierRaw}：${alias[0]}x${alias[1]} → ${width}x${height}`);
+        return { width, height, size: `${width}x${height}` };
     }
     if (raw) log(`无法识别的 size 值 "${raw}"，使用默认 ${config.defaultWidth}x${config.defaultHeight}`);
     return { width: config.defaultWidth, height: config.defaultHeight, size: `${config.defaultWidth}x${config.defaultHeight}` };
@@ -442,7 +602,9 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     const { workflow } = await loadTemplate(config, job);
     const { width, height, size } = await parseSize(form, config);
     // 可选 seed 表单参数：A/B 对比/复现实验用同一种子；缺省仍随机，不影响现有调用方。
-    const seedParam = Number(text(form, "seed"));
+    // Number("")===0：字段缺失必须按"未提供"处理，否则所有无 seed 请求共用固定种子 0，重摇不换结果。
+    const seedRaw = text(form, "seed");
+    const seedParam = seedRaw === "" ? Number.NaN : Number(seedRaw);
     const seed = Number.isFinite(seedParam) && seedParam >= 0 && seedParam <= 2_147_483_647
         ? Math.floor(seedParam)
         : Math.floor(Math.random() * 2_147_483_647);
@@ -483,16 +645,22 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     }
 
     const substituted = substitutePlaceholders(workflow, context);
-    if (substituted && typeof substituted === "object") { pruneEmptyRefSlots(substituted as Record<string, unknown>); pruneEmptyAudioSlots(substituted as Record<string, unknown>); }
+    if (substituted && typeof substituted === "object") {
+        pruneEmptyRefSlots(substituted as Record<string, unknown>);
+        pruneEmptyAudioSlots(substituted as Record<string, unknown>);
+        pruneEmptyMediaNodes(substituted as Record<string, unknown>);
+    }
     try {
         assertNoLeftoverPlaceholders(substituted);
+        assertNoDanglingLinks(substituted);
     } catch (error) {
         return json(res, 400, { error: { message: error instanceof Error ? error.message : String(error) } });
     }
+    applySamplerOverrides(substituted as Record<string, unknown>, form, job.id);
 
     jobs.set(job.id, job);
     await fs.mkdir(path.join(config.jobsDir, job.id), { recursive: true });
-    log(`任务 ${job.id} 已创建：model=${model} mode=${mode} seconds=${seconds} size=${size} seed=${seed}`);
+    log(`任务 ${job.id} 已创建：model=${model} 模板=${path.basename(job.workflowPath)}${override ? "" : "（未注册模型名，按参考图回退默认模板）"} mode=${mode} seconds=${seconds} size=${size} seed=${seed}`);
 
     // 动漫场景模型：多参考图自动走两步流程（合成→编辑首帧→I2VA）
     const animeSceneModels = ["h3-anime-scene"];
@@ -567,6 +735,7 @@ function findVideoOutput(outputs: Record<string, unknown>): { filename: string; 
 }
 
 async function comfyRun(config: GatewayConfig, job: Job, workflow: unknown): Promise<string> {
+    await ensureComfy(config);
     job.status = "in_progress";
     const clientId = `beeftv-gateway-${randomUUID()}`;
     const submit = await fetch(`${config.comfyuiUrl}/prompt`, {
@@ -588,7 +757,13 @@ async function comfyRun(config: GatewayConfig, job: Job, workflow: unknown): Pro
     while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
         if (job.cancelled) throw new Error("任务已取消");
-        const historyResponse = await fetch(`${config.comfyuiUrl}/history/${promptId}`);
+        let historyResponse: Response;
+        try {
+            historyResponse = await fetch(`${config.comfyuiUrl}/history/${promptId}`);
+        } catch {
+            await new Promise((r) => setTimeout(r, config.pollIntervalMs));
+            continue;
+        }
         if (!historyResponse.ok) continue;
         const history = (await historyResponse.json()) as Record<string, Record<string, unknown>>;
         const entry = history[promptId];
@@ -743,12 +918,13 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
     const prompt = text(form, "prompt");
     if (!prompt) return json(res, 400, { error: { message: "prompt 不能为空" } });
     const model = text(form, "model") || "qwen-edit";
-    const sizeRaw = text(form, "size");
-    const match = sizeRaw.match(/^(\d+)x(\d+)$/i);
-    const width = match ? Number(match[1]) : 1280;
-    const height = match ? Number(match[2]) : 704;
+    // 尺寸复用 parseSize：支持显式 WxH 和 16:9/9:16 等画幅别名（此前别名会静默回落 1280x704 横图）
+    // parseSize 是 async，必须 await——漏掉会解构出 undefined，工作流拿到非法尺寸只能按参考图/默认值出小图。
+    const { width, height } = await parseSize(form, config);
     // 可选 seed 表单参数：首帧编辑复现/对照实验用同一种子；缺省随机，不影响现有调用方。
-    const editSeedParam = Number(text(form, "seed"));
+    // 同上：Number("")===0，字段缺失走随机。
+    const editSeedRaw = text(form, "seed");
+    const editSeedParam = editSeedRaw === "" ? Number.NaN : Number(editSeedRaw);
     const editSeed = Number.isFinite(editSeedParam) && editSeedParam >= 0 && editSeedParam <= 2_147_483_647
         ? Math.floor(editSeedParam)
         : Math.floor(Math.random() * 2_147_483_647);
@@ -775,9 +951,12 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
             imageNames.push(await uploadFileToComfyUI(config, Buffer.from(await inputFiles[i].arrayBuffer()), `beeftv-edit-${i}-${Date.now()}.png`));
         }
         // 2. 选择编辑模板：qwen-edit-plus（多参考独立输入，身份保真）或 qwen-edit（单图拼接）
-        const editTemplatePath = imageNames.length > 1
-            ? (config.modelWorkflows["qwen-edit-plus"] || "workflows/qwen-edit-plus.template.json")
-            : (config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
+        // 模型感知路由：model 命中 modelWorkflows 时优使用该工作流（如 supir-hd 超分修复），否则按参考图数量回退
+        const editTemplatePath = config.modelWorkflows[model]
+            ? config.modelWorkflows[model]
+            : imageNames.length > 1
+                ? (config.modelWorkflows["qwen-edit-plus"] || "workflows/qwen-edit-plus.template.json")
+                : (config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
         const editPath = templateAbsolutePath(config, editTemplatePath);
         const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
         // images[0] = 主参考（第一张），images[1..] = 附加参考
@@ -789,6 +968,8 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
         });
         // 未提供的参考图槽位：剪掉空 LoadImage 和对应 images.image_N 输入
         pruneEmptyEditRefSlots(substituted as Record<string, any>);
+        pruneEmptyMediaNodes(substituted as Record<string, any>);
+        assertNoDanglingLinks(substituted);
         const buffers = await comfyRunImages(config, substituted);
         log(`图片编辑完成：${buffers.length} 张输出`);
         return json(res, 200, {
@@ -817,6 +998,7 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 }
 
 async function comfyRunImages(config: GatewayConfig, workflow: unknown): Promise<Buffer[]> {
+    await ensureComfy(config);
     const clientId = `beeftv-gateway-${randomUUID()}`;
     const submit = await fetch(`${config.comfyuiUrl}/prompt`, {
         method: "POST",
@@ -832,7 +1014,13 @@ async function comfyRunImages(config: GatewayConfig, workflow: unknown): Promise
     const deadline = Date.now() + config.timeoutMinutes * 60_000;
     while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
-        const historyResponse = await fetch(`${config.comfyuiUrl}/history/${promptId}`);
+        let historyResponse: Response;
+        try {
+            historyResponse = await fetch(`${config.comfyuiUrl}/history/${promptId}`);
+        } catch {
+            await new Promise((r) => setTimeout(r, config.pollIntervalMs));
+            continue;
+        }
         if (!historyResponse.ok) continue;
         const history = (await historyResponse.json()) as Record<string, Record<string, unknown>>;
         const entry = history[promptId];
@@ -887,7 +1075,7 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
         model,
         prompt,
         mode: "text",
-        workflowPath: config.workflows.imageGen,
+        workflowPath: config.modelImageWorkflows[model] ?? config.workflows.imageGen,
     };
     jobs.set(job.id, job);
     const { workflow } = await loadTemplate(config, job);
@@ -911,7 +1099,7 @@ async function handleImageGeneration(req: IncomingMessage, res: ServerResponse, 
         if (config.executor === "mock") {
             throw new Error("mock 模式不支持生图；请把 executor 设为 comfyui");
         }
-        const buffers = await enqueueGpuWork(job.workflowPath, () => comfyRunImages(config, substituted), config);
+        const buffers = await enqueueGpuWork(job.workflowPath, () => comfyRunImages(config, substituted), config, "image");
         job.status = "completed";
         return json(res, 200, {
             created: Math.floor(Date.now() / 1000),

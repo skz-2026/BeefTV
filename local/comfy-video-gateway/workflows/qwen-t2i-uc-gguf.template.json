@@ -1,0 +1,83 @@
+{
+    "_README": [
+        "Qwen-Image-2.1 Uncensored 文生图（社区 UC 去审查 GGUF 量化），OpenAI Images 协议用。",
+        "上游：abenzerps/Qwen-Image-2.1-Uncensored-GGUF（UC 权重为原版权重 + 去审查 LoRA 合并）。",
+        "权重：diffusion_models/qwen-image-2.1-UC-Q4_K_M.gguf（UnetLoaderGGUF 加载，需 ComfyUI-GGUF 插件；",
+        "插件 IMG_ARCH_LIST 需含 qwen_image21，本机已本地补丁，上游尚未合并）。",
+        "注意：viggle 4 步 turbo LoRA 与 UC GGUF 权重不兼容（出图不跟提示词），必须全步数采样：",
+        "实测 20 步 cfg 2.5 euler/simple 约 1 分钟/张，提示词跟随正常。",
+        "文本编码器用官方 qwen3vl_8b_int8_convrot.safetensors（去审查在 DiT 侧），VAE 与基础版共用。",
+        "占位符：{{PROMPT}} {{NEGATIVE_PROMPT}} {{WIDTH}} {{HEIGHT}} {{SEED}} {{TEXT_ENCODER}}"
+    ],
+    "1": {
+        "class_type": "UnetLoaderGGUF",
+        "inputs": {
+            "unet_name": "qwen-image-2.1-UC-Q4_K_M.gguf"
+        }
+    },
+    "4": {
+        "class_type": "CLIPLoader",
+        "inputs": {
+            "clip_name": "{{TEXT_ENCODER}}",
+            "type": "qwen_image",
+            "device": "default"
+        }
+    },
+    "5": {
+        "class_type": "VAELoader",
+        "inputs": {
+            "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+        }
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": ["4", 0],
+            "text": "{{PROMPT}}"
+        }
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "clip": ["4", 0],
+            "text": "{{NEGATIVE_PROMPT}}"
+        }
+    },
+    "8": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {
+            "width": "{{WIDTH}}",
+            "height": "{{HEIGHT}}",
+            "batch_size": 1
+        }
+    },
+    "9": {
+        "class_type": "KSampler",
+        "inputs": {
+            "model": ["1", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "latent_image": ["8", 0],
+            "seed": "{{SEED}}",
+            "steps": 20,
+            "cfg": 2.5,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0
+        }
+    },
+    "10": {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": ["9", 0],
+            "vae": ["5", 0]
+        }
+    },
+    "11": {
+        "class_type": "SaveImage",
+        "inputs": {
+            "images": ["10", 0],
+            "filename_prefix": "QwenImage21/beeftv_t2i_uc_gguf"
+        }
+    }
+}

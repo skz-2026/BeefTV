@@ -18,10 +18,17 @@ func RecoverableImageEndpoint(req *http.Request) bool {
 	if req == nil || req.URL == nil || req.Method != http.MethodPost || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.RawQuery != "" || (req.URL.Port() != "" && req.URL.Port() != "443") {
 		return false
 	}
-	switch strings.ToLower(req.URL.Hostname()) {
+	return PaidImageHost(req.URL.Hostname()) && (req.URL.Path == "/v1/images/generations" || req.URL.Path == "/v1/images/edits")
+}
+
+// PaidImageHost reports whether hostname is a paid BeefAPI origin whose image
+// generations are billed and therefore must never be blindly re-dispatched
+// after an uncertain outcome. Local/self-hosted gateways are free and may be.
+func PaidImageHost(hostname string) bool {
+	switch strings.ToLower(hostname) {
 	case "beeftv.app", "beefapi.com", "enterprise.beefapi.com", "global.beefapi.com":
+		return true
 	default:
 		return false
 	}
-	return req.URL.Path == "/v1/images/generations" || req.URL.Path == "/v1/images/edits"
 }

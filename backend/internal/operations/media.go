@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"infinite-canvas/backend/internal/editing"
+	"infinite-canvas/backend/internal/sysproc"
 )
 
 // MediaSourceOpener is optional: domain implementations must open only owned,
@@ -434,6 +435,7 @@ func (b *limitedMediaLog) Write(p []byte) (int, error) {
 
 func mediaCommand(ctx context.Context, bin string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	sysproc.HideConsole(cmd)
 	var log limitedMediaLog
 	cmd.Stdout = &log
 	cmd.Stderr = &log

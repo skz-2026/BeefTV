@@ -2,7 +2,8 @@
   "_README": [
     "Hybrid 首帧+参考图模式：IMAGE=Qwen 首帧（管构图/人数），IMAGE_2..=三视图（管人物身份）。",
     "底模用 fl2va 全量（官方 Hybrid 归属首帧家族，参考图作为身份条件）。",
-    "task_type=Hybrid；未提供的参考槽由网关剪除。"
+    "task_type=Hybrid；未提供的参考槽由网关剪除。",
+    "2026-10-08 质量调整：采样 4→6 步（换脸部/纹理稳定性，渲染时间约+50%）；prompt 追加风格锁后缀，防画风与容貌随镜头漂移。"
   ],
   "1": {
     "class_type": "UNETLoader",
@@ -123,7 +124,7 @@
         "26",
         0
       ],
-      "prompt": "{{PROMPT}}",
+      "prompt": "{{PROMPT}}, strict style lock: keep the exact art style of the first frame and the character reference sheets throughout; every face stays locked to its sheet, no style or identity drift.",
       "width": "{{WIDTH}}",
       "height": "{{HEIGHT}}",
       "length": "{{FRAMES}}",
@@ -148,7 +149,7 @@
         "6",
         1
       ],
-      "steps": 4,
+      "steps": 6,
       "shift_video": 12,
       "shift_audio": 3
     }

@@ -47,6 +47,9 @@
 | `create.body.seconds` | `{"$toString":{"$ref":"request.duration"}}` |
 | `create.body.size` | `{"$omitEmpty":{"$ref":"request.aspectRatio"}}` |
 | `create.body.resolution_name` | `{"$omitEmpty":{"$ref":"request.resolution"}}` |
+| `create.body.steps` | `{"$omitEmpty":{"$ref":"request.providerOptions.newapi.steps"}}` |
+| `create.body.shift_video` | `{"$omitEmpty":{"$ref":"request.providerOptions.newapi.shift_video"}}` |
+| `create.body.shift_audio` | `{"$omitEmpty":{"$ref":"request.providerOptions.newapi.shift_audio"}}` |
 | `create.body.variants` | `{"$omitEmpty":{"$ref":"request.providerOptions.newapi.variants"}}` |
 | `create.files[0].name` | `"input_reference"` |
 | `create.files[0].source` | `{"$first":{"$filter":{"from":{"$sortByOrder":{"$ref":"request.images"}},"as":"media","where":{"$ne":[{"$ref":"media.role"},"mask"]}}}}` |
@@ -65,6 +68,7 @@
 ## Provider 扩展键
 
 - `providerOptions.newapi.variants`
+- `providerOptions.newapi.steps` / `providerOptions.newapi.shift_video` / `providerOptions.newapi.shift_audio`：采样参数覆盖，仅供本地 ComfyUI 网关等兼容网关消费；缺省时字段不会出现在请求中。
 
 动态模型或工作流允许使用文档声明的完整 `parameters/input/extra_body` 对象；该对象是协议本身的开放 schema，不会被宿主裁剪。
 
@@ -98,7 +102,7 @@
   "apiVersion": "beeftv.plugin/v2",
   "id": "openai-videos",
   "name": "OpenAI Videos / Sora",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": "BeefTV Contributors",
   "description": "OpenAI Videos / Sora 独立请求协议插件。",
   "documentation": "<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>",
@@ -242,6 +246,21 @@
                 "$ref": "request.resolution"
               }
             },
+            "steps": {
+              "$omitEmpty": {
+                "$ref": "request.providerOptions.newapi.steps"
+              }
+            },
+            "shift_video": {
+              "$omitEmpty": {
+                "$ref": "request.providerOptions.newapi.shift_video"
+              }
+            },
+            "shift_audio": {
+              "$omitEmpty": {
+                "$ref": "request.providerOptions.newapi.shift_audio"
+              }
+            },
             "variants": {
               "$omitEmpty": {
                 "$ref": "request.providerOptions.newapi.variants"
@@ -272,6 +291,42 @@
                 }
               },
               "filename": "input-reference.png"
+            },
+            {
+              "name": "input_reference_audio",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.audios"
+                  },
+                  0
+                ]
+              },
+              "filename": "input-reference-audio-0.wav"
+            },
+            {
+              "name": "input_reference_audio",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.audios"
+                  },
+                  1
+                ]
+              },
+              "filename": "input-reference-audio-1.wav"
+            },
+            {
+              "name": "input_reference_audio",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.audios"
+                  },
+                  2
+                ]
+              },
+              "filename": "input-reference-audio-2.wav"
             }
           ]
         },

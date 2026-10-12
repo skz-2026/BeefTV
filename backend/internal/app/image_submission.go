@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -41,6 +42,10 @@ func (s *Service) validateImageTaskRetry(task *model.Task) error {
 	}
 	if err != nil {
 		return err
+	}
+	if !s.channelUsesPaidImageSubmission(attempt.ChannelID, task.Model) {
+		// 本地/免费网关没有计费风险，超时或结果不确定都允许直接重试。
+		return nil
 	}
 	row, err := s.repo.ImageSubmission(attempt.ID, task.ID, task.UserID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -159,6 +164,60 @@ func (e imageRecoveryError) Error() string {
 	return "图片结果尚未确认，已停止自动重发；请保留任务记录并联系支持查询结果"
 }
 func (e imageRecoveryError) Unwrap() error { return e.cause }
+
+// localImageBusyError marks a canvas_image failure against a local/free
+// gateway: the request carries no charge, so the task stays user-retryable
+// instead of being locked as submission-uncertain.
+type localImageBusyError struct{ cause error }
+
+func (e localImageBusyError) Error() string {
+	return "本地生图等待超时，GPU 可能正在渲染视频任务，请等其完成后在任务上重试"
+}
+func (e localImageBusyError) Unwrap() error { return e.cause }
+
+// channelUsesPaidImageSubmission reports whether the channel routes
+// canvas_image requests to a paid BeefAPI origin whose submissions must stay
+// locked after an uncertain dispatch. Local/self-hosted gateways are free and
+// may be re-dispatched; unknown channels fail closed to the paid behavior.
+// Workspace custom-channel tasks carry the channel id only in the task model
+// ref ("channelId::modelId"), so the ref prefix is the fallback.
+func (s *Service) channelUsesPaidImageSubmission(channelID string, taskModelRef string) bool {
+	id := strings.TrimSpace(channelID)
+	if id == "" {
+		if ref := strings.TrimSpace(taskModelRef); ref != "" {
+			if prefix, _, ok := strings.Cut(ref, "::"); ok {
+				id = strings.TrimSpace(prefix)
+			}
+		}
+	}
+	if id == "" {
+		return true
+	}
+	body, err := s.ReadLocalModelConfig()
+	if err != nil || len(body) == 0 {
+		return true
+	}
+	var config struct {
+		Channels []struct {
+			ID      string `json:"id"`
+			BaseURL string `json:"baseUrl"`
+		} `json:"channels"`
+	}
+	if json.Unmarshal(body, &config) != nil {
+		return true
+	}
+	for _, channel := range config.Channels {
+		if channel.ID != id {
+			continue
+		}
+		baseURL, parseErr := url.Parse(strings.TrimSpace(channel.BaseURL))
+		if parseErr != nil || baseURL.Hostname() == "" {
+			return true
+		}
+		return generation.PaidImageHost(baseURL.Hostname())
+	}
+	return true
+}
 
 func recoverableImageEndpoint(req *http.Request) bool {
 	return generation.RecoverableImageEndpoint(req)

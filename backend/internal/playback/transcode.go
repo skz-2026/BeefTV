@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"infinite-canvas/backend/internal/mediatools"
+	"infinite-canvas/backend/internal/sysproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,7 @@ func runH264Transcode(ctx context.Context, src string, dst string) error {
 		"-pix_fmt", "yuv420p", "-vf", "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
 		"-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
 		dst)
-	mediatools.HideConsole(cmd)
+	sysproc.HideConsole(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

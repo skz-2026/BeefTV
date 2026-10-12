@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/model"
 )
 
@@ -16,6 +17,14 @@ type taskRouteExecutionPortStub struct {
 	nextAttempts   map[string]*model.RouteAttempt
 	nextErrors     map[string]error
 	processResults map[string]taskRouteExecutionStubResult
+	paidImage      *bool
+}
+
+func (p *taskRouteExecutionPortStub) usesPaidImageChannel(string, string) bool {
+	if p.paidImage == nil {
+		return true
+	}
+	return *p.paidImage
 }
 
 type taskRouteExecutionStubResult struct {
@@ -112,5 +121,66 @@ func TestTaskRouteExecutorStopsWhenRouteSwitchFails(t *testing.T) {
 	}
 	if len(p.processCalls) != 1 || len(p.finished) != 1 || len(p.logs) != 1 {
 		t.Fatalf("expected one failed route and one warning, calls=%v finished=%v logs=%v", p.processCalls, p.finished, p.logs)
+	}
+}
+
+func TestTaskRouteExecutorLocalImageTimeoutStaysRetryable(t *testing.T) {
+	paid := false
+	p := &taskRouteExecutionPortStub{
+		nextAttempts: map[string]*model.RouteAttempt{},
+		nextErrors:   map[string]error{},
+		processResults: map[string]taskRouteExecutionStubResult{
+			"route-a": {err: context.DeadlineExceeded},
+		},
+		paidImage: &paid,
+	}
+	task := &model.Task{ID: "task-1", UserID: "user-1", Type: "canvas_image", RouteID: "route-a"}
+	attempt := &model.RouteAttempt{RouteID: "route-a", DispatchState: "submission_unknown"}
+
+	result, err := (&taskRouteExecutor{port: p}).execute(context.Background(), task, attempt)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+	var busy localImageBusyError
+	if !errors.As(result.err, &busy) {
+		t.Fatalf("execution err = %v, want localImageBusyError", result.err)
+	}
+	var recovery imageRecoveryError
+	if errors.As(result.err, &recovery) {
+		t.Fatalf("local channel timeout must not be classified as imageRecoveryError")
+	}
+	failure := classifyTaskFailure(result.err)
+	if failure.Category != generation.CategoryProviderUnavailable || failure.Uncertain {
+		t.Fatalf("failure = %+v, want retryable provider-unavailable", failure)
+	}
+	if failure.BlocksAutomaticRetry() {
+		t.Fatalf("local image busy failure must not block retry")
+	}
+}
+
+func TestTaskRouteExecutorPaidImageTimeoutStaysUncertain(t *testing.T) {
+	paid := true
+	p := &taskRouteExecutionPortStub{
+		nextAttempts: map[string]*model.RouteAttempt{},
+		nextErrors:   map[string]error{},
+		processResults: map[string]taskRouteExecutionStubResult{
+			"route-a": {err: context.DeadlineExceeded},
+		},
+		paidImage: &paid,
+	}
+	task := &model.Task{ID: "task-1", UserID: "user-1", Type: "canvas_image", RouteID: "route-a"}
+	attempt := &model.RouteAttempt{RouteID: "route-a", DispatchState: "submission_unknown"}
+
+	result, err := (&taskRouteExecutor{port: p}).execute(context.Background(), task, attempt)
+	if err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+	var recovery imageRecoveryError
+	if !errors.As(result.err, &recovery) {
+		t.Fatalf("execution err = %v, want imageRecoveryError for paid channel", result.err)
+	}
+	failure := classifyTaskFailure(result.err)
+	if failure.Category != generation.CategorySubmissionUncertain || !failure.BlocksAutomaticRetry() {
+		t.Fatalf("failure = %+v, want blocking submission-uncertain", failure)
 	}
 }

@@ -260,8 +260,19 @@ function alignLiveAfterConfirmedRemote(input: {
         return decision.kind === "apply" ? decision.project : live;
     }
     if (!input.base) {
-        pauseForExternalCandidate(input.id, input.remote, input.scope);
-        return live;
+        // 后端优先：没有已确认基线时无法做三方合并，直接采纳服务端文档
+        //（保留本机视口/外观偏好），并解除历史冲突暂停，避免页面永久滞留旧内容。
+        const adopted: CanvasProject = {
+            ...input.remote,
+            viewport: live.viewport || input.remote.viewport,
+            appearance: live.appearance || input.remote.appearance,
+            backgroundMode: live.backgroundMode || input.remote.backgroundMode,
+        };
+        applyLiveCanvasProject(input.id, adopted, false);
+        invokeProjectionListener(input.onApplied, adopted, live);
+        clearCanvasExternalRevisionConflict(input.scope, input.id);
+        resumeCanvasBackendSubmit(input.id, input.scope);
+        return adopted;
     }
     const settled = settleInFlightGenerationOverlay({ base: input.base, local: live, remote: input.remote });
     const rebased = rebaseCanvasDocumentThreeWay({ base: input.base, local: settled, remote: input.remote });
@@ -311,17 +322,15 @@ async function replayPendingCanvasProjection(id: string, scope: string, expected
 }
 
 /**
- * 桌面本地：已提交真相是服务端 revision。干净缓存采用后端；未确认草稿相对已记录基线保留。
+ * 桌面本地：后端优先。服务端文档是对外权威（CLI/MCP、其他标签页都会整份写入），
+ * 只有写入排队/提交中的未保存编辑才暂时保留本地，确认后由下一次读取对齐服务端。
  */
 export function selectPreferredCanvasProject(local: CanvasProject | null | undefined, backend: CanvasProject, scope = getActiveUserScope()) {
     if (!local) return backend;
-    const recorded = canvasDocumentBase(local.id, scope);
-    if (recorded) {
-        if (sameCanvasDocument(local, recorded.snapshot) || sameCanvasDocument(local, backend)) return backend;
-        return local;
-    }
     if (sameCanvasDocument(local, backend)) return backend;
-    return local;
+    const journal = peekCanvasOperationJournal(local.id, scope);
+    if (journal?.inFlight || journal?.pendingProjection) return local;
+    return backend;
 }
 
 function pauseForExternalCandidate(id: string, remote: CanvasProject, scope: string) {
@@ -988,11 +997,12 @@ async function restoreLocalCanvasProjectFromHistoryUnlocked(
 /**
  * 外部写入（内置助手回合、CLI/MCP 操作）后把服务端内容投影到本地编辑器。
  *
- * 与 `openLocalCanvasProjectFromBackend` 的区别：这里不假设本地一定服从服务端。
- * 有服务端尚未确认的编辑时保留本地内容、把远端留作候选并记录冲突；只有确认
- * 本地没有这类编辑时才应用外部 revision。
+ * 后端优先：服务端文档是权威内容，默认直接应用；只有在写入排队/提交中
+ *（inFlight/pendingProjection）时暂缓一次，把远端留作候选并记录冲突，
+ * 避免打断正在进行的本地保存。历史冲突暂停不阻断应用——对齐成功后自动
+ * 清冲突并恢复提交。
  *
- * 「是否有未确认编辑」在 GET 返回之后、应用之前同步重算一次：等待网络期间用户
+ * 「是否有排队写入」在 GET 返回之后、应用之前同步重算一次：等待网络期间用户
  * 仍可能继续编辑，用请求发出时的判断会漏掉这些新编辑。
  */
 export async function refreshLocalCanvasProjectIfChanged(id: string, expectedScope?: CapturedUserScope) {
@@ -1018,7 +1028,9 @@ export async function refreshLocalCanvasProjectIfChanged(id: string, expectedSco
             // 读取可能早于本机提交回执；在同一投影锁内对照已确认版本，
             // 相同或更旧的快照不能把尚未自动保存的编辑标成外部冲突。
             if (journal?.confirmedSnapshot && typeof remote.revision === "number" && remote.revision <= journal.confirmedRevision) return undefined;
-            if (hasUnconfirmedCanvasEdits(id) || canvasSubmitBlocked(id, scope)) {
+            // 后端优先：只在写入排队/提交中时暂缓应用外部改动，避免打断进行中的保存；
+            // 提交暂停（历史冲突）不再作为保留本地旧内容的理由，由下方对齐流程清冲突并恢复提交。
+            if (canvasBackendSubmitPending(id, scope) || journal?.inFlight || journal?.pendingProjection) {
                 pauseForExternalCandidate(id, remote, scope);
                 return undefined;
             }

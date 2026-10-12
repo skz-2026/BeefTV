@@ -21,7 +21,7 @@ ComfyUI + 本地模型权重（GPU）
 | --- | --- |
 | `POST /v1/videos`（multipart） | 视频生成。无参考图 → T2VA 模板；带参考图 → **Ref2VA 角色参考模板**（人物一致性）；`modelWorkflows` 可按模型名覆盖。可选 `seed` 表单参数（0–2147483647，缺省随机） |
 | `GET /v1/videos/{id}` · `/content` | 视频任务轮询与成片下载 |
-| `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json`。可选 `seed` 字段（同 seed 逐字节可复现，2026-10-08 实测验证） |
+| `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json`，`modelImageWorkflows` 可按模型名覆盖（如 UC 去审查 GGUF）。可选 `seed` 字段（同 seed 逐字节可复现，2026-10-08 实测验证） |
 | `POST /v1/images/edits`（multipart） | 图片编辑（多参考身份保真），可选 `seed` 表单参数（首帧编辑复现/对照实验） |
 | `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `modelTextEncoders` 键 + `imageModels` |
 
@@ -38,7 +38,11 @@ ComfyUI + 本地模型权重（GPU）
 - **视频（MiniMax-H3）**：T2VA 用全量 INT8 底模 + turbo EMA LoRA；**Ref2VA（角色一致性）用 `minimax_h3_ref2va_pruned_int8_convrot` + 官方 `ref2v_turbo_4step` LoRA**（均来自 `Comfy-Org/MiniMax-H3`）。提示词需含 `<Picture 1>` 引用。
 - **视频（FastH3 V2，`fasth3-v2` / `fasth3-v2-uncensored`）**：FastVideo 官方 DMD2 蒸馏完整学生模型 `fastvideo_fasth3_8step_v2_pruned_int8_convrot`（22GB，来自 `FastVideo/FastVideo-FastH3-Comfy` revision `0de92ab`），8 步 + learned VSA 稀疏注意力（keep20%），复用现有 Qwen 编码器与双 VAE，**不要叠加 turbo/EMA LoRA**。官方只蒸馏了 T2VA——FL2VA/Ref2VA 未蒸馏，参考图任务仍走 `h3-multiref`。2026-10-07 实测（5060 Ti，832×480）：5s 比 turbo-4 慢约 11%（81s vs 91s），12s 快约 23%（283s vs 219s），时长/分辨率越高优势越大；跨帧人物一致性更好，原生音频响度健康（-14~-25 LUFS，turbo 常 -39~-41 近静音）。
 - **生图（Qwen-Image-2.1）**：`qwen_image_2.1_int8_convrot`（6.9G）+ `qwen3vl_8b_int8_convrot`（8.9G，CLIPLoader type=qwen_image）+ `qwen_image_2.1_vae_bf16` + `qwen_image_2.1_viggle_turbo_r64` 4 步 LoRA（来源 `Comfy-Org/Qwen-Image-2.1`、`t8star/Qwen-Image-2.1-viggle-turbo-4step-r64-comfy`）。
+- **生图（Qwen-Image-2.1 Turbo，`qwen-image-2.1-turbo`，2026-10-11 上线）**：官方蒸馏 8 步 checkpoint（来源 `Comfy-Org/Qwen-Image-2.1` 的 `qwen_image_2.1_turbo_int8_convrot`，7.3G），编码器与 VAE 复用 Base 套装，模板 `workflows/qwen-t2i-turbo.template.json`，`modelImageWorkflows` 按模型名路由。steps=8、cfg=1.0、ModelSamplingAuraFlow shift=3.0、euler/simple（官方蒸馏日程内嵌在 checkpoint 里，ComfyUI 端用该参数近似；diffusers 端才读内嵌 sigmas + prefix KV cache）。**不要叠加 viggle/任何加速 LoRA**。1024×1024 实测约 15-20 秒/张（8 步，比 Base+viggle 4 步约慢一倍），提示词跟随与中文文字渲染明显更稳（「毛孩子」手写体直接出对）。同 seed 与 4 步 viggle 的对照实验可在画布侧选 `qwen-image-2.1` / `qwen-image-2.1-turbo` 各跑一次。许可仍是 Qwen Research（非商用），与 Base 相同。
+- **生图（Qwen-Image-2.1 Base 满血，`qwen-image-2.1-full`，2026-10-11 上线）**：同底模 `qwen_image_2.1_int8_convrot`，**不加任何 LoRA**，steps=40（官方模型卡默认）+ cfg=2.5（沿用本机 UC GGUF 非蒸馏线实测值）+ shift=3.0、euler/simple，模板 `workflows/qwen-t2i-full.template.json`。用途是定稿级精修。1024×1024 实测**约 56 秒/张**（80 次前向，INT8 convrot 直算远快于 GGUF 路线；此前"3 分钟"的估计按 GGUF 速度推算，作废）。注意：**重启网关会清空其任务注册表，ComfyUI 队列里未跑完的旧任务不受影响但仍占位**——批量产视频时段重启网关会让新任务排到旧视频后面。
+- **生图（Qwen-Image-2.1 Uncensored，`qwen-image-2.1-uc-gguf`，2026-10-11 上线）**：社区去审查 GGUF 量化（来源 `abenzerps/Qwen-Image-2.1-Uncensored-GGUF`，UC = 原版权重 + 去审查 LoRA 合并），模板 `workflows/qwen-t2i-uc-gguf.template.json`，`modelImageWorkflows` 按模型名路由。Q4_K_M（4.6G）+ 官方同款编码器/VAE。**不能叠加 viggle turbo LoRA**（权重不兼容，出图不跟提示词），20 步 cfg 2.5 约 78 秒/张（1024×1024 实测）。依赖 ComfyUI-GGUF 插件识别 `qwen_image21` 架构——上游 city96/ComfyUI-GGUF 尚未合并，本机在 `custom_nodes/ComfyUI-GGUF/loader.py` 的 `IMG_ARCH_LIST` 本地加了 `"qwen_image21"`，**更新该插件后需重打此补丁**。
 - 视频与生图**不要在 ComfyUI 里手工并发**；网关侧已内置 **GPU 按需调度**：所有生成请求串行执行，连续同类任务复用已加载模型，任务类型切换（T2V ↔ Ref2V ↔ 生图）时先调 ComfyUI `/free` 完全卸载旧模型再加载新模型，16GB 显存不会被两套权重挤爆。代价是切换后首个任务多付一次模型加载时间（H3 约 1-2 分钟，Qwen 约 5 秒）。
+- **生图优先车道（2026-10-11）**：排队任务分视频/生图两条车道，生图总是插到**排队中**的视频前面（正在执行的任务无法抢占，最多等当前一条跑完）。视频连发时画布生图不再被堵到 BeefTV 后端超时之外；后端侧配套 `CANVAS_IMAGE_TIMEOUT_MINUTES` 环境变量可放宽生图等待（`start-backend-detached.cmd` 已设 30 分钟），且本地免费渠道的生图超时失败不再锁定重试（可直接在任务上重试）。
 
 本目录全部是**新增文件**，与官方仓库零耦合：`git pull` 官方更新不会产生任何冲突，也不会影响官方代码路径。
 
@@ -49,7 +53,30 @@ ComfyUI + 本地模型权重（GPU）
 | `gateway.ts` | 网关本体，零第三方依赖，`node gateway.ts` 或 `bun gateway.ts` 运行 |
 | `config.example.json` | 配置样例；复制为 `config.json` 使用（`config.json` 与 `jobs/` 已 git-ignore） |
 | `workflows/*.template.json` | 工作流模板占位文件，用你从 ComfyUI 导出的工作流替换 |
+| `verify-templates.js` | 集成全量校验器（见下节），`node verify-templates.js [--live]` |
 | `jobs/` | 运行时任务产物（自动清理，默认保留 24 小时） |
+
+## 全量校验器：证明"每个注册模板在任何请求形态下都能提交成功"
+
+```bash
+node verify-templates.js --live     # ComfyUI 需在运行；不加 --live 只跑静态+object_info 层
+```
+
+三层校验，退出码 0=全绿（当前基线：60 通过 / 0 失败）：
+
+1. **静态层**：config 注册的全部模板（`workflows` + `modelWorkflows` + `modelImageWorkflows`）存在、可解析、占位符合法；对每个模板枚举图片 0–7 张 × 音频 0–1 段的全部请求形态，模拟网关替换+剪槽后检查图完整性（无残留占位符、无悬空链接、无空文件名加载器、有输出节点）；并检查 T8 槽位不变量（接 `last_frame` 的模板参考槽必须从 `{{IMAGE_3}}` 起，否则 `<Picture N>` 文字绑定整体错位）。
+2. **活体层**：ComfyUI `/object_info` 核对每个 `class_type` 存在、每个加载器（UNET/LoRA/CLIP/VAE/GGUF）引用的权重文件在可见列表（静态输入表差异只降级为警告——UI-only 键如 `upload`/`control` 和 VHS 动态 widget 本就不在静态表，ComfyUI 提交时忽略）。
+3. **实弹层（`--live`）**：每个模板取代表形态真实 `POST /prompt` 过 ComfyUI 自身校验（节点存在性、输入名/类型、组合值、链接类型全查），拿到 prompt_id 即 PASS，随即从队列删除——不占 GPU。音频引用用自动上传的 `verify-probe.wav` 静音探针。
+
+校验器**独立重实现**了网关的替换/剪槽逻辑（刻意不 import gateway.ts），两份实现互相交叉验证。改模板、改 `config.json`、升级 ComfyUI、增删权重或自定义节点包后必跑；CI 可直接用退出码。
+
+### 2026-10-12 加固记录（当日集成审计产出）
+
+- 修复 `hybrid-dub-flf` / `-steady` 参考槽错位（详见 `.local/bazong-pipeline.md`）：参考槽 `IMAGE_2..6` → `IMAGE_3..7`，尾帧不再重复占 `ref_image_0`，`<Picture 3/4>` 角色稿文字绑定复位。
+- 修复 `larry-i2v` 模板：`first_frame` 原误接 `MiniMaxH3TurboSampler`（SAMPLER 类型）且缺失 LoadImage 节点，ComfyUI 校验必拒——该模型注册后从未可用，实弹层抓出后已修。
+- 网关新增两道结构防线：`pruneEmptyMediaNodes`（任何请求形态都不把带空文件名的加载器提交给 ComfyUI，如只连 1 张图时 `last_frame` 落空则剪掉该 keyframe 槽）与 `assertNoDanglingLinks`（剪槽后仍有悬空链接直接 400 报错，绝不提交坏图）。
+- 修复缺省种子 bug：`Number("")===0` 导致不发 seed 字段的请求（BeefTV 后端表单从不发）全部共用 seed=0，重摇不换片；现缺省真随机，显式 seed 复现语义保留。
+- `h3-hybrid-dub-flf-s8` 重新注册为 8 步主模板别名（此前未注册会静默回退 ref-to-video）；任务日志打印实际模板文件名，未注册模型名的回退明确标注。
 
 ## 工作原理
 
@@ -106,6 +133,7 @@ node gateway.ts                      # 或 bun gateway.ts
 | `executor` | `mock`（默认，不依赖 GPU，用于打通链路）/ `comfyui`（真实生成） |
 | `comfyuiUrl` | ComfyUI 地址，默认 `http://127.0.0.1:8188` |
 | `workflows` / `modelWorkflows` | 文生/图生模板路径；`modelWorkflows` 可按模型名覆盖（多个本地模型共用一个网关） |
+| `modelImageWorkflows` | 图片生成按模型名覆盖模板（如 `qwen-image-2.1-uc-gguf` → `workflows/qwen-t2i-uc-gguf.template.json`），未命中的模型回退 `workflows.imageGen` |
 | `defaultTextEncoder` / `modelTextEncoders` | H3 视频模板的编码器权重：模板里写 `{{TEXT_ENCODER}}` 占位符，默认取 `defaultTextEncoder`，命中 `modelTextEncoders` 的模型名换成对应文件（官方/无审查双编码器共存，见下文） |
 | `timeoutMinutes` | 等待 ComfyUI 生成的超时时间 |
 

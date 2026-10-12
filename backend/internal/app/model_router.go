@@ -44,6 +44,14 @@ func (s *Service) beginTaskRouteAttempt(task *model.Task) (*model.RouteAttempt, 
 		}
 	}
 	decision := modelcatalog.DecideExistingAttempt(task, attempts, image)
+	if task.Type == "canvas_image" && len(attempts) > 0 && !s.channelUsesPaidImageSubmission(attempts[len(attempts)-1].ChannelID, task.Model) {
+		// 本地/免费网关没有计费风险：结果不明确或被拒绝都不锁定，允许复用该次尝试重新提交。
+		existing := &attempts[len(attempts)-1]
+		if decision.Action == modelcatalog.AttemptUncertain ||
+			(decision.Action == modelcatalog.AttemptFail && existing.DispatchState == "rejected_no_job") {
+			decision = modelcatalog.ExistingAttemptDecision{Action: modelcatalog.AttemptReuse, Attempt: existing}
+		}
+	}
 	switch decision.Action {
 	case modelcatalog.AttemptReuse:
 		return decision.Attempt, nil

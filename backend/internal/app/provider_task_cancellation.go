@@ -175,12 +175,21 @@ func (s *Service) providerCancellationInput(task *model.Task) (canvasGenerationI
 	return input, nil
 }
 
+// h3MultirefProtocol 是本地 ComfyUI 视频网关的协议名；网关实现 DELETE
+// /videos/{id}（队列移除 + 中断渲染）与 GET /videos/{id} 状态查询。
+const h3MultirefProtocol = model.ChannelInterfaceType("h3-multiref")
+
 func supportsProviderCancellation(interfaceType string) bool {
-	return interfaceType == string(model.ChannelInterfaceGeminiVeo) || model.IsVolcengineArkVideoProtocol(model.ChannelInterfaceType(interfaceType))
+	if interfaceType == string(model.ChannelInterfaceGeminiVeo) || model.IsVolcengineArkVideoProtocol(model.ChannelInterfaceType(interfaceType)) {
+		return true
+	}
+	return model.ChannelInterfaceType(interfaceType) == h3MultirefProtocol
 }
 
 func cancelProviderTask(ctx context.Context, config providerConfig, providerRequestID string) error {
 	switch {
+	case config.InterfaceType == string(h3MultirefProtocol):
+		return deleteProviderTask(ctx, config, "/videos/"+url.PathEscape(providerRequestID))
 	case config.InterfaceType == string(model.ChannelInterfaceGeminiVeo):
 		path := "/" + strings.TrimLeft(providerRequestID, "/") + ":cancel"
 		return postGeminiJSON(ctx, config, path, map[string]any{}, &map[string]any{})
@@ -211,6 +220,22 @@ func deleteProviderTask(ctx context.Context, config providerConfig, path string)
 
 func queryProviderCancellation(ctx context.Context, config providerConfig, providerRequestID string) (providerCancellationOutcome, string, error) {
 	switch {
+	case config.InterfaceType == string(h3MultirefProtocol):
+		var state map[string]any
+		if err := getJSON(ctx, config, "/videos/"+url.PathEscape(providerRequestID), &state); err != nil {
+			return "", "", err
+		}
+		status := strings.ToLower(strings.TrimSpace(stringField(state, "status")))
+		switch status {
+		case "cancelled", "canceled":
+			return providerCancellationConfirmed, status, nil
+		case "completed", "succeeded":
+			return providerCancellationSucceeded, status, nil
+		case "failed":
+			return providerCancellationFailed, status, nil
+		default: // queued / in_progress 及未知状态都继续对账
+			return providerCancellationPending, firstNonEmpty(status, "unknown"), nil
+		}
 	case config.InterfaceType == string(model.ChannelInterfaceGeminiVeo):
 		// Gemini 用 operation.error 表示取消终态，此处必须保留该字段再判断，
 		// 不能让通用 JSON 解包提前把它转换成请求失败。

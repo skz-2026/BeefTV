@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"infinite-canvas/backend/internal/sysproc"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,7 +19,9 @@ func hasNVIDIACandidate(ctx context.Context, goos string) bool {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(probeCtx, "nvidia-smi", "-L").Output()
+	cmd := exec.CommandContext(probeCtx, "nvidia-smi", "-L")
+	sysproc.HideConsole(cmd)
+	output, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(output)) != ""
 }
 
@@ -41,6 +44,7 @@ func probeCUDA(ctx context.Context, python, toolDir, modelRuntime, goos string, 
 	} else {
 		configureDepthCommand(command)
 	}
+	sysproc.HideConsole(command)
 	output, err := command.CombinedOutput()
 	if err == nil {
 		return nil
@@ -72,6 +76,7 @@ func runCommand(ctx context.Context, python, toolDir, modelRuntime, device, inpu
 	} else {
 		configureDepthCommand(command)
 	}
+	sysproc.HideConsole(command)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("无法启动深度处理组件: %w", err)

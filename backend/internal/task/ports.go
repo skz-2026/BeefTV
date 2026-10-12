@@ -108,6 +108,10 @@ type Runtime interface {
 // provider receipt cannot become a new paid attempt on retry.
 type Images interface {
 	ValidateRetry(task *model.Task) error
+	// AllowsRetryUnlock 放行被失败分类锁定重试的图片任务：
+	// 本地/免费网关没有重复扣费风险，失败后应始终允许重试；
+	// 付费渠道必须维持原有的锁定语义。
+	AllowsRetryUnlock(task *model.Task) bool
 }
 
 // Failures classifies persisted errors so unknown acceptance stays distinct

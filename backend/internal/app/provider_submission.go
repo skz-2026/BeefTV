@@ -29,7 +29,11 @@ func withProviderSubmissionKey(ctx context.Context, attempt *model.RouteAttempt)
 
 func (s *Service) createDirectTaskAttempt(task *model.Task) (*model.RouteAttempt, error) {
 	if task.Attempts > 1 && task.ProviderRequestID == "" {
-		return nil, routeDispatchUncertainError{"旧任务已尝试执行但缺少提交记录，为避免重复创建上游任务已停止自动重发"}
+		if task.Type == "canvas_image" && !s.channelUsesPaidImageSubmission(task.ChannelModelID, task.Model) {
+			// 本地/免费网关的图片任务没有重复计费风险，允许直接新建提交记录。
+		} else {
+			return nil, routeDispatchUncertainError{"旧任务已尝试执行但缺少提交记录，为避免重复创建上游任务已停止自动重发"}
+		}
 	}
 	id, err := s.repo.NextPrefixedID("ATTEMPT")
 	if err != nil {

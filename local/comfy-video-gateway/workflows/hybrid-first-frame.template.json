@@ -2,7 +2,8 @@
     "_README": [
         "Hybrid 首帧+参考图模式：IMAGE=Qwen 首帧（管构图/人数），IMAGE_2..=三视图（管人物身份）。",
         "底模用 fl2va 全量（官方 Hybrid 归属首帧家族，参考图作为身份条件）。",
-        "task_type=Hybrid；未提供的参考槽由网关剪除。"
+        "task_type=Hybrid；未提供的参考槽由网关剪除。",
+        "2026-10-08 质量调整：采样 4→6 步（换脸部/纹理稳定性，渲染时间约+50%）；prompt 追加风格锁后缀，防画风与容貌随镜头漂移。"
     ],
     "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors", "weight_dtype": "default" } },
     "2": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "minimax_h3_turbo_4步加速ema_comfyui.safetensors", "strength_model": 1.0 } },
@@ -25,13 +26,13 @@
             "ref_images.ref_image_2": ["24", 0],
             "ref_images.ref_image_3": ["25", 0],
             "ref_images.ref_image_4": ["26", 0],
-            "prompt": "{{PROMPT}}", "width": "{{WIDTH}}", "height": "{{HEIGHT}}", "length": "{{FRAMES}}",
+            "prompt": "{{PROMPT}}, strict style lock: keep the exact art style of the first frame and the character reference sheets throughout; every face stays locked to its sheet, no style or identity drift.", "width": "{{WIDTH}}", "height": "{{HEIGHT}}", "length": "{{FRAMES}}",
             "task_type": "Hybrid", "audio_mode": "native", "audio_denoise_strength": 1,
             "add_source_as_reference": false, "prompt_primary_audio_ordinal": 0,
             "strict_prompt_tags": true, "ref_image_size": "match", "reference_video_policy": "official_2_to_15s"
         }
     },
-    "7": { "class_type": "MiniMaxH3DualClockSamplerT8", "inputs": { "model": ["2", 0], "av_latent": ["6", 1], "steps": 4, "shift_video": 12, "shift_audio": 3 } },
+    "7": { "class_type": "MiniMaxH3DualClockSamplerT8", "inputs": { "model": ["2", 0], "av_latent": ["6", 1], "steps": 6, "shift_video": 12, "shift_audio": 3 } },
     "8": { "class_type": "BasicGuider", "inputs": { "model": ["7", 0], "conditioning": ["6", 0] } },
     "9": { "class_type": "RandomNoise", "inputs": { "noise_seed": "{{SEED}}", "control": "fixed" } },
     "10": { "class_type": "SamplerCustomAdvanced", "inputs": { "noise": ["9", 0], "guider": ["8", 0], "sampler": ["7", 1], "sigmas": ["7", 2], "latent_image": ["6", 1] } },

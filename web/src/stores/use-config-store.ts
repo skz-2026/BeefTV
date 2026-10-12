@@ -611,8 +611,16 @@ export function channelHasManagedBeefAPICredential(channel: Pick<ModelChannel, "
     return channel.credentialRef === MANAGED_BEEFAPI_CREDENTIAL_REF || channel.hasApiKey === true;
 }
 
-export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey">) {
-    return channelHasManagedBeefAPICredential(channel) || Boolean(channel.apiKey?.trim());
+export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey" | "baseUrl">) {
+    if (channelHasManagedBeefAPICredential(channel) || Boolean(channel.apiKey?.trim())) return true;
+    // 本机服务渠道（声线工坊/ComfyUI 网关等）不使用密钥，免凭据校验。
+    try {
+        const host = new URL(channel.baseUrl).hostname;
+        if (host === "127.0.0.1" || host === "localhost" || host === "::1") return true;
+    } catch {
+        // baseUrl 非法时回落到凭据检查
+    }
+    return false;
 }
 
 function isAiConfigReady(config: AiConfig, model: string) {

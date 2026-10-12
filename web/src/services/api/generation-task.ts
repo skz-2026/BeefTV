@@ -454,6 +454,15 @@ function backendMediaReference<T extends ReferenceVideo | ReferenceAudio>(media:
     } as T;
 }
 
+function isLocalServiceBaseUrl(baseUrl: string) {
+    try {
+        const host = new URL(baseUrl).hostname;
+        return host === "127.0.0.1" || host === "localhost" || host === "::1";
+    } catch {
+        return false;
+    }
+}
+
 export function backendProviderConfig(config: AiConfig, mode: BackendGenerationMode = "image") {
     const requestConfig = resolveModelRequestConfig(config, config.model);
     const workflow = resolveGenerationWorkflowExecution(config, mode);
@@ -483,7 +492,7 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         interfaceType: requestConfig.interfaceType,
         baseUrl: requestConfig.baseUrl,
         referenceAssetOrigin: requestConfig.referenceAssetOrigin,
-        apiKey: requestConfig.credentialRef ? "" : requestConfig.apiKey,
+        apiKey: requestConfig.credentialRef ? "" : requestConfig.apiKey || (isLocalServiceBaseUrl(requestConfig.baseUrl) ? "local" : ""),
         secretKey: requestConfig.credentialRef ? "" : requestConfig.secretKey,
         headers: requestConfig.headers,
         credentialRef: requestConfig.credentialRef,

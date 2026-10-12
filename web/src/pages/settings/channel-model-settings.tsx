@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, App, Button, Popconfirm, Segmented, Tag } from "antd";
+import { Alert, App, Button, InputNumber, Popconfirm, Segmented, Tag } from "antd";
 import { ChevronRight, FlaskConical, Settings2 } from "lucide-react";
 
 import { ModelEditorModal } from "@/components/model-editor-modal";
@@ -189,6 +189,18 @@ export function ChannelModelSettings({ channel, onChange, draft = false }: { cha
                             ) : <p className="text-xs text-foreground/50">当前模型类型无需额外配置引用与参数。</p>}
                         </div>,
                     },
+                    {
+                        key: "sampler",
+                        label: "生成参数",
+                        children: <div inert={Boolean(testingModel)}>
+                            {activeCapability === "video" ? (
+                                <SamplerDefaultsEditor
+                                    value={activeModelProfile?.defaultOptions}
+                                    onChange={(defaultOptions) => updateProfile(activeModel, { defaultOptions })}
+                                />
+                            ) : <p className="text-xs text-foreground/50">当前模型类型暂无可配置的生成参数。</p>}
+                        </div>,
+                    },
                 ] : []}
             />
         </div>
@@ -197,4 +209,44 @@ export function ChannelModelSettings({ channel, onChange, draft = false }: { cha
 
 function capabilityLabel(value: ModelProfile["capability"]) {
     return { text: "文本", image: "图片", video: "视频", audio: "音频", "": "待配置" }[value] || "待配置";
+}
+
+const SAMPLER_FIELDS = [
+    { key: "steps", label: "采样步数", min: 2, max: 12, step: 1, hint: "越大越精细越慢；H3 hybrid 模板默认 6。" },
+    { key: "shift_video", label: "视频动态 shift", min: 1, max: 25, step: 0.5, hint: "越大运动越强、画面越难稳；模板默认 12。" },
+    { key: "shift_audio", label: "音频 shift", min: 1, max: 10, step: 0.5, hint: "模板默认 3，一般不用改。" },
+] as const;
+
+function SamplerDefaultsEditor({ value, onChange }: { value?: Record<string, unknown>; onChange: (next: Record<string, unknown>) => void }) {
+    const numberValue = (key: string) => {
+        const raw = value?.[key];
+        return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+    };
+    const setField = (key: string, raw: number | null) => {
+        const next = { ...(value || {}) };
+        if (raw === null) delete next[key];
+        else next[key] = raw;
+        onChange(next);
+    };
+    return (
+        <div className="space-y-3">
+            <p className="text-[var(--fs-tiny)] text-foreground/50">随每次生成请求发送给兼容网关（本地 ComfyUI 网关等）；留空表示使用网关模板默认值。改完无需重启。</p>
+            {SAMPLER_FIELDS.map((field) => (
+                <label key={field.key} className="flex items-center gap-3">
+                    <span className="w-28 shrink-0 text-xs text-foreground/70">{field.label}</span>
+                    <InputNumber
+                        size="small"
+                        min={field.min}
+                        max={field.max}
+                        step={field.step}
+                        value={numberValue(field.key)}
+                        onChange={(next) => setField(field.key, typeof next === "number" ? next : null)}
+                        className="w-24"
+                        placeholder="默认"
+                    />
+                    <span className="min-w-0 flex-1 text-[var(--fs-tiny)] text-foreground/42">{field.hint}</span>
+                </label>
+            ))}
+        </div>
+    );
 }
