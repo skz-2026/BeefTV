@@ -302,3 +302,4 @@ func ValidateVideoReferenceVideo(refs VideoReferenceConfig, index int, media Med
 func VideoCapabilityAllowsAudioOnly(profile *VideoCapabilityConfig) bool {
 	return videoCapabilityAllowsAudioOnly(profile)
 }
+

@@ -283,7 +283,7 @@ func TestRunVideoTaskUsesDeclarativeAgnesJSONProtocol(t *testing.T) {
 	}
 	wantPaths := "POST /v1/videos,GET /agnesapi?model_name=agnes-video-2.5&video_id=video-1,GET /video.mp4"
 	if got := strings.Join(paths, ","); got != wantPaths {
-		t.Fatalf("paths = %q, want %q", got, wantPaths)
+		t.Fatalf("paths = %q", got)
 	}
 }
 

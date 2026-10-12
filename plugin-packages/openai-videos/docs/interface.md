@@ -54,6 +54,24 @@
 | `create.files[0].name` | `"input_reference"` |
 | `create.files[0].source` | `{"$first":{"$filter":{"from":{"$sortByOrder":{"$ref":"request.images"}},"as":"media","where":{"$ne":[{"$ref":"media.role"},"mask"]}}}}` |
 | `create.files[0].filename` | `"input-reference.png"` |
+| `create.files[1].name` | `"input_reference_1"` |
+| `create.files[1].source` | `{"$at":[{"$ref":"request.images"},1]}` |
+| `create.files[1].filename` | `"input-reference-1.png"` |
+| `create.files[2].name` | `"input_reference_2"` |
+| `create.files[2].source` | `{"$at":[{"$ref":"request.images"},2]}` |
+| `create.files[2].filename` | `"input-reference-2.png"` |
+| `create.files[3].name` | `"input_reference_3"` |
+| `create.files[3].source` | `{"$at":[{"$ref":"request.images"},3]}` |
+| `create.files[3].filename` | `"input-reference-3.png"` |
+| `create.files[4].name` | `"input_reference_4"` |
+| `create.files[4].source` | `{"$at":[{"$ref":"request.images"},4]}` |
+| `create.files[4].filename` | `"input-reference-4.png"` |
+| `create.files[5].name` | `"input_reference_5"` |
+| `create.files[5].source` | `{"$at":[{"$ref":"request.images"},5]}` |
+| `create.files[5].filename` | `"input-reference-5.png"` |
+| `create.files[6].name` | `"input_reference_6"` |
+| `create.files[6].source` | `{"$at":[{"$ref":"request.images"},6]}` |
+| `create.files[6].filename` | `"input-reference-6.png"` |
 | `poll.method` | `"GET"` |
 | `poll.path` | `"/v1/videos/{{taskId}}"` |
 | `poll.contentType` | `"application/json"` |
@@ -291,6 +309,78 @@
                 }
               },
               "filename": "input-reference.png"
+            },
+            {
+              "name": "input_reference_1",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.images"
+                  },
+                  1
+                ]
+              },
+              "filename": "input-reference-1.png"
+            },
+            {
+              "name": "input_reference_2",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.images"
+                  },
+                  2
+                ]
+              },
+              "filename": "input-reference-2.png"
+            },
+            {
+              "name": "input_reference_3",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.images"
+                  },
+                  3
+                ]
+              },
+              "filename": "input-reference-3.png"
+            },
+            {
+              "name": "input_reference_4",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.images"
+                  },
+                  4
+                ]
+              },
+              "filename": "input-reference-4.png"
+            },
+            {
+              "name": "input_reference_5",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.images"
+                  },
+                  5
+                ]
+              },
+              "filename": "input-reference-5.png"
+            },
+            {
+              "name": "input_reference_6",
+              "source": {
+                "$at": [
+                  {
+                    "$ref": "request.images"
+                  },
+                  6
+                ]
+              },
+              "filename": "input-reference-6.png"
             },
             {
               "name": "input_reference_audio",

@@ -204,16 +204,24 @@ function isFile(value: FormDataEntryValue | undefined): value is File {
 
 function collectReferenceFiles(form: FormData): File[] {
     const files: File[] = [];
-    // h3-multiref 协议按序号命名（input_reference_0..5）；openai-videos 用 input_reference[]。
-    for (let i = 0; i < 6; i += 1) {
-        const entry = form.get(`input_reference_${i}`);
-        if (isFile(entry)) files.push(entry);
-    }
-    if (files.length) return files;
+    // 主引用（openai-videos 插件 files[0]=input_reference 首图；浏览器直发路径 input_reference[] 多图）
     for (const key of ["input_reference[]", "input_reference"]) {
         for (const entry of form.getAll(key)) {
             if (isFile(entry)) files.push(entry);
         }
+    }
+    if (files.length) {
+        // 插件追加参考图按序号命名（input_reference_1..6），拼在主引用之后；
+        // 与纯序号协议（input_reference_0..5，h3-multiref）互斥使用。
+        for (let i = 1; i <= 6; i += 1) {
+            const entry = form.get(`input_reference_${i}`);
+            if (isFile(entry)) files.push(entry);
+        }
+        return files;
+    }
+    for (let i = 0; i < 7; i += 1) {
+        const entry = form.get(`input_reference_${i}`);
+        if (isFile(entry)) files.push(entry);
     }
     return files;
 }

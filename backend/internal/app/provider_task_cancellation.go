@@ -183,12 +183,15 @@ func supportsProviderCancellation(interfaceType string) bool {
 	if interfaceType == string(model.ChannelInterfaceGeminiVeo) || model.IsVolcengineArkVideoProtocol(model.ChannelInterfaceType(interfaceType)) {
 		return true
 	}
-	return model.ChannelInterfaceType(interfaceType) == h3MultirefProtocol
+	// newapi(OpenAI Videos) 的取消是 DELETE /v1/videos/{id}：openai-videos 插件合同与本地 ComfyUI 网关均已实现，
+	// 不放行会导致画布取消只停后端 worker，GPU 上的渲染继续空转。
+	return model.ChannelInterfaceType(interfaceType) == h3MultirefProtocol ||
+		model.ChannelInterfaceType(interfaceType) == model.ChannelInterfaceNewAPIVideo
 }
 
 func cancelProviderTask(ctx context.Context, config providerConfig, providerRequestID string) error {
 	switch {
-	case config.InterfaceType == string(h3MultirefProtocol):
+	case config.InterfaceType == string(h3MultirefProtocol), config.InterfaceType == string(model.ChannelInterfaceNewAPIVideo):
 		return deleteProviderTask(ctx, config, "/videos/"+url.PathEscape(providerRequestID))
 	case config.InterfaceType == string(model.ChannelInterfaceGeminiVeo):
 		path := "/" + strings.TrimLeft(providerRequestID, "/") + ":cancel"

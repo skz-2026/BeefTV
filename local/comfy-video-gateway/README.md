@@ -78,6 +78,16 @@ node verify-templates.js --live     # ComfyUI 需在运行；不加 --live 只�
 - 修复缺省种子 bug：`Number("")===0` 导致不发 seed 字段的请求（BeefTV 后端表单从不发）全部共用 seed=0，重摇不换片；现缺省真随机，显式 seed 复现语义保留。
 - `h3-hybrid-dub-flf-s8` 重新注册为 8 步主模板别名（此前未注册会静默回退 ref-to-video）；任务日志打印实际模板文件名，未注册模型名的回退明确标注。
 
+### 2026-10-12 画布链路打通（BeefTV 任务体系 → 插件 → 网关，端到端实测）
+
+此前霸总管线全部经 `.local` 脚本直连网关，**画布正规链路（后端任务 → openai-videos 插件合同 → 网关）从未完整跑通**，三处断点当日修复：
+
+1. **多参考图被插件合同裁成一张**：`openai-videos` 插件 files[0] 原为 `$first` 单图（真 Sora 只收一张参考）。已在插件包补 `input_reference_1..6` 追加槽（镜像音频槽写法），**改 `plugin-packages/openai-videos/` 源码后必须重打包**：`node embed-documentation.mjs openai-videos` + zip 打包为 `.beeftv-plugin`（后端只加载打包文件，不读源码目录）。
+2. **newapi 取消不传播**：后端 `supportsProviderCancellation` 白名单缺 `newapi`，画布取消只停 worker，GPU 继续空转。已加入白名单走 `DELETE /v1/videos/{id}`（与 h3-multiref 同路），实测画布取消 → 网关 → ComfyUI interrupt 全通。
+3. **网关参考收集合并**：`collectReferenceFiles` 现按"主引用（input_reference / input_reference[]）在前 + 序号追加图（input_reference_1..6）在后"合并，兼容浏览器直发、h3-multiref 纯序号、插件混合三种形态。
+
+画布链路端到端测试工具：`node .local/canvas-test-shot.js e01 S01`——上传素材为后端资源、按画布前端真实契约创建 `canvas_video` 任务（自定义通道形态：config 带 baseUrl+apiKey）、轮询到成片。当日实测 S01：4 图 + 1 音频全部依序入槽（Picture 1-4 对位、drive_audio 就位）、种子真随机、渲染约 20 分钟出片。
+
 ## 工作原理
 
 网关实现 BeefTV 已内置的 **OpenAI Videos 协议**（Sora 风格），BeefTV 侧只需把一个视频渠道指向它：
