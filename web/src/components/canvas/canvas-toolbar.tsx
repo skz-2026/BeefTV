@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import { Hand, MousePointer2, ScanFace } from "lucide-react";
+import { BookOpen, Hand, MousePointer2, ScanFace } from "lucide-react";
 
 import { FloatingDock, type FloatingDockCommand } from "@/components/ui/aceternity/floating-dock";
 import { SpotlightSurface } from "@/components/ui/aceternity/spotlight-surface";
@@ -59,6 +59,7 @@ export function CanvasToolbar({
     onOpenMyAssets,
     onOpenProjectCharacters,
     onOpenGenerationHistory,
+    comicBookCanvasId,
     shortcutRequestNonce,
 }: {
     selectedCount: number;
@@ -102,6 +103,8 @@ export function CanvasToolbar({
     onOpenMyAssets: () => void;
     onOpenProjectCharacters: () => void;
     onOpenGenerationHistory: () => void;
+    /** 画布含 comic-config 节点时传入画布 id，工具栏显示「漫画成书」入口 */
+    comicBookCanvasId?: string;
     shortcutRequestNonce: number;
 }) {
     const rootRef = useRef<HTMLDivElement>(null);
@@ -279,6 +282,12 @@ export function CanvasToolbar({
         } : item);
     const items = [
         ...mainItemsWithCanvasMode,
+        ...(comicBookCanvasId ? [{
+            id: "tool-comic-book",
+            label: "漫画成书",
+            icon: <BookOpen />,
+            onClick: () => { window.open(`/comic-book/${encodeURIComponent(comicBookCanvasId)}`, "_self"); },
+        }] : []),
         ...(libtvChrome ? [
             {
                 id: "tool-portrait-studio",

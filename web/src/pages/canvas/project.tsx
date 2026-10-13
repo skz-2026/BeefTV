@@ -2723,6 +2723,7 @@ function InfiniteCanvasPage() {
                                 {!readOnly && searchParams.get("fixture") !== "libtv-readonly-dense" && (!focusMode || focusDockRevealed) ? (
                                     <CanvasToolbar
                                         selectedCount={selectedNodeIds.size}
+                                        comicBookCanvasId={nodes.some((node) => node.type === "text" && node.id === "comic-config") ? (params.id ?? "") : undefined}
                                         libtvChrome={searchParams.get("libtvChrome") === "1"}
                                         workspaceMode={workspaceMode}
                                         canvasTool={canvasTool}

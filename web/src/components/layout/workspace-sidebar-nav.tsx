@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Home, Plug, Plus, Settings2, Sun, Moon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Home, Plug, Plus, Settings2, Sun, Moon } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -50,6 +50,7 @@ function buildNav(features: FeatureAvailability): { groups: WorkspaceNavGroup[];
                 { id: "home", title: "首页", icon: Home, to: "/" },
                 { ...toolItem("canvas", "/project"), title: "项目" },
                 { ...toolItem("assets", "/assets"), title: "资产" },
+                { id: "comic-books", title: "漫画成书", icon: BookOpen, to: "/comic-books" },
                 { id: "settings:channels", title: "模型配置", icon: Settings2, to: "/settings?section=channels" },
                 { id: "agents", title: "BeefTV MCP", icon: Plug, to: "/agents" },
             ],
