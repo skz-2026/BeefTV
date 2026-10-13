@@ -176,6 +176,15 @@
     <div class="tasks-empty" id="tasks-empty">加载中…</div>
 </div>
 
+<h2>模板参数 <span class="task-summary">视频网关工作流模板的采样步数 / LoRA / 音轨策略等，保存后下一个任务即生效</span></h2>
+<div class="card" id="templates-card" style="padding:0;overflow:hidden">
+    <iframe id="templates-frame" style="width:100%;height:660px;border:0;display:none" title="模板参数控制台"></iframe>
+    <div id="templates-down" class="tasks-empty" style="padding:26px 14px">
+        视频网关未运行，模板参数控制台不可用。
+        <button id="btn-start-gateway" class="primary" style="margin-left:10px">启动视频网关</button>
+    </div>
+</div>
+
 <h2>日志</h2>
 <div class="log-panel">
     <div class="log-tabs" id="log-tabs">
@@ -223,6 +232,20 @@ function toast(msg) {
 }
 
 const NAME_MAP = { backend: "后端服务", proxy: "Owner 代理", frontend: "前端 Vite", gateway: "视频网关", comfy: "ComfyUI" };
+// 模板参数区块：网关运行时内嵌其 /admin 控制台（释义/校验/备份逻辑单一源头在网关），
+// 未运行时给出启动按钮，起来后下一轮 state 轮询自动挂上 iframe。
+function renderTemplates(s) {
+    const gw = (s.services || []).find(x => x.name === "gateway");
+    const frame = $("templates-frame"), down = $("templates-down");
+    // running=看板拉起；external=外部脚本拉起但端口健康（如 restart-gateway.sh），同样可用。
+    if (gw && (gw.status === "running" || gw.status === "external") && s.gatewayAdminUrl) {
+        if (frame.dataset.src !== s.gatewayAdminUrl) { frame.src = s.gatewayAdminUrl; frame.dataset.src = s.gatewayAdminUrl; }
+        frame.style.display = ""; down.style.display = "none";
+    } else {
+        frame.style.display = "none"; down.style.display = "";
+    }
+}
+
 function renderServices(list) {
     const box = $("services");
     if (box.children.length !== list.length) {
@@ -379,6 +402,7 @@ async function pollState() {
         $("repo").textContent = s.repo;
         state.frontendUrl = s.frontendUrl || state.frontendUrl;
         renderServices(s.services);
+        renderTemplates(s);
         renderGuardian(s.guardian);
         $("foot-hint").textContent = s.backendExeExists
             ? "后端使用 .local/tools/infinite-canvas-backend.exe。"
@@ -563,6 +587,10 @@ $("btn-shutdown").onclick = async () => {
     if (!confirm("退出看板？由看板启动的服务会被停止；外部启动的服务不受影响。")) return;
     try { await api("/api/shutdown", "POST"); } catch (e) { /* 进程即将退出 */ }
     toast("看板已退出，本页将不可用");
+};
+$("btn-start-gateway").onclick = async () => {
+    try { await api("/api/start", "POST", { name: "gateway" }); toast("视频网关启动中…"); }
+    catch (e) { toast("启动失败：" + e.message); }
 };
 
 pollState(); pollHw(); pollComfy(); pollTasks(); pollGpuProcs(); pollLogs();

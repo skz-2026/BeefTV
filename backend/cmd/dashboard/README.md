@@ -6,6 +6,10 @@
 
 ## 面向工作流的功能
 
+- **模板参数控制台**：「生成任务」下方内嵌视频网关的 `/admin` 页面（参数释义、
+  校验、备份逻辑的单一源头在 `local/comfy-video-gateway/gateway.ts`）。网关未运行时
+  显示启动按钮，起来后下一轮 state 轮询自动挂载；`running` 与 `external`
+  （如 restart-gateway.sh 拉起）都视为可用。保存后下一个任务即生效。
 - **生成任务流**：直连后端 `/api/tasks`（owner 凭据）展示最近 15 条生成任务的状态、
   模型、提示词、失败原因与进度；挂机时不必开工作台也能盯生成进度。
 - **过夜守护**：页头开关（默认关闭，持久化在 `.local/dashboard-settings.json`）。

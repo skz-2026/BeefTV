@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -105,6 +106,8 @@ func (s *dashboardServer) handleHello(w http.ResponseWriter, r *http.Request) {
 func (s *dashboardServer) handleState(w http.ResponseWriter, r *http.Request) {
 	state := s.mgr.Snapshot()
 	state["frontendUrl"] = s.mgr.FrontendURL()
+	// 模板参数控制台内嵌在视频网关进程里（/admin），看板页面据此决定 iframe 还是降级提示。
+	state["gatewayAdminUrl"] = fmt.Sprintf("http://127.0.0.1:%d/admin", s.cfg.GatewayPort)
 	if s.mgr.guardian != nil {
 		state["guardian"] = s.mgr.guardian.State()
 	}
