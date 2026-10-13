@@ -247,6 +247,17 @@ function text(form: FormData, key: string): string {
     return typeof value === "string" ? value.trim() : "";
 }
 
+// T8 口型绑定兜底：带了台词驱动音频但提示词没有任何 <Audio N> 引用时，按官方 lock_source
+// 范式追加显式口型句。T8 的 prepare_prompt 只校验已有标签、从不自动注入；没有文本锚点时
+// drive_audio 只是弱媒体参考，模型不做说话表演。仅在模板含 drive_audio 槽（台词驱动模板）时
+// 生效，避免把声线锚定（ref_audios）误标成台词表演；调用方已写音频标签时不重复追加。
+const AUDIO_TAG_RE = /\bAudio\s*#?\s*\d+\b/i;
+function ensureAudioPerformanceBinding(prompt: string, workflow: unknown, audioCount: number): string {
+    if (!audioCount || AUDIO_TAG_RE.test(prompt)) return prompt;
+    if (!JSON.stringify(workflow).includes("drive_audio")) return prompt;
+    return `${prompt}\n\nThe speaking character visibly performs the dialogue in precise synchronization with <Audio 1>. Preserve the source timing, phrasing, and rhythm of the audio with plausible mouth and body performance.`;
+}
+
 // ComfyUI 按需拉起：点击生成时若 ComfyUI 未运行，自动启动并等待就绪（无需定时检查）
 let comfyRevival: Promise<boolean> | null = null;
 let lastComfySpawn = 0;
@@ -594,8 +605,18 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     const audioRefs = collectAudioReferences(form, allRefs);
     const references = allRefs.filter((f) => !isAudioFile(f));
     const mode: Job["mode"] = references.length > 0 ? "image" : "text";
+    // 音频参考必须搭配图片：T2V 模板没有任何音频槽位，纯音频请求的音频会被静默剪掉，
+    // 出片成功但口型/台词全无——这种静默降级比显式失败更难排查（E01 口型事故同族问题）。
+    if (mode === "text" && audioRefs.length > 0) {
+        return json(res, 400, { error: { message: "携带音频参考但没有任何图片：文生视频模板没有音频槽位，音频会被丢弃。请为首帧连一张图，或改用 dub 系模型名（如 h3-hybrid-dub-flf）。" } });
+    }
     const override = config.modelWorkflows[model];
-    const workflowPath = override || (mode === "image" ? config.workflows.image : config.workflows.text);
+    // 未注册模型名（如通用名 minimax-h3）+ 图+音齐备：默认 ref-to-video 没有 drive_audio 槽，
+    // 音频会被静默剪掉（口型/台词全丢）。改走 dub 模板兜底，画面走 ref 槽、音频走 drive_audio。
+    const dubFallback = !override && mode === "image" && audioRefs.length > 0
+        ? config.modelWorkflows["h3-hybrid-dub-flf"]
+        : undefined;
+    const workflowPath = override || dubFallback || (mode === "image" ? config.workflows.image : config.workflows.text);
 
     const job: Job = {
         id: randomUUID(),
@@ -608,6 +629,8 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
     };
 
     const { workflow } = await loadTemplate(config, job);
+    // 口型绑定兜底：改写 job.prompt 与 context.prompt，保证 T8 文本侧有 <Audio 1> 锚点
+    job.prompt = ensureAudioPerformanceBinding(prompt, workflow, audioRefs.length);
     const { width, height, size } = await parseSize(form, config);
     // 可选 seed 表单参数：A/B 对比/复现实验用同一种子；缺省仍随机，不影响现有调用方。
     // Number("")===0：字段缺失必须按"未提供"处理，否则所有无 seed 请求共用固定种子 0，重摇不换结果。
@@ -617,7 +640,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
         ? Math.floor(seedParam)
         : Math.floor(Math.random() * 2_147_483_647);
     const context: PlaceholderContext = {
-        prompt,
+        prompt: job.prompt,
         negative: config.defaultNegativePrompt,
         seconds,
         // H3 官方换算：24fps 下 帧数 = 秒×24+4（示例工作流 5s→124 帧），生成范围 2–15 秒。
@@ -668,7 +691,7 @@ async function createVideoJob(req: IncomingMessage, res: ServerResponse, config:
 
     jobs.set(job.id, job);
     await fs.mkdir(path.join(config.jobsDir, job.id), { recursive: true });
-    log(`任务 ${job.id} 已创建：model=${model} 模板=${path.basename(job.workflowPath)}${override ? "" : "（未注册模型名，按参考图回退默认模板）"} mode=${mode} seconds=${seconds} size=${size} seed=${seed}`);
+    log(`任务 ${job.id} 已创建：model=${model} 模板=${path.basename(job.workflowPath)}${override ? "" : dubFallback ? "（未注册模型名，图+音齐备走 dub 兜底）" : "（未注册模型名，按参考图回退默认模板）"} mode=${mode} seconds=${seconds} size=${size} seed=${seed}`);
 
     // 动漫场景模型：多参考图自动走两步流程（合成→编辑首帧→I2VA）
     const animeSceneModels = ["h3-anime-scene"];
@@ -1136,6 +1159,541 @@ function json(res: ServerResponse, status: number, payload: unknown) {
     res.end(body);
 }
 
+// ==================== 管理控制台（/admin，仅限本机访问） ====================
+// 查看并在线修改 workflows/*.template.json 的采样参数。模板在每个任务提交时实时读盘，
+// 因此控制台保存后下一个任务即生效，无需重启网关。每次保存前自动备份到 workflows/.backups/。
+
+type ParamDoc = {
+    label: string;
+    doc: string;
+    kind?: "number" | "text" | "select";
+    min?: number;
+    max?: number;
+    step?: number;
+    options?: string[];
+    editable?: boolean;
+};
+
+const PARAM_DOCS: Record<string, Record<string, ParamDoc>> = {
+    MiniMaxH3DualClockSamplerT8: {
+        steps: {
+            label: "采样步数", kind: "number", min: 1, max: 60, step: 1,
+            doc: "去噪步数：越多细节/一致性越好、越慢。搭配 turbo LoRA 时 4~8 步是甜点（v4_step600 官方建议 6-8，超过 8 开始过度锐化）；去掉 LoRA 的全采样档用 20（参考驱动镜头官方建议 20，参考漂移严重升 25）。改动只影响之后提交的任务。",
+        },
+        shift_video: {
+            label: "视频时钟偏移", kind: "number", min: 1, max: 25, step: 1,
+            doc: "视频去噪调度曲线的 sigma 偏移，官方值 12。决定开头噪声强度与运动幅度倾向；无明确目的不要改。",
+        },
+        shift_audio: {
+            label: "音频时钟偏移", kind: "number", min: 1, max: 10, step: 1,
+            doc: "音频去噪调度偏移，官方值 3，与 shift_video 配对使用。无明确目的不要改。",
+        },
+    },
+    LoraLoaderModelOnly: {
+        lora_name: {
+            label: "加速 LoRA 权重", kind: "text",
+            doc: "蒸馏加速件。minimax_h3_turbo_v4_step600_ema=当前推荐（静态/小动作最强、微细节最好，配 6-8 步）；文件名带「4步加速ema」的是旧版 v1_850（配 4 步）；ref2v_turbo_4step=多参考专用。删掉这个节点+步数提到 20 就是非加速档（已有现成的 -steady 模板，不必手改）。",
+        },
+        strength_model: {
+            label: "LoRA 强度", kind: "number", min: 0, max: 1, step: 0.05,
+            doc: "1.0=完全生效。降到 0.6-0.8 可缓和过锐，但不等价于非加速模板；要质量请直接换 -steady 档。",
+        },
+    },
+    LoraLoaderBypassModelOnly: {
+        lora_name: { label: "加速 LoRA 权重", kind: "text", doc: "同 LoraLoaderModelOnly（绕过文本编码器分支的变体）。" },
+        strength_model: { label: "LoRA 强度", kind: "number", min: 0, max: 1, step: 0.05, doc: "同 LoraLoaderModelOnly。" },
+    },
+    MiniMaxH3AudioConditioningT8: {
+        task_type: {
+            label: "任务形态", kind: "select", options: ["T2VA", "Ref2VA", "Hybrid"],
+            doc: "T2VA=纯文本生成；Ref2VA=参考图驱动；Hybrid=首帧+参考图混合（dub/flf 系模板用，首帧管构图、设定稿管身份）。",
+        },
+        audio_mode: {
+            label: "音轨策略", kind: "select", options: ["native", "lock_source", "remix_source", "reference_only"],
+            doc: "native=模型联合生成环境音；lock_source=驱动 wav 原声直通音轨（台词配音必须，画面向 wav 对齐）；remix_source=模型重新演绎音色；reference_only=仅作参考不进音轨。",
+        },
+        audio_denoise_strength: {
+            label: "音频去噪强度", kind: "number", min: 0, max: 1, step: 0.05,
+            doc: "lock_source 直通配音保持 0（保真，模型不动音轨）；native 联合生成可用 1。",
+        },
+        add_source_as_reference: {
+            label: "驱动音频作参考", kind: "select", options: ["true", "false"],
+            doc: "口型三件套之一：把驱动 wav 同时作为声线/节奏参考。台词驱动镜头必须 true（false 是 E01 口型事故的头号原因）。",
+        },
+        prompt_primary_audio_ordinal: {
+            label: "主音频序号", kind: "number", min: 0, max: 4, step: 1,
+            doc: "口型三件套之二：第几条 <Audio N> 是台词主驱动（1-based，0=无）。必须配合提示词里显式的 <Audio 1> 引用才生效（网关 ensureAudioPerformanceBinding 会兜底补写）。",
+        },
+        strict_prompt_tags: {
+            label: "标签严格校验", kind: "select", options: ["true", "false"],
+            doc: "校验提示词里的 <Picture N>/<Audio N> 是否真有对应接线，悬空标签直接报错而不是静默错绑。保持 true。",
+        },
+        ref_image_size: { label: "参考图尺寸策略", kind: "text", doc: "match=参考图跟随输出分辨率裁缩。保持 match。" },
+        reference_video_policy: { label: "参考视频时长策略", kind: "text", doc: "official_2_to_15s=官方 2~15 秒约束。保持默认。" },
+    },
+    UNETLoader: {
+        unet_name: {
+            label: "底模（扩散模型）", kind: "text",
+            doc: "fl2va=首帧/文生通用（可生成音频）；ref2va=多参考角色一致性优化（设定稿驱动镜头用它）；fasth3_8step=蒸馏快速底模（仅草稿）。名字带 _pruned=官方剪枝版。换底模要确认配套 LoRA/步数仍然匹配。",
+        },
+        weight_dtype: { label: "权重精度", kind: "text", doc: "default=按文件精度（int8_convrot 量化）。保持 default。" },
+    },
+    CLIPLoader: {
+        clip_name: {
+            label: "文本编码器", kind: "text",
+            doc: "{{TEXT_ENCODER}} 是占位符：实际文件由 config.json 的 defaultTextEncoder/modelTextEncoders 按模型名决定（默认官方 qwen3vl_32b nvfp4；heretic 后缀=去审查微调版）。改编码器去 config.json，不要改这里。",
+        },
+        type: { label: "编码器协议", kind: "text", doc: "minimax=H3 专用协议。保持。" },
+    },
+    BasicScheduler: {
+        steps: { label: "调度步数（噪声源）", kind: "number", min: 1, max: 60, step: 1, doc: "注意：T8 模板里这个节点只是给采样器提供 sigma 噪声表，实际步数由 MiniMaxH3DualClockSamplerT8 的 steps 决定，改这里不改变采样时长。" },
+        scheduler: { label: "调度器", kind: "text", doc: "simple=官方推荐（配 res_multistep 采样器）。保持。" },
+        denoise: { label: "去噪强度", kind: "number", min: 0, max: 1, step: 0.01, doc: "1.0=从纯噪声生成。保持 1.0。" },
+    },
+    KSamplerSelect: {
+        sampler_name: { label: "采样器", kind: "text", doc: "res_multistep=官方 H3 推荐采样器。保持。" },
+    },
+    RandomNoise: {
+        noise_seed: { label: "随机种子", kind: "text", doc: "{{SEED}}=网关按请求注入（请求不传则真随机）；写死数字=固定种子可复现（A/B 对照用）。" },
+        control: { label: "种子控制", kind: "text", doc: "fixed=按 seed 生成。保持 fixed。" },
+    },
+    VAELoader: {
+        vae_name: {
+            label: "VAE 解码器", kind: "text",
+            doc: "minimax_h3_video_vae=画面解码；minimax_h3_audio_vae=音轨解码。两个节点各司其职，别互换。",
+        },
+    },
+    VHS_VideoCombine: {
+        frame_rate: { label: "帧率", kind: "number", min: 1, max: 60, step: 1, doc: "H3 原生 24fps，与 length 帧数换算绑定（8s=192帧上下）。保持 24。" },
+        crf: { label: "压缩质量 CRF", kind: "number", min: 0, max: 51, step: 1, doc: "h264 质量因子，越小越清晰、文件越大。19=高质量默认；成片要再超分/剪辑可降到 16。" },
+        format: { label: "封装格式", kind: "text", doc: "video/h264-mp4=通用兼容。保持。" },
+        pix_fmt: { label: "像素格式", kind: "text", doc: "yuv420p=播放器兼容最广。保持。" },
+        filename_prefix: { label: "输出目录/前缀", kind: "text", doc: "相对 ComfyUI output 目录，如 MiniMaxH3/beeftv_hybrid。" },
+        trim_to_audio: { label: "裁切到音频长度", kind: "select", options: ["true", "false"], doc: "true=成片时长截到音轨结束。lock_source 长视频场景可开。" },
+        save_metadata: { label: "写入元数据", kind: "select", options: ["true", "false"], doc: "把工作流写进 mp4 元数据，便于事后排查。建议 true。" },
+        save_output: { label: "存入 output 目录", kind: "select", options: ["true", "false"], doc: "false=存 temp。保持 true。" },
+    },
+    LoadImage: {
+        image: {
+            label: "图片槽位", kind: "text",
+            doc: "{{IMAGE}}=首帧（管构图/机位）、{{IMAGE_2}}=尾帧、{{IMAGE_3..7}}=角色设定稿槽位。占位符由网关按请求顺序注入，改槽位语义要去 config.json 对应模板，不建议在模板里挪。",
+        },
+    },
+    LoadAudio: {
+        audio: { label: "音频槽位", kind: "text", doc: "{{AUDIO}}=台词驱动 wav（请求的 drive_audio）。占位符运行时注入。" },
+    },
+    PrimitiveStringMultiline: {
+        value: { label: "文本", kind: "text", doc: "模板内嵌常量。通常是占位说明或固定后缀，改前先确认不与网关注入冲突。" },
+    },
+};
+
+function isLoopbackRequest(req: IncomingMessage): boolean {
+    const remote = String(req.socket.remoteAddress ?? "");
+    return remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+}
+
+function workflowsDir(config: GatewayConfig): string {
+    return path.resolve(scriptDir, "workflows");
+}
+
+function templateUsedBy(config: GatewayConfig, file: string): string[] {
+    const used: string[] = [];
+    const push = (label: string, value: string | undefined) => {
+        if (value && templateAbsolutePath(config, value) === templateAbsolutePath(config, `workflows/${file}`)) used.push(label);
+    };
+    for (const [key, value] of Object.entries(config.workflows)) push(`workflows.${key}`, value);
+    for (const [model, value] of Object.entries(config.modelWorkflows)) push(`模型 ${model}`, value);
+    for (const [model, value] of Object.entries(config.modelImageWorkflows ?? {})) push(`图片模型 ${model}`, value);
+    return used;
+}
+
+type TemplateParam = {
+    nodeId: string;
+    nodeClass: string;
+    nodeRole: string;
+    field: string;
+    label: string;
+    doc: string;
+    value: unknown;
+    kind: "number" | "text" | "select" | "placeholder" | "link";
+    min?: number;
+    max?: number;
+    step?: number;
+    options?: string[];
+    editable: boolean;
+};
+
+function nodeRoleLabel(nodeClass: string, inputs: Record<string, unknown>): string {
+    const value = inputs.image;
+    if (nodeClass === "LoadImage" && typeof value === "string") {
+        if (value === "{{IMAGE}}") return "首帧槽";
+        if (value === "{{IMAGE_2}}") return "尾帧槽";
+        const match = value.match(/\{\{IMAGE_(\d+)\}\}/);
+        if (match) return `参考稿槽 ${match[1]}`;
+    }
+    if (nodeClass === "LoadAudio") return "台词驱动音频";
+    if (nodeClass === "VAELoader") {
+        const name = String(inputs.vae_name ?? "");
+        return name.includes("audio") ? "音频 VAE" : "视频 VAE";
+    }
+    return "";
+}
+
+function describeTemplate(config: GatewayConfig, file: string, raw: string) {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const readme = Array.isArray(parsed._README) ? (parsed._README as unknown[]).map(String) : [];
+    const graph: Record<string, { class_type?: unknown; inputs?: Record<string, unknown> }> = {};
+    for (const [nodeId, node] of Object.entries(parsed)) {
+        if (!node || typeof node !== "object" || Array.isArray(node)) continue;
+        const record = node as Record<string, unknown>;
+        if (typeof record.class_type !== "string") continue;
+        graph[nodeId] = { class_type: record.class_type, inputs: (record.inputs ?? {}) as Record<string, unknown> };
+    }
+    const params: TemplateParam[] = [];
+    const nodeOrder = Object.keys(graph).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    for (const nodeId of nodeOrder) {
+        const node = graph[nodeId];
+        const nodeClass = String(node.class_type);
+        const docs = PARAM_DOCS[nodeClass] ?? {};
+        const inputs = node.inputs ?? {};
+        const role = nodeRoleLabel(nodeClass, inputs);
+        for (const [field, rawValue] of Object.entries(inputs)) {
+            if (Array.isArray(rawValue)) continue; // 连线在原始 JSON 里看
+            const doc = docs[field];
+            const valueStr = String(rawValue);
+            const isPlaceholder = valueStr.includes("{{");
+            const kind: TemplateParam["kind"] = isPlaceholder
+                ? "placeholder"
+                : doc?.kind === "number" && typeof rawValue === "number"
+                    ? "number"
+                    : doc?.kind === "select"
+                        ? "select"
+                        : "text";
+            params.push({
+                nodeId,
+                nodeClass,
+                nodeRole: role,
+                field,
+                label: doc?.label ?? field,
+                doc: doc?.doc
+                    ?? (isPlaceholder
+                        ? "运行时占位符：网关按请求注入实际值，不需要在模板里改。"
+                        : `原始字段（未收录释义）。类型 ${typeof rawValue}。`),
+                value: rawValue,
+                kind,
+                min: doc?.min,
+                max: doc?.max,
+                step: doc?.step,
+                options: doc?.options,
+                editable: Boolean(doc) && !isPlaceholder,
+            });
+        }
+    }
+    return {
+        file,
+        usedBy: templateUsedBy(config, file),
+        readme,
+        params,
+        nodeInventory: nodeOrder.map((nodeId) => ({ nodeId, nodeClass: String(graph[nodeId].class_type) })),
+        raw: parsed,
+    };
+}
+
+async function handleAdminList(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    if (!isLoopbackRequest(req)) return json(res, 403, { error: { message: "管理控制台仅限本机访问" } });
+    const dir = workflowsDir(config);
+    const files = (await fs.readdir(dir)).filter((name) => name.endsWith(".json")).sort();
+    const templates = [];
+    for (const file of files) {
+        try {
+            const raw = await fs.readFile(path.join(dir, file), "utf8");
+            templates.push(describeTemplate(config, file, raw));
+        } catch (error) {
+            templates.push({ file, error: error instanceof Error ? error.message : String(error) });
+        }
+    }
+    return json(res, 200, { templates, backupDir: "workflows/.backups/" });
+}
+
+async function handleAdminSave(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    if (!isLoopbackRequest(req)) return json(res, 403, { error: { message: "管理控制台仅限本机访问" } });
+    const body = (await new Promise<Record<string, unknown>>((resolve, reject) => {
+        let data = "";
+        req.on("data", (chunk: Buffer) => (data += chunk));
+        req.on("end", () => {
+            try { resolve(JSON.parse(data)); } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+        });
+        req.on("error", reject);
+    }).catch((error) => error)) as Record<string, unknown>;
+    if (body instanceof Error) return json(res, 400, { error: { message: `请求体不是合法 JSON：${body.message}` } });
+
+    const file = String(body.file ?? "");
+    if (!/^[\w.-]+\.json$/.test(file)) return json(res, 400, { error: { message: `非法文件名：${file}` } });
+    const dir = workflowsDir(config);
+    const filePath = path.join(dir, file);
+    let graph: Record<string, Record<string, unknown>>;
+    try {
+        graph = JSON.parse(await fs.readFile(filePath, "utf8")) as Record<string, Record<string, unknown>>;
+    } catch (error) {
+        return json(res, 400, { error: { message: `读取模板失败：${error instanceof Error ? error.message : String(error)}` } });
+    }
+    const edits = Array.isArray(body.edits) ? (body.edits as Array<Record<string, unknown>>) : [];
+    if (!edits.length) return json(res, 400, { error: { message: "没有要保存的修改" } });
+
+    for (const edit of edits) {
+        const nodeId = String(edit.nodeId ?? "");
+        const field = String(edit.field ?? "");
+        const node = graph[nodeId];
+        if (!node || typeof node !== "object" || typeof node.class_type !== "string") {
+            return json(res, 400, { error: { message: `节点不存在：${nodeId}` } });
+        }
+        const inputs = (node.inputs ?? {}) as Record<string, unknown>;
+        if (!(field in inputs)) return json(res, 400, { error: { message: `节点 ${nodeId} 没有字段 ${field}` } });
+        if (Array.isArray(inputs[field])) return json(res, 400, { error: { message: `字段 ${nodeId}.${field} 是连线，不能改值` } });
+        const doc = PARAM_DOCS[String(node.class_type)]?.[field];
+        const rawValue = edit.value;
+        if (doc?.kind === "number") {
+            const num = Number(rawValue);
+            if (!Number.isFinite(num)) return json(res, 400, { error: { message: `${nodeId}.${field} 需要数字，收到 ${JSON.stringify(rawValue)}` } });
+            inputs[field] = doc.min === undefined && doc.max === undefined ? num : Math.min(doc.max ?? num, Math.max(doc.min ?? num, num));
+        } else if (doc?.kind === "select") {
+            const text = String(rawValue);
+            if (doc.options && !doc.options.includes(text)) {
+                return json(res, 400, { error: { message: `${nodeId}.${field} 只允许 ${doc.options.join(" / ")}` } });
+            }
+            inputs[field] = text === "true" ? true : text === "false" ? false : text;
+        } else if (typeof rawValue === "string") {
+            if (rawValue.includes("{{") !== String(inputs[field]).includes("{{")) {
+                return json(res, 400, { error: { message: `${nodeId}.${field} 是运行时占位符，不能改成字面值（或反之）` } });
+            }
+            inputs[field] = rawValue;
+        } else {
+            return json(res, 400, { error: { message: `${nodeId}.${field} 类型不支持：${typeof rawValue}` } });
+        }
+    }
+
+    await fs.mkdir(path.join(dir, ".backups"), { recursive: true });
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
+    await fs.copyFile(filePath, path.join(dir, ".backups", `${file}.${stamp}.bak`));
+    await fs.writeFile(filePath, JSON.stringify(graph, null, "    ") + "\n", "utf8");
+    log(`管理控制台：${file} 已更新 ${edits.length} 个参数（已备份到 workflows/.backups/）`);
+    return json(res, 200, { ok: true, effect: "下一个提交的任务即使用新参数，无需重启网关", backup: `workflows/.backups/${file}.${stamp}.bak` });
+}
+
+const ADMIN_PAGE_HTML = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyUI 视频网关 · 模板参数控制台</title>
+<style>
+:root { color-scheme: dark; --bg:#0e1116; --panel:#151a21; --card:#171c24; --border:#252c37; --border-2:#2f3846;
+  --text:#e6ebf0; --muted:#8b95a3; --accent:#4f8cff; --amber:#e0b25f; --green:#34d399; --red:#f87171; }
+* { box-sizing:border-box; }
+html,body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--text); font:13.5px/1.55 ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif; display:flex; flex-direction:column; }
+header { padding:10px 16px; border-bottom:1px solid var(--border); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; background:var(--panel); }
+header h1 { font-size:15px; margin:0; }
+header .sub { color:var(--muted); font-size:12px; }
+main { flex:1; display:flex; min-height:0; }
+aside { width:264px; flex:none; border-right:1px solid var(--border); background:var(--panel); display:flex; flex-direction:column; }
+aside .search { padding:10px 12px; }
+aside input[type=search] { width:100%; background:#0c0f14; border:1px solid var(--border-2); color:var(--text); border-radius:8px; padding:7px 10px; font-size:13px; }
+aside input[type=search]:focus { outline:none; border-color:var(--accent); }
+nav { overflow-y:auto; padding:0 8px 12px; flex:1; }
+.tpl { display:block; width:100%; text-align:left; background:none; border:0; color:var(--text); border-radius:8px;
+  padding:8px 10px; margin:2px 0; cursor:pointer; font-size:12.5px; font-family:ui-monospace,Consolas,monospace; }
+.tpl:hover { background:#1c232e; }
+.tpl.active { background:#20304a; color:#cfe2ff; }
+.tpl .meta { display:block; color:var(--muted); font-size:11px; margin-top:2px; font-family:ui-sans-serif; }
+.tpl .meta.used { color:#7ea6d9; }
+section { flex:1; overflow-y:auto; padding:16px 20px 84px; min-width:0; }
+.tpl-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+.tpl-head h2 { font-size:15px; margin:0; font-family:ui-monospace,Consolas,monospace; }
+.badge { background:#233043; color:#9cc3e8; border-radius:10px; padding:2px 9px; font-size:11.5px; }
+.badge.none { background:#2a2431; color:#b093c9; }
+.readme { background:#10151c; border-left:3px solid #3a6ea5; padding:8px 12px; margin:10px 0; color:#a9b6c2; font-size:12px; white-space:pre-wrap; border-radius:0 6px 6px 0; }
+.toolbar { display:flex; gap:10px; align-items:center; margin:8px 0 10px; }
+.toolbar input[type=search] { flex:1; max-width:420px; background:#0c0f14; border:1px solid var(--border-2); color:var(--text); border-radius:8px; padding:6px 10px; font-size:12.5px; }
+.toolbar .count { color:var(--muted); font-size:12px; }
+details.node { background:var(--card); border:1px solid var(--border); border-radius:10px; margin:10px 0; overflow:hidden; }
+details.node summary { cursor:pointer; padding:9px 14px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px;
+  display:flex; align-items:center; gap:8px; list-style:none; user-select:none; }
+details.node summary::-webkit-details-marker { display:none; }
+details.node summary::before { content:"▸"; color:var(--muted); transition:transform .12s; }
+details.node[open] summary::before { transform:rotate(90deg); }
+details.node summary .role { color:#7ea6d9; font-family:ui-sans-serif; font-size:11.5px; background:#1b2839; border-radius:8px; padding:1px 8px; }
+details.node summary .n { color:var(--muted); font-size:11px; margin-left:auto; font-family:ui-sans-serif; }
+table { width:100%; border-collapse:collapse; font-size:12.5px; }
+th { text-align:left; color:var(--muted); font-weight:500; font-size:11.5px; border-bottom:1px solid var(--border); padding:6px 10px; }
+td { border-bottom:1px solid #1d232c; padding:7px 10px; vertical-align:top; }
+tr:last-child td { border-bottom:none; }
+tr:hover td { background:#1a212b; }
+td.name { white-space:nowrap; }
+td.name small { display:block; color:var(--muted); font-size:10.5px; font-family:ui-monospace,Consolas,monospace; }
+td.doc { color:#98a5b3; max-width:460px; }
+input[type=number], input[type=text] { background:#0c0f14; border:1px solid var(--border-2); color:var(--text); border-radius:6px; padding:5px 8px; width:200px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; }
+input:focus { outline:none; border-color:var(--accent); }
+input.changed { border-color:var(--amber); background:#241f12; }
+select { background:#0c0f14; border:1px solid var(--border-2); color:var(--text); border-radius:6px; padding:5px 8px; font-size:12.5px; }
+select.changed { border-color:var(--amber); background:#241f12; }
+.ph { color:var(--amber); font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+.raw details { margin-top:10px; }
+.raw pre { background:#0c0f14; padding:10px; border-radius:8px; overflow:auto; max-height:380px; font-size:11.5px; border:1px solid var(--border); }
+.savebar { position:fixed; left:0; right:0; bottom:0; background:#141922f2; border-top:1px solid var(--border-2);
+  padding:10px 20px; display:flex; align-items:center; gap:14px; transform:translateY(100%); transition:transform .15s; backdrop-filter:blur(4px); }
+.savebar.show { transform:none; }
+.savebar .diff { color:var(--amber); font-size:12.5px; }
+.savebar button { background:var(--accent); border:0; color:#fff; border-radius:8px; padding:8px 20px; font-size:13px; cursor:pointer; }
+.savebar button:disabled { opacity:.45; cursor:default; }
+.savebar .revert { background:none; border:1px solid var(--border-2); color:var(--muted); padding:7px 14px; }
+#toast { position:fixed; right:20px; bottom:64px; background:#1f2937; border:1px solid #374151; padding:10px 16px; border-radius:8px; display:none; max-width:520px; font-size:12.5px; z-index:9; }
+.empty { color:var(--muted); padding:40px 20px; text-align:center; }
+.err { color:var(--red); }
+@media (max-width: 760px) { aside { width:200px; } td.doc { max-width:none; } }
+</style></head><body>
+<header><h1>模板参数控制台</h1><span class="sub">保存后<b>下一个任务即生效</b>（模板按任务实时读盘）· 每次保存自动备份 workflows/.backups/ · 金色 <span class="ph">{{占位符}}</span> 由网关按请求注入，不可改</span></header>
+<main>
+<aside>
+  <div class="search"><input type="search" id="tpl-search" placeholder="筛选模板文件名…"></div>
+  <nav id="tpl-list"></nav>
+</aside>
+<section id="content"><div class="empty">加载中…</div></section>
+</main>
+<div class="savebar" id="savebar"><span class="diff" id="diff"></span><button id="save" disabled>保存修改</button><button class="revert" id="revert">放弃修改</button></div>
+<div id="toast"></div>
+<script>
+let TPLS = [], current = null, filter = '';
+
+async function load() {
+  const res = await fetch('/admin/api/templates');
+  const data = await res.json();
+  TPLS = data.templates || [];
+  renderList();
+  if (!current) {
+    const preferred = TPLS.find(t => t.usedBy && t.usedBy.some(u => u.includes('h3-hybrid-dub-flf') && !u.includes('steady') && !u.includes('s8'))) || TPLS[0];
+    if (preferred) select(preferred.file);
+  } else {
+    select(current);
+  }
+}
+
+function renderList() {
+  const nav = document.getElementById('tpl-list');
+  nav.innerHTML = '';
+  const kw = filter.toLowerCase();
+  for (const t of TPLS) {
+    if (kw && !t.file.toLowerCase().includes(kw)) continue;
+    const b = document.createElement('button');
+    b.className = 'tpl' + (t.file === current ? ' active' : '');
+    const n = t.error ? '解析失败' : (t.params.length + ' 参数');
+    const used = t.usedBy && t.usedBy.length ? '← ' + t.usedBy.join('、') : '未被 config 引用';
+    b.innerHTML = t.file + '<span class="meta ' + (t.usedBy && t.usedBy.length ? 'used' : '') + '">' + n + ' · ' + used + '</span>';
+    b.addEventListener('click', () => select(t.file));
+    nav.appendChild(b);
+  }
+  if (!nav.children.length) nav.innerHTML = '<div class="empty" style="padding:16px">无匹配模板</div>';
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+function select(file) {
+  if (current && current !== file) resetChanges();
+  current = file;
+  renderList();
+  const t = TPLS.find(x => x.file === file);
+  const c = document.getElementById('content');
+  if (!t) { c.innerHTML = '<div class="empty">未找到模板</div>'; return; }
+  if (t.error) { c.innerHTML = '<div class="empty err">解析失败：' + esc(t.error) + '</div>'; return; }
+  let html = '<div class="tpl-head"><h2>' + t.file + '</h2>';
+  html += (t.usedBy || []).map(u => '<span class="badge">' + esc(u) + '</span>').join('') || '<span class="badge none">未被 config 引用</span>';
+  html += '</div>';
+  if (t.readme && t.readme.length) html += '<div class="readme">' + esc(t.readme.join('\\n')) + '</div>';
+  html += '<div class="toolbar"><input type="search" id="param-search" placeholder="在参数名/释义中搜索…"><span class="count" id="param-count"></span></div><div id="groups"></div>';
+  html += '<div class="raw"><details><summary>原始 JSON（含连线）</summary><pre>' + esc(JSON.stringify(t.raw, null, 2)) + '</pre></details></div>';
+  c.innerHTML = html;
+  document.getElementById('param-search').addEventListener('input', e => renderGroups(t, e.target.value));
+  renderGroups(t, '');
+}
+
+const KEY_NODES = ['MiniMaxH3DualClockSamplerT8','LoraLoaderModelOnly','LoraLoaderBypassModelOnly','MiniMaxH3AudioConditioningT8','VHS_VideoCombine'];
+
+function renderGroups(t, kw) {
+  const groups = new Map();
+  for (const p of t.params) {
+    const key = p.nodeClass + '#' + p.nodeId;
+    if (!groups.has(key)) groups.set(key, { nodeClass: p.nodeClass, nodeId: p.nodeId, role: p.nodeRole, params: [] });
+    groups.get(key).params.push(p);
+  }
+  const lower = kw.toLowerCase();
+  const wrap = document.getElementById('groups');
+  wrap.innerHTML = '';
+  let shown = 0;
+  for (const [key, g] of groups) {
+    const visible = g.params.filter(p => !lower || (p.label + ' ' + p.field + ' ' + p.doc + ' ' + p.nodeClass).toLowerCase().includes(lower));
+    if (!visible.length) continue;
+    shown += visible.length;
+    const d = document.createElement('details');
+    d.className = 'node';
+    d.open = !lower || KEY_NODES.includes(g.nodeClass);
+    let inner = '<summary>' + esc(g.nodeClass) + ' #' + esc(g.nodeId)
+      + (g.role ? '<span class="role">' + esc(g.role) + '</span>' : '')
+      + '<span class="n">' + visible.length + ' 参数</span></summary><table><tr><th>参数</th><th>值</th><th>含义</th></tr>';
+    for (const p of visible) {
+      let control;
+      if (p.kind === 'placeholder') control = '<span class="ph">' + esc(p.value) + '</span>';
+      else if (p.kind === 'number') control = '<input type="number" data-node="' + p.nodeId + '" data-field="' + p.field + '" data-orig="' + p.value + '" value="' + p.value + '"' + (p.min !== undefined ? ' min="' + p.min + '"' : '') + (p.max !== undefined ? ' max="' + p.max + '"' : '') + (p.step !== undefined ? ' step="' + p.step + '"' : '') + '>';
+      else if (p.kind === 'select') control = '<select data-node="' + p.nodeId + '" data-field="' + p.field + '" data-orig="' + String(p.value) + '">' + p.options.map(o => '<option' + (String(p.value) === o ? ' selected' : '') + '>' + o + '</option>').join('') + '</select>';
+      else control = '<input type="text" data-node="' + p.nodeId + '" data-field="' + p.field + '" data-orig="' + esc(p.value) + '" value="' + esc(p.value) + '">';
+      inner += '<tr><td class="name">' + esc(p.label) + '<small>' + esc(p.field) + '</small></td><td>' + control + '</td><td class="doc">' + esc(p.doc) + '</td></tr>';
+    }
+    d.innerHTML = inner + '</table>';
+    wrap.appendChild(d);
+  }
+  wrap.querySelectorAll('input,select').forEach(el => el.addEventListener('input', () => { el.classList.toggle('changed', el.value !== el.dataset.orig); updateSavebar(); }));
+  document.getElementById('param-count').textContent = shown + ' / ' + t.params.length + ' 个参数';
+}
+
+function collectEdits() {
+  const edits = [];
+  document.querySelectorAll('#content input[data-node],#content select[data-node]').forEach(el => {
+    if (el.value === el.dataset.orig) return;
+    edits.push({ nodeId: el.dataset.node, field: el.dataset.field, value: el.type === 'number' ? Number(el.value) : el.value });
+  });
+  return edits;
+}
+
+function updateSavebar() {
+  const n = collectEdits().length;
+  const bar = document.getElementById('savebar');
+  bar.classList.toggle('show', n > 0);
+  document.getElementById('diff').textContent = n + ' 处修改待保存';
+  document.getElementById('save').disabled = n === 0;
+}
+
+function resetChanges() {
+  document.querySelectorAll('#content .changed').forEach(el => { el.value = el.dataset.orig; el.classList.remove('changed'); });
+  updateSavebar();
+}
+
+document.getElementById('revert').addEventListener('click', resetChanges);
+document.getElementById('save').addEventListener('click', async () => {
+  const edits = collectEdits();
+  if (!edits.length) return;
+  const btn = document.getElementById('save');
+  btn.disabled = true;
+  const res = await fetch('/admin/api/template', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file: current, edits }) });
+  const data = await res.json();
+  const toast = document.getElementById('toast');
+  toast.style.display = 'block';
+  toast.textContent = res.ok ? ('已保存：' + data.effect + '（备份 ' + data.backup + '）') : ('保存失败：' + (data.error && data.error.message || res.status));
+  setTimeout(() => toast.style.display = 'none', 6000);
+  if (res.ok) await load(); else updateSavebar();
+});
+document.getElementById('tpl-search').addEventListener('input', e => { filter = e.target.value; renderList(); });
+
+load();
+</script></body></html>
+`;
+
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -1149,6 +1707,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
     if (pathname === "/healthz") {
         return json(res, 200, { status: "ok", executor: config.executor, comfyuiUrl: config.comfyuiUrl });
     }
+
+    // 管理控制台：仅限本机浏览器访问，且不走 API Key 校验（本地部署的密钥本来就为空）。
+    if (pathname === "/admin" || pathname === "/admin/") {
+        if (!isLoopbackRequest(req)) return json(res, 403, { error: { message: "管理控制台仅限本机访问" } });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end(ADMIN_PAGE_HTML);
+    }
+    if (pathname === "/admin/api/templates") return handleAdminList(req, res, config);
+    if (pathname === "/admin/api/template" && req.method === "POST") return handleAdminSave(req, res, config);
 
     if (config.apiKey) {
         const authorization = String(req.headers.authorization ?? "");

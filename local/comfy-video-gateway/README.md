@@ -77,6 +77,15 @@ node verify-templates.js --live     # ComfyUI 需在运行；不加 --live 只�
 - 网关新增两道结构防线：`pruneEmptyMediaNodes`（任何请求形态都不把带空文件名的加载器提交给 ComfyUI，如只连 1 张图时 `last_frame` 落空则剪掉该 keyframe 槽）与 `assertNoDanglingLinks`（剪槽后仍有悬空链接直接 400 报错，绝不提交坏图）。
 - 修复缺省种子 bug：`Number("")===0` 导致不发 seed 字段的请求（BeefTV 后端表单从不发）全部共用 seed=0，重摇不换片；现缺省真随机，显式 seed 复现语义保留。
 - `h3-hybrid-dub-flf-s8` 重新注册为 8 步主模板别名（此前未注册会静默回退 ref-to-video）；任务日志打印实际模板文件名，未注册模型名的回退明确标注。
+- 口型绑定兜底 `ensureAudioPerformanceBinding`：T8 的 `prepare_prompt` 只校验已有媒体标签、从不自动注入——提示词不写 `<Audio N>` 时 drive_audio 只是弱参考，模型不做说话表演（E01 全部镜头因此无口型）。现 dub 系模板（含 drive_audio 槽）+ 请求带音频 + 提示词无任何音频标签时自动追加官方口型句（"visibly performs ... in precise synchronization with <Audio 1>"）；调用方已写标签不重复追加，非台词模板（hybrid-cast 声线锚）不动。拦截实测三项全过（`.local/bind-check.js`）。
+
+### 2026-10-13 H3 参数链路审计产出
+
+全链路字段核对通过（插件表单字段 ↔ 网关读取键、size 32 对齐、秒×24+4 帧、参考槽顺序、采样覆盖范围），三处边缘加固：
+
+- 纯音频请求显式拒绝：`mode=text` 且带音频参考时直接 400（文生视频模板没有音频槽位，此前音频被静默剪掉、出片成功但口型/台词全无）。要么为首帧连图，要么改用 dub 系模型名。
+- hybrid 家族 8 个模板的 CLIPLoader 由硬编码官方编码器改为 `{{TEXT_ENCODER}}` 占位符：当前所有 hybrid 模型名仍解析到官方权重（行为不变），但 `modelTextEncoders` 的按模型名切换从此对 hybrid 家族同样生效，杜绝将来注册 `-uncensored` 变体时"名字切了、编码器没切"的静默失效。
+- BeefTV 设置页 steps 提示文案对齐模板现状（hybrid 6 / dub-flf 8 / steady 20，见 `web/src/pages/settings/channel-model-settings.tsx`）。
 
 ### 2026-10-12 画布链路打通（BeefTV 任务体系 → 插件 → 网关，端到端实测）
 
@@ -99,6 +108,15 @@ node verify-templates.js --live     # ComfyUI 需在运行；不加 --live 只�
 | `GET /v1/videos/{id}/content` | 从 ComfyUI `/view` 拉取成片并回传 mp4 |
 
 带参考图走 `workflows.image` 模板（图生视频），不带则走 `workflows.text` 模板（文生视频）。
+
+## 管理控制台（/admin）
+
+浏览器打开 <http://127.0.0.1:8765/admin>（仅限本机访问，不走 API Key 校验）可以在线查看和修改 `workflows/*.template.json` 的参数：
+
+- 每个参数带中文释义（采样步数、turbo LoRA 强度、音轨策略、口型三件套、CRF 等），已覆盖 T8 采样器/LoRA/音频条件/编码器/VAE/VHS 输出等常用节点；未收录的节点字段按原始字段展示；
+- 模板按任务**实时读盘**，控制台保存后下一个任务即生效，无需重启网关；每次保存自动备份到 `workflows/.backups/`；
+- 金色 `{{占位符}}`（`{{PROMPT}}`/`{{SEED}}`/`{{IMAGE_N}}` 等）由网关按请求注入，控制台里只读；节点间连线在「原始 JSON」里查看；
+- 控制台改的是模板默认值；单次请求级覆盖用 BeefTV 模型高级设置里的 `steps`/`shift_video`/`shift_audio` 表单字段（2~12/1~25/1~10），两者互不冲突。
 
 ## 接入步骤
 

@@ -7,7 +7,7 @@
     ],
     "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "minimax_h3_fl2va_int8_convrot.safetensors", "weight_dtype": "default" } },
     "2": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "minimax_h3_turbo_4步加速ema_comfyui.safetensors", "strength_model": 1.0 } },
-    "3": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "type": "minimax", "device": "default" } },
+    "3": { "class_type": "CLIPLoader", "inputs": { "clip_name": "{{TEXT_ENCODER}}", "type": "minimax", "device": "default" } },
     "4": { "class_type": "VAELoader", "inputs": { "vae_name": "minimax_h3_video_vae_fp16.safetensors" } },
     "5": { "class_type": "VAELoader", "inputs": { "vae_name": "minimax_h3_audio_vae_fp32.safetensors" } },
     "21": { "class_type": "LoadImage", "inputs": { "image": "{{IMAGE}}", "upload": "image" } },

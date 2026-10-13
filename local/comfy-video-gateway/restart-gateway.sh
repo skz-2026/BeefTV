@@ -2,6 +2,9 @@
 # 重启 ComfyUI 视频网关：改完 gateway.ts / config.json / workflows 模板后运行。
 # 先杀掉占用 8765 的旧进程，再以独立进程拉起（不依赖启动它的终端）。
 # 日志写入 logs/gateway.out.log 与 logs/gateway.err.log。
+# 警示：网关的任务表只在内存里——重启会孤儿化所有在途任务（BeefTV 后端轮询
+# 立刻 404"任务不存在或已被清理"→任务失败不回绑；ComfyUI 里的渲染本体不受影响，
+# 成片仍在 output/MiniMaxH3/ 下）。重启前必须确认 jobs 无在途任务、ComfyUI 队列为空。
 # 注意：之后运行 start-dev-stack.sh 整栈重启时，若网关端口被本脚本拉起的进程
 # 占用，栈里的网关实例会启动失败（其余服务不受影响）——先跑本脚本接管即可。
 set -uo pipefail
