@@ -58,7 +58,13 @@ export function serviceConnectionError(channel: ModelChannel): string {
         if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return "请填写不含账号、查询参数或片段的 HTTP(S) 服务地址";
         if (/\/(chat\/completions|responses|images\/generations|models)\/?$/i.test(url.pathname)) return "请填写服务的基础地址，不要包含模型或生成接口路径";
     } catch { return "请填写完整的服务地址，例如 https://api.example.com/v1"; }
-    if (!channel.apiKey.trim() && !channel.hasApiKey) return "请填写 API Key";
+    if (!channel.apiKey.trim() && !channel.hasApiKey) {
+        // 本机服务渠道（声线工坊/ComfyUI 网关等）不使用密钥，与 channelHasGenerationCredential 的豁免保持一致。
+        try {
+            const host = new URL(channel.baseUrl.trim()).hostname;
+            if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return "请填写 API Key";
+        } catch { return "请填写 API Key"; }
+    }
     return "";
 }
 

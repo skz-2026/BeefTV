@@ -212,7 +212,7 @@ function capabilityLabel(value: ModelProfile["capability"]) {
 }
 
 const SAMPLER_FIELDS = [
-    { key: "steps", label: "采样步数", min: 2, max: 12, step: 1, hint: "越大越精细越慢；H3 hybrid 模板默认 6。" },
+    { key: "steps", label: "采样步数", min: 2, max: 12, step: 1, hint: "越大越精细越慢；缺省随模板（hybrid 6 / dub-flf 8 / steady 20）。" },
     { key: "shift_video", label: "视频动态 shift", min: 1, max: 25, step: 0.5, hint: "越大运动越强、画面越难稳；模板默认 12。" },
     { key: "shift_audio", label: "音频 shift", min: 1, max: 10, step: 0.5, hint: "模板默认 3，一般不用改。" },
 ] as const;
