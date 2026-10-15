@@ -5,6 +5,8 @@
 //   POST   {base}/videos            multipart/form-data，字段 model/prompt/seconds/size/input_reference[]
 //   GET    {base}/videos/{id}       状态轮询，status: queued|in_progress|completed|failed
 //   GET    {base}/videos/{id}/content  下载成片（video/mp4）
+//   POST   {base}/audio/speech      TTS 配音（OpenAI 协议，代理到网关监督的按需 TTS 服务）
+//   GET    {base}/voices            TTS 预置音色列表（读 voicesDir，不触发服务启动）
 // 路径同时接受带 /v1 前缀和不带前缀两种形式。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -35,7 +37,7 @@ type GatewayConfig = {
     // H3 视频模板的文本编码器：默认官方权重，modelTextEncoders 按模型名切换（如无审查版编码器）。
     defaultTextEncoder: string;
     modelTextEncoders: Record<string, string>;
-    // Qwen-Image 图片模板（qwen-t2i/qwen-edit-7b）的文本编码器，按模型名切换的规则与视频侧一致。
+    // Qwen-Image 图片模板（qwen-t2i/qwen-edit）的文本编码器，按模型名切换的规则与视频侧一致。
     defaultImageTextEncoder: string;
     workflows: { text: string; image: string; imageGen: string };
     modelWorkflows: Record<string, string>;
@@ -43,6 +45,32 @@ type GatewayConfig = {
     modelImageWorkflows: Record<string, string>;
     jobsDir: string;
     jobTtlHours: number;
+    tts: TTSConfig;
+};
+
+// TTS 声线服务（IndexTTS-2 voiceforge2）：网关监督的按需 GPU 负载。
+// 请求时拉起（fastapi 就绪即回，模型在首次合成懒加载），闲置超时或被视频/生图
+// 任务挤占时退出进程释放显存。ComfyUI 维持原有懒启动 + /free 卸载策略不变。
+type TTSConfig = {
+    enabled: boolean;
+    url: string;
+    models: string[];
+    cwd: string;
+    command: string[];
+    voicesDir: string;
+    startTimeoutMs: number;
+    idleStopMs: number;
+    stopBeforeGpuWorkload: boolean;
+    design: TTSDesignConfig;
+};
+
+// 音色设计（Spark-TTS 受控生成：性别/音高/语速 → 新音色干声）。子进程即用即卸，
+// 不常驻显存；产物 wav 命名后写入 voicesDir 即成预置音色，供 TTS 克隆复用。
+type TTSDesignConfig = {
+    enabled: boolean;
+    cwd: string;
+    command: string[];
+    timeoutMs: number;
 };
 
 type JobStatus = "queued" | "in_progress" | "completed" | "failed" | "cancelled";
@@ -114,9 +142,32 @@ async function loadConfig(): Promise<GatewayConfig> {
         modelImageWorkflows: parsed.modelImageWorkflows ?? {},
         jobsDir: path.resolve(scriptDir, String(parsed.jobsDir ?? "jobs")),
         jobTtlHours: Math.max(1, Number(parsed.jobTtlHours ?? 24)),
+        tts: parseTTSConfig(parsed.tts),
     };
     if (!Number.isFinite(config.port) || config.port <= 0) throw new Error("config.port 无效");
     return config;
+}
+
+function parseTTSConfig(raw: unknown): TTSConfig {
+    const parsed = (raw ?? {}) as Partial<TTSConfig> & { design?: Partial<TTSDesignConfig> };
+    const design = (parsed.design ?? {}) as Partial<TTSDesignConfig>;
+    return {
+        enabled: Boolean(parsed.enabled),
+        url: String(parsed.url ?? "http://127.0.0.1:9891").replace(/\/+$/, ""),
+        models: Array.isArray(parsed.models) ? parsed.models.map(String) : [],
+        cwd: path.resolve(String(parsed.cwd ?? "C:/AI/IndexTTS")),
+        command: Array.isArray(parsed.command) && parsed.command.length ? parsed.command.map(String) : [".venv/Scripts/python.exe", "voice_forge2.py"],
+        voicesDir: path.resolve(String(parsed.voicesDir ?? "C:/AI/CosyVoice/presets")),
+        startTimeoutMs: Math.max(10_000, Number(parsed.startTimeoutMs ?? 90_000)),
+        idleStopMs: Math.max(0, Number(parsed.idleStopMs ?? 600_000)),
+        stopBeforeGpuWorkload: parsed.stopBeforeGpuWorkload !== false,
+        design: {
+            enabled: design.enabled !== false,
+            cwd: path.resolve(String(design.cwd ?? "C:/AI/CosyVoice")),
+            command: Array.isArray(design.command) && design.command.length ? design.command.map(String) : ["venv/Scripts/python.exe", "spark_design.py"],
+            timeoutMs: Math.max(30_000, Number(design.timeoutMs ?? 180_000)),
+        },
+    };
 }
 
 const jobs = new Map<string, Job>();
@@ -131,7 +182,8 @@ let lastWorkload: string | null = null;
 
 // 生图走优先车道：插到排队视频前面（正在执行的任务无法抢占），
 // 避免视频连发时画布生图被堵到上游超时。同车道内保持 FIFO。
-type GPULane = "image" | "video";
+// tts 车道无优先级：配音单句秒级，排队等视频出片是预期行为（显存互斥）。
+type GPULane = "image" | "video" | "tts";
 type GPUPendingJob = {
     workloadKey: string;
     lane: GPULane;
@@ -157,6 +209,10 @@ function pumpGpuQueue(config: GatewayConfig): void {
     gpuRunning = true;
     void (async () => {
         try {
+            // 反向挤占：视频/生图任务需要整卡显存，TTS 常驻会吃掉 ~6.5GB，先回收再执行
+            if (config.tts.enabled && config.tts.stopBeforeGpuWorkload && next.lane !== "tts") {
+                await stopTTS(config, "为视频/生图任务让出显存");
+            }
             if (lastWorkload !== next.workloadKey) {
                 log(`切换生成负载（${lastWorkload ?? "空"} -> ${next.workloadKey.split(/[\\/]/).pop()}），先卸载已加载模型…`);
                 await fetch(`${config.comfyuiUrl}/free`, {
@@ -303,6 +359,132 @@ async function ensureComfy(config: GatewayConfig): Promise<void> {
     if (!ok) throw new Error("ComfyUI 按需拉起失败（150 秒未上线），请检查 start-comfy-detached.cmd");
 }
 
+// ---------- TTS（IndexTTS-2）按需生命周期 ----------
+// 用时拉起、闲置/被挤占时退出。语音合成走独立进程，模型懒加载在首次请求
+//（进程就绪 ~15s，首句合成再 +30~60s），由 canvas_audio 任务超时（分钟级）覆盖。
+let ttsChild: ReturnType<typeof spawn> | null = null;
+let ttsRevival: Promise<boolean> | null = null;
+let ttsStopping: Promise<void> | null = null;
+let lastTtsSpawn = 0;
+let lastTtsJobAt = 0;
+
+async function probeTTS(config: GatewayConfig): Promise<boolean> {
+    try {
+        const r = await fetch(`${config.tts.url}/health`, { signal: AbortSignal.timeout(3000) });
+        return r.ok;
+    } catch {
+        return false;
+    }
+}
+
+async function ensureTTS(config: GatewayConfig): Promise<void> {
+    if (!config.tts.enabled) throw new Error("网关未启用 TTS（config.json tts.enabled）");
+    if (await probeTTS(config)) return;
+    if (Date.now() - lastTtsSpawn < 30_000 && !ttsRevival) throw new Error("TTS 拉起冷却中（30 秒内已尝试过），请稍后重试");
+    if (!ttsRevival) {
+        lastTtsSpawn = Date.now();
+        log("TTS 服务不可达 - 按需自动拉起（进程就绪约 15 秒，首次合成含模型加载约 1 分钟）");
+        ttsRevival = (async () => {
+            try {
+                const logDir = path.join(config.tts.cwd, "logs");
+                await fs.mkdir(logDir, { recursive: true });
+                const out = await fs.open(path.join(logDir, "forge2-gateway.log"), "a");
+                try {
+                    const child = spawn(config.tts.command[0], config.tts.command.slice(1), {
+                        cwd: config.tts.cwd,
+                        detached: true,
+                        stdio: ["ignore", out.fd, out.fd],
+                        windowsHide: true,
+                    });
+                    child.unref();
+                    ttsChild = child;
+                    child.on("exit", () => { if (ttsChild === child) ttsChild = null; });
+                } finally {
+                    await out.close();
+                }
+            } catch (e) {
+                log(`TTS 拉起失败：${e instanceof Error ? e.message : String(e)}`);
+            }
+            const deadline = Date.now() + config.tts.startTimeoutMs;
+            while (Date.now() < deadline) {
+                await new Promise((r) => setTimeout(r, 2000));
+                if (await probeTTS(config)) {
+                    log("TTS 服务已按需上线");
+                    ttsRevival = null;
+                    return true;
+                }
+            }
+            ttsRevival = null;
+            log("TTS 按需拉起超时");
+            return false;
+        })();
+    }
+    if (!(await ttsRevival)) {
+        throw new Error(`TTS 按需拉起失败（${Math.round(config.tts.startTimeoutMs / 1000)} 秒未就绪），请检查 ${path.join(config.tts.cwd, "logs", "forge2-gateway.log")}`);
+    }
+}
+
+async function stopTTS(config: GatewayConfig, reason: string): Promise<void> {
+    if (ttsStopping) return ttsStopping;
+    ttsStopping = (async () => {
+        if (!(await probeTTS(config))) {
+            ttsChild = null;
+            return;
+        }
+        log(`停止 TTS 服务（${reason}），释放显存`);
+        const child = ttsChild;
+        ttsChild = null;
+        if (child?.pid) {
+            await new Promise<void>((resolve) => {
+                const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
+                killer.on("close", () => resolve());
+                killer.on("error", () => resolve());
+            });
+        } else {
+            // 非网关拉起的实例（手动脚本/外部启动）：按端口找 PID 树杀，同样回收
+            await ttsPortKill(config);
+        }
+        for (let i = 0; i < 20; i += 1) {
+            if (!(await probeTTS(config))) return;
+            await new Promise((r) => setTimeout(r, 500));
+        }
+        log("TTS 停止后端口仍被占用，请人工检查");
+    })();
+    try {
+        await ttsStopping;
+    } finally {
+        ttsStopping = null;
+    }
+}
+
+async function ttsPortKill(config: GatewayConfig): Promise<void> {
+    const port = new URL(config.tts.url).port || "9891";
+    const netstat = spawn("netstat", ["-ano", "-p", "TCP"], { windowsHide: true });
+    let text = "";
+    netstat.stdout?.on("data", (chunk) => { text += String(chunk); });
+    await new Promise<void>((resolve) => {
+        netstat.on("close", () => resolve());
+        netstat.on("error", () => resolve());
+    });
+    const pids = new Set<string>();
+    for (const line of text.split("\n")) {
+        if (!line.includes("LISTENING")) continue;
+        const columns = line.trim().split(/\s+/);
+        if ((columns[1] ?? "").endsWith(`:${port}`)) {
+            const pid = (columns[columns.length - 1] ?? "").trim();
+            if (pid && pid !== "0") pids.add(pid);
+        }
+    }
+    for (const pid of pids) {
+        await new Promise<void>((resolve) => {
+            const killer = spawn("taskkill", ["/PID", pid, "/T", "/F"]);
+            killer.on("close", () => resolve());
+            killer.on("error", () => resolve());
+        });
+        log(`已结束占用 TTS 端口 ${port} 的进程 PID ${pid}`);
+    }
+}
+
 async function uploadReferenceToComfy(config: GatewayConfig, file: File, index: number): Promise<string> {
     await ensureComfy(config);
     const suffix = path.extname(file.name || "") || ".png";
@@ -334,6 +516,15 @@ type PlaceholderContext = {
     audios: string[];
     textEncoder: string;
 };
+
+/** StoryDiffusion prompt 约定：`角色定义\n---\n分镜行1\n分镜行2…`（每行一格）；无 --- 分隔时整个 prompt 当单格 scene */
+function splitRoleScene(prompt: string): { roleText: string; sceneText: string; batch: number } {
+    const m = prompt.match(/^([\s\S]*?)\r?\n\s*-{3,}\s*\r?\n([\s\S]*)$/);
+    const roleText = m ? m[1].trim() : "";
+    const sceneText = (m ? m[2] : prompt).trim();
+    const lines = sceneText.split(/\r?\n/).filter((line) => line.trim());
+    return { roleText, sceneText, batch: Math.max(1, Math.min(8, lines.length)) };
+}
 
 function substitutePlaceholders(node: unknown, context: PlaceholderContext): unknown {
     if (typeof node === "string") {
@@ -981,13 +1172,11 @@ async function handleImageEdit(req: IncomingMessage, res: ServerResponse, config
         for (let i = 0; i < inputFiles.length; i++) {
             imageNames.push(await uploadFileToComfyUI(config, Buffer.from(await inputFiles[i].arrayBuffer()), `beeftv-edit-${i}-${Date.now()}.png`));
         }
-        // 2. 选择编辑模板：qwen-edit-plus（多参考独立输入，身份保真）或 qwen-edit（单图拼接）
-        // 模型感知路由：model 命中 modelWorkflows 时优使用该工作流（如 supir-hd 超分修复），否则按参考图数量回退
+        // 2. 选择编辑模板：qwen-edit / qwen-edit-plus / uncensored 渠道统一走 Qwen-Image-2.1 原生编辑模板
+        //（仅编码器按渠道名切换）；模型感知路由：model 命中 modelWorkflows 时优使用该工作流（如 supir-hd 超分修复）
         const editTemplatePath = config.modelWorkflows[model]
             ? config.modelWorkflows[model]
-            : imageNames.length > 1
-                ? (config.modelWorkflows["qwen-edit-plus"] || "workflows/qwen-edit-plus.template.json")
-                : (config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
+            : (config.modelWorkflows["qwen-edit"] || "workflows/qwen-edit.template.json");
         const editPath = templateAbsolutePath(config, editTemplatePath);
         const editWorkflow = stripDocKeys(JSON.parse(await fs.readFile(editPath, "utf8")));
         // images[0] = 主参考（第一张），images[1..] = 附加参考
@@ -1544,12 +1733,19 @@ select.changed { border-color:var(--amber); background:#241f12; }
 .savebar button { background:var(--accent); border:0; color:#fff; border-radius:8px; padding:8px 20px; font-size:13px; cursor:pointer; }
 .savebar button:disabled { opacity:.45; cursor:default; }
 .savebar .revert { background:none; border:1px solid var(--border-2); color:var(--muted); padding:7px 14px; }
+header .tts-box { margin-left:auto; display:flex; align-items:center; gap:8px; }
+header .tts-box .state { color:var(--muted); font-size:12px; }
+header .tts-box .state.on { color:var(--green); }
+.hbtn { background:var(--accent); border:0; color:#fff; border-radius:8px; padding:5px 12px; font-size:12px; cursor:pointer; }
+.hbtn.ghost { background:none; border:1px solid var(--border-2); color:var(--muted); }
+.hbtn:disabled { opacity:.45; cursor:default; }
 #toast { position:fixed; right:20px; bottom:64px; background:#1f2937; border:1px solid #374151; padding:10px 16px; border-radius:8px; display:none; max-width:520px; font-size:12.5px; z-index:9; }
 .empty { color:var(--muted); padding:40px 20px; text-align:center; }
 .err { color:var(--red); }
 @media (max-width: 760px) { aside { width:200px; } td.doc { max-width:none; } }
 </style></head><body>
-<header><h1>模板参数控制台</h1><span class="sub">保存后<b>下一个任务即生效</b>（模板按任务实时读盘）· 每次保存自动备份 workflows/.backups/ · 金色 <span class="ph">{{占位符}}</span> 由网关按请求注入，不可改</span></header>
+<header><h1>模板参数控制台</h1><span class="sub">保存后<b>下一个任务即生效</b>（模板按任务实时读盘）· 每次保存自动备份 workflows/.backups/ · 金色 <span class="ph">{{占位符}}</span> 由网关按请求注入，不可改</span>
+<div class="tts-box"><span class="state" id="tts-state">TTS 检测中…</span><button class="hbtn" id="tts-start">启动 TTS</button><button class="hbtn ghost" id="tts-stop">停止 TTS</button></div></header>
 <main>
 <aside>
   <div class="search"><input type="search" id="tpl-search" placeholder="筛选模板文件名…"></div>
@@ -1689,10 +1885,252 @@ document.getElementById('save').addEventListener('click', async () => {
 });
 document.getElementById('tpl-search').addEventListener('input', e => { filter = e.target.value; renderList(); });
 
+// TTS 声线服务（IndexTTS-2）状态：请求时自动拉起；闲置或被视频任务挤占时自动退出释放显存
+async function loadTTS() {
+  const el = document.getElementById('tts-state');
+  try {
+    const r = await fetch('/admin/api/tts');
+    const d = await r.json();
+    if (!d.enabled) { el.textContent = 'TTS 未启用'; el.className = 'state'; }
+    else if (d.running) {
+      const mins = d.idleRemainingMs === null ? '' : ' · ' + Math.ceil(d.idleRemainingMs / 60000) + ' 分钟后闲置回收';
+      el.textContent = 'TTS 运行中' + mins; el.className = 'state on';
+    } else { el.textContent = 'TTS 已停止（配音请求会自动拉起）'; el.className = 'state'; }
+  } catch { el.textContent = 'TTS 状态未知'; el.className = 'state'; }
+}
+document.getElementById('tts-start').addEventListener('click', async () => {
+  const btn = document.getElementById('tts-start'); btn.disabled = true; btn.textContent = '拉起中…';
+  try { await fetch('/admin/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start' }) }); } catch {}
+  btn.disabled = false; btn.textContent = '启动 TTS'; loadTTS();
+});
+document.getElementById('tts-stop').addEventListener('click', async () => {
+  await fetch('/admin/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) });
+  loadTTS();
+});
+setInterval(loadTTS, 5000);
+
 load();
+loadTTS();
 </script></body></html>
 `;
 
+
+async function readRawBody(req: IncomingMessage, limitBytes: number): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of req) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer);
+        total += buf.length;
+        if (total > limitBytes) throw new Error("请求体过大");
+        chunks.push(buf);
+    }
+    return Buffer.concat(chunks);
+}
+
+// POST /audio/speech：进 GPU 串行队列（tts 车道），按需拉起 TTS 后代理，二进制 wav 直回。
+// 上游 4xx（如未知音色）原样透传，让调用方拿到可读的错误 JSON。
+async function handleTTSSpeech(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    if (!config.tts.enabled) return json(res, 404, { error: { message: "网关未启用 TTS（config.json tts.enabled）" } });
+    const body = await readRawBody(req, 8 << 20);
+    let upstreamError: { status: number; body: string } | null = null;
+    try {
+        const wav = await enqueueGpuWork("tts", async () => {
+            await ensureTTS(config);
+            lastTtsJobAt = Date.now();
+            const upstream = await fetch(`${config.tts.url}/v1/audio/speech`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body,
+                signal: AbortSignal.timeout(config.timeoutMinutes * 60_000),
+            });
+            if (!upstream.ok) {
+                upstreamError = { status: upstream.status, body: (await upstream.text()).slice(0, 500) };
+                throw new Error(`TTS 上游返回 ${upstream.status}`);
+            }
+            const buffer = Buffer.from(await upstream.arrayBuffer());
+            if (buffer.length < 4 || buffer.toString("ascii", 0, 4) !== "RIFF") {
+                throw new Error("TTS 上游返回的不是有效 WAV 音频");
+            }
+            return buffer;
+        }, config, "tts");
+        res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": wav.length });
+        return res.end(wav);
+    } catch (error) {
+        if (upstreamError) {
+            res.writeHead(upstreamError.status, { "Content-Type": "application/json" });
+            return res.end(upstreamError.body);
+        }
+        log(`TTS 合成失败：${error instanceof Error ? error.message : String(error)}`);
+        if (!res.headersSent) return json(res, 502, { error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+}
+
+// GET /voices：读预置目录列音色名，不触发 TTS 服务启动（零成本冷列表）。
+async function handleVoicesList(res: ServerResponse, config: GatewayConfig) {
+    if (!config.tts.enabled) return json(res, 404, { error: { message: "网关未启用 TTS（config.json tts.enabled）" } });
+    try {
+        const entries = await fs.readdir(config.tts.voicesDir);
+        const voices = entries.filter((f) => f.toLowerCase().endsWith(".wav")).map((f) => f.slice(0, -4)).sort();
+        return json(res, 200, { voices });
+    } catch {
+        // 目录缺失/不可读：返回空列表，前端回落静态建议
+        return json(res, 200, { voices: [] });
+    }
+}
+
+async function handleAdminTTS(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    if (!isLoopbackRequest(req)) return json(res, 403, { error: { message: "管理控制台仅限本机访问" } });
+    if (req.method === "GET") {
+        const running = await probeTTS(config);
+        return json(res, 200, {
+            enabled: config.tts.enabled,
+            running,
+            url: config.tts.url,
+            idleStopMs: config.tts.idleStopMs,
+            idleRemainingMs: running && lastTtsJobAt > 0 && config.tts.idleStopMs > 0
+                ? Math.max(0, lastTtsJobAt + config.tts.idleStopMs - Date.now())
+                : null,
+        });
+    }
+    if (req.method === "POST") {
+        let action = "";
+        try {
+            const parsed = JSON.parse((await readRawBody(req, 64 << 10)).toString("utf8") || "{}") as { action?: string };
+            action = String(parsed.action ?? "");
+        } catch {
+            return json(res, 400, { error: { message: "请求体必须是 JSON" } });
+        }
+        if (action === "start") {
+            try {
+                await ensureTTS(config);
+                return json(res, 200, { ok: true });
+            } catch (e) {
+                return json(res, 500, { error: { message: e instanceof Error ? e.message : String(e) } });
+            }
+        }
+        if (action === "stop") {
+            await stopTTS(config, "管理员手动停止");
+            return json(res, 200, { ok: true });
+        }
+        return json(res, 400, { error: { message: "action 必须是 start 或 stop" } });
+    }
+    return json(res, 405, { error: { message: "方法不支持" } });
+}
+
+// ---------- 音色设计（Spark-TTS 受控生成，子进程即用即卸） ----------
+const VOICE_DESIGN_GENDERS = new Set(["male", "female"]);
+const VOICE_DESIGN_PITCHES = new Set(["very_low", "low", "moderate", "high", "very_high"]);
+const VOICE_DESIGN_SPEEDS = new Set(["very_low", "low", "moderate", "high", "very_high"]);
+const VOICE_NAME_PATTERN = /^[\p{Script=Han}A-Za-z0-9_-]{1,24}$/u;
+
+type VoiceDesignRequest = { gender: string; pitch: string; speed: string; text: string };
+
+function parseVoiceDesignRequest(raw: string): VoiceDesignRequest {
+    let parsed: Partial<VoiceDesignRequest>;
+    try {
+        parsed = JSON.parse(raw) as Partial<VoiceDesignRequest>;
+    } catch {
+        throw Object.assign(new Error("请求体必须是 JSON"), { statusCode: 400 });
+    }
+    const gender = String(parsed.gender ?? "male");
+    const pitch = String(parsed.pitch ?? "moderate");
+    const speed = String(parsed.speed ?? "moderate");
+    const text = String(parsed.text ?? "").trim().slice(0, 200);
+    if (!VOICE_DESIGN_GENDERS.has(gender) || !VOICE_DESIGN_PITCHES.has(pitch) || !VOICE_DESIGN_SPEEDS.has(speed)) {
+        throw Object.assign(new Error("gender/pitch/speed 参数不合法"), { statusCode: 400 });
+    }
+    if (!text) throw Object.assign(new Error("试听文本不能为空"), { statusCode: 400 });
+    return { gender, pitch, speed, text };
+}
+
+// 运行 spark_design.py：stdin JSON → stdout WAV 字节。超时强杀，失败带 stderr 摘要。
+async function runVoiceDesignProcess(config: GatewayConfig, params: VoiceDesignRequest): Promise<Buffer> {
+    return await new Promise<Buffer>((resolve, reject) => {
+        const child = spawn(config.tts.design.command[0], config.tts.design.command.slice(1), {
+            cwd: config.tts.design.cwd,
+            windowsHide: true,
+        });
+        const stdout: Buffer[] = [];
+        const stderrChunks: Buffer[] = [];
+        let killed = false;
+        const timer = setTimeout(() => {
+            killed = true;
+            spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"]).on("close", () => undefined);
+            reject(new Error(`音色设计超时（${Math.round(config.tts.design.timeoutMs / 1000)} 秒）`));
+        }, config.tts.design.timeoutMs);
+        child.stdout?.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+        child.stderr?.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+        child.on("error", (e) => { clearTimeout(timer); reject(e); });
+        child.on("close", () => {
+            clearTimeout(timer);
+            if (killed) return;
+            const wav = Buffer.concat(stdout);
+            if (wav.length > 4 && wav.toString("ascii", 0, 4) === "RIFF") return resolve(wav);
+            const stderr = Buffer.concat(stderrChunks).toString("utf8").slice(-500);
+            reject(new Error(`音色设计子进程失败：${stderr || "无输出"}`));
+        });
+        child.stdin?.end(JSON.stringify(params), "utf8");
+    });
+}
+
+// POST /audio/voice-design：设计一个新音色并返回试听 wav（进 tts 车道，与合成/视频互斥）。
+async function handleVoiceDesign(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    if (!config.tts.enabled || !config.tts.design.enabled) {
+        return json(res, 404, { error: { message: "网关未启用音色设计（config.json tts.design）" } });
+    }
+    let params: VoiceDesignRequest;
+    try {
+        params = parseVoiceDesignRequest((await readRawBody(req, 64 << 10)).toString("utf8"));
+    } catch (error) {
+        return json(res, (error as { statusCode?: number }).statusCode ?? 400, { error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+    log(`音色设计：${params.gender} / ${params.pitch} / ${params.speed}（Spark 子进程即用即卸）`);
+    try {
+        const wav = await enqueueGpuWork("voice-design", () => runVoiceDesignProcess(config, params), config, "tts");
+        res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": wav.length });
+        return res.end(wav);
+    } catch (error) {
+        log(`音色设计失败：${error instanceof Error ? error.message : String(error)}`);
+        return json(res, 502, { error: { message: error instanceof Error ? error.message : String(error) } });
+    }
+}
+
+// POST /audio/voice-design/save：把设计产物（base64 wav）命名写入预置池，立即成为可克隆音色。
+async function handleVoiceDesignSave(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
+    if (!config.tts.enabled || !config.tts.design.enabled) {
+        return json(res, 404, { error: { message: "网关未启用音色设计（config.json tts.design）" } });
+    }
+    let parsed: { name?: string; wavBase64?: string; text?: string; overwrite?: boolean };
+    try {
+        parsed = JSON.parse((await readRawBody(req, 32 << 20)).toString("utf8")) as typeof parsed;
+    } catch {
+        return json(res, 400, { error: { message: "请求体必须是 JSON" } });
+    }
+    const name = String(parsed.name ?? "").trim();
+    if (!VOICE_NAME_PATTERN.test(name)) {
+        return json(res, 400, { error: { message: "音色名只能包含中文/字母/数字/下划线/连字符，长度 1-24" } });
+    }
+    let wav: Buffer;
+    try {
+        wav = Buffer.from(String(parsed.wavBase64 ?? ""), "base64");
+    } catch {
+        return json(res, 400, { error: { message: "wavBase64 解码失败" } });
+    }
+    if (wav.length < 44 || wav.length > 20 << 20 || wav.toString("ascii", 0, 4) !== "RIFF") {
+        return json(res, 400, { error: { message: "音频内容无效（必须是 WAV）" } });
+    }
+    const wavPath = path.join(config.tts.voicesDir, `${name}.wav`);
+    if (parsed.overwrite !== true && await fs.stat(wavPath).then(() => true).catch(() => false)) {
+        return json(res, 409, { error: { message: `音色 "${name}" 已存在（overwrite=true 可覆盖）` } });
+    }
+    await fs.writeFile(wavPath, wav);
+    const text = String(parsed.text ?? "").trim();
+    if (text) await fs.writeFile(path.join(config.tts.voicesDir, `${name}.txt`), text, "utf8");
+    log(`新音色已入库：${name}.wav（${(wav.length / 1024).toFixed(0)}KB${parsed.overwrite ? "，覆盖" : ""}）`);
+    const entries = await fs.readdir(config.tts.voicesDir).catch(() => [] as string[]);
+    const voices = entries.filter((f) => f.toLowerCase().endsWith(".wav")).map((f) => f.slice(0, -4)).sort();
+    return json(res, 200, { ok: true, name, voices });
+}
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse, config: GatewayConfig) {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -1705,7 +2143,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
 
     const pathname = normalizeRequestPath(req.url ?? "/");
     if (pathname === "/healthz") {
-        return json(res, 200, { status: "ok", executor: config.executor, comfyuiUrl: config.comfyuiUrl });
+        const ttsStatus = config.tts.enabled ? ((await probeTTS(config)) ? "running" : "stopped") : "disabled";
+        return json(res, 200, { status: "ok", executor: config.executor, comfyuiUrl: config.comfyuiUrl, tts: ttsStatus });
     }
 
     // 管理控制台：仅限本机浏览器访问，且不走 API Key 校验（本地部署的密钥本来就为空）。
@@ -1716,6 +2155,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
     }
     if (pathname === "/admin/api/templates") return handleAdminList(req, res, config);
     if (pathname === "/admin/api/template" && req.method === "POST") return handleAdminSave(req, res, config);
+    if (pathname === "/admin/api/tts" && (req.method === "GET" || req.method === "POST")) return handleAdminTTS(req, res, config);
 
     if (config.apiKey) {
         const authorization = String(req.headers.authorization ?? "");
@@ -1730,8 +2170,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, config: 
             ...Object.keys(config.modelTextEncoders),
             config.defaultModel,
             ...config.imageModels,
+            ...config.tts.models,
         ];
         return json(res, 200, { object: "list", data: [...new Set(models)].map((id) => ({ id, object: "model" })) });
+    }
+
+    if (req.method === "GET" && (pathname === "/voices" || pathname.endsWith("/voices"))) {
+        return await handleVoicesList(res, config);
+    }
+
+    if (req.method === "POST" && (pathname === "/audio/speech" || pathname.endsWith("/audio/speech"))) {
+        return await handleTTSSpeech(req, res, config);
+    }
+
+    if (req.method === "POST" && (pathname === "/audio/voice-design" || pathname.endsWith("/audio/voice-design"))) {
+        return await handleVoiceDesign(req, res, config);
+    }
+
+    if (req.method === "POST" && (pathname === "/audio/voice-design/save" || pathname.endsWith("/audio/voice-design/save"))) {
+        return await handleVoiceDesignSave(req, res, config);
     }
 
     if (req.method === "POST" && (pathname === "/images/generations" || pathname === "/images")) {
@@ -1796,6 +2253,15 @@ async function main() {
     await fs.mkdir(config.jobsDir, { recursive: true });
     await jobGC(config);
     setInterval(() => void jobGC(config), 3_600_000).unref();
+
+    // TTS 闲置回收：最后一次合成后超时退出进程（从未被网关使用过的外部实例不动）
+    if (config.tts.enabled && config.tts.idleStopMs > 0) {
+        setInterval(() => {
+            if (lastTtsJobAt > 0 && Date.now() - lastTtsJobAt > config.tts.idleStopMs) {
+                void stopTTS(config, `闲置超过 ${Math.round(config.tts.idleStopMs / 60000)} 分钟自动回收`);
+            }
+        }, 30_000).unref();
+    }
 
     const server = createServer((req, res) => {
         handleRequest(req, res, config).catch((error) => {

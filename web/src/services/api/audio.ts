@@ -9,6 +9,69 @@ function aiApiUrl(config: AiConfig, path: string) {
     return buildApiUrl(config.baseUrl, path);
 }
 
+/**
+ * 渠道 TTS 音色列表（OpenAI /voices 约定：本地网关、voiceforge 等实现）。
+ * 走渠道中转，失败抛错由调用方回落静态列表。
+ */
+export async function fetchChannelVoices(config: AiConfig): Promise<string[]> {
+    const transport = createChannelTransport(config, "audio");
+    const data = await transport.get<{ voices?: unknown }>(aiApiUrl(config, "/voices"));
+    return Array.isArray(data?.voices)
+        ? data.voices.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        : [];
+}
+
+export type VoiceDesignParams = {
+    gender: "male" | "female";
+    pitch: "very_low" | "low" | "moderate" | "high" | "very_high";
+    speed: "very_low" | "low" | "moderate" | "high" | "very_high";
+    text: string;
+};
+
+// 音色设计与入库走浏览器直连本地网关（网关开了宽松 CORS），不经后端中转——
+// 交互式本地操作，不进任务体系；仅限本机渠道使用。
+async function postLocalGatewayJson(config: AiConfig, gatewayPath: string, payload: unknown, init?: RequestInit): Promise<Response> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const apiKey = (config.apiKey ?? "").trim();
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const response = await fetch(buildApiUrl(config.baseUrl, gatewayPath), {
+        method: "POST",
+        headers,
+        credentials: "omit",
+        ...init,
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(`本地网关 ${gatewayPath} 返回 ${response.status}：${detail.slice(0, 200)}`);
+    }
+    return response;
+}
+
+/** 设计一个新音色并返回试听 wav（Spark-TTS 即用即卸，首次约 30-60 秒） */
+export async function designChannelVoice(config: AiConfig, params: VoiceDesignParams, options?: { signal?: AbortSignal }): Promise<Blob> {
+    const response = await postLocalGatewayJson(config, "/audio/voice-design", params, { signal: options?.signal });
+    return await response.blob();
+}
+
+/** 把设计产物命名写入网关预置池，返回刷新后的音色列表 */
+export async function saveChannelVoice(config: AiConfig, opts: { name: string; wav: Blob; text: string; overwrite?: boolean }): Promise<string[]> {
+    const wavBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("试听音频读取失败"));
+        reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+        reader.readAsDataURL(opts.wav);
+    });
+    const response = await postLocalGatewayJson(config, "/audio/voice-design/save", {
+        name: opts.name,
+        wavBase64,
+        text: opts.text,
+        overwrite: opts.overwrite,
+    });
+    const data = (await response.json()) as { voices?: unknown };
+    return Array.isArray(data?.voices) ? data.voices.filter((v): v is string => typeof v === "string" && v.trim().length > 0) : [];
+}
+
 function audioTransport(config: AiConfig) {
     return createChannelTransport(config, "audio");
 }

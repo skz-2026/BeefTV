@@ -72,7 +72,8 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 			}
 			return errors.New("自定义渠道不允许访问该上游接口")
 		}
-		allowed := requestPath == "/models" || strings.HasSuffix(requestPath, "/models")
+		allowed := requestPath == "/models" || strings.HasSuffix(requestPath, "/models") ||
+			requestPath == "/voices" || strings.HasSuffix(requestPath, "/voices")
 		if apiFormat == "openai" {
 			allowed = allowed || customVideoTaskPath.MatchString(requestPath) || customXAIVideoTaskPath.MatchString(requestPath) || customVideoContentPath.MatchString(requestPath) || customArkVideoTaskPath.MatchString(requestPath) || customMiniMaxTaskPath.MatchString(requestPath)
 		} else if apiFormat == "gemini" {

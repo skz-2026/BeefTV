@@ -34,6 +34,7 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		contentType string
 	}{
 		{method: http.MethodGet, target: "https://api.example.com/v1/models", apiFormat: "openai"},
+		{method: http.MethodGet, target: "https://api.example.com/v1/voices", apiFormat: "openai"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/responses", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/chat/completions", apiFormat: "openai", contentType: "application/json; charset=utf-8"},
 		{method: http.MethodPost, target: "https://api.anthropic.com/v1/messages", apiFormat: "claude", contentType: "application/json"},

@@ -34,10 +34,29 @@
         "h3-multiref-uncensored": "workflows/ref-multi.template.json",
         "h3-i2v-uncensored": "workflows/image-to-video.template.json",
         "fasth3-v2": "workflows/fasth3-v2.template.json",
-        "fasth3-v2-uncensored": "workflows/fasth3-v2.template.json"
+        "fasth3-v2-uncensored": "workflows/fasth3-v2.template.json",
+        "qwen-edit": "workflows/qwen-edit.template.json",
+        "qwen-edit-plus": "workflows/qwen-edit.template.json"
     },
     "jobsDir": "jobs",
     "jobTtlHours": 24,
+    "tts": {
+        "enabled": false,
+        "url": "http://127.0.0.1:9891",
+        "models": ["indextts2"],
+        "cwd": "C:/AI/IndexTTS",
+        "command": [".venv/Scripts/python.exe", "voice_forge2.py"],
+        "voicesDir": "C:/AI/CosyVoice/presets",
+        "startTimeoutMs": 90000,
+        "idleStopMs": 600000,
+        "stopBeforeGpuWorkload": true,
+        "design": {
+            "enabled": false,
+            "cwd": "C:/AI/CosyVoice",
+            "command": ["venv/Scripts/python.exe", "spark_design.py"],
+            "timeoutMs": 180000
+        }
+    },
     "imageModels": [
         "qwen-image-2.1",
         "qwen-image-2.1-turbo",

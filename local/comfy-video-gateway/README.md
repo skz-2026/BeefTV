@@ -23,7 +23,27 @@ ComfyUI + 本地模型权重（GPU）
 | `GET /v1/videos/{id}` · `/content` | 视频任务轮询与成片下载 |
 | `POST /v1/images/generations`（JSON） | **同步**生图（Qwen-Image-2.1 INT8 + viggle 4 步加速），返回 `data[].b64_json`；模板 `workflows/qwen-t2i.template.json`，`modelImageWorkflows` 可按模型名覆盖（如 UC 去审查 GGUF）。可选 `seed` 字段（同 seed 逐字节可复现，2026-10-08 实测验证） |
 | `POST /v1/images/edits`（multipart） | 图片编辑（多参考身份保真），可选 `seed` 表单参数（首帧编辑复现/对照实验） |
-| `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `modelTextEncoders` 键 + `imageModels` |
+| `POST /v1/audio/speech`（JSON） | **TTS 配音**（OpenAI 协议，2026-10-15）。代理到网关监督的 IndexTTS-2 服务（`config.json tts`），返回 `audio/wav`。进入 GPU 串行队列 tts 车道，与视频/生图互斥防显存打架 |
+| `POST /v1/audio/voice-design`（JSON） | **音色设计**：`{gender, pitch, speed, text}` → 试听 `audio/wav`。Spark-TTS 子进程即用即卸（`tts.design`），受控生成全新音色，不常驻显存 |
+| `POST /v1/audio/voice-design/save`（JSON） | **音色入库**：`{name, wavBase64, text, overwrite?}` → 写入 `tts.voicesDir` 即成预置音色，TTS 立即可克隆；名称限中文/字母/数字/下划线/连字符 |
+| `GET /v1/voices` | TTS 预置音色列表（读 `tts.voicesDir`，不触发服务启动） |
+| `GET /v1/models` | 模型列表 = `defaultModel` + `modelWorkflows` 键 + `modelTextEncoders` 键 + `imageModels` + `tts.models` |
+
+## TTS 声线服务（IndexTTS-2）按需生命周期
+
+网关监督本机 TTS 服务（`C:\AI\IndexTTS\voice_forge2.py`，端口 9891，OpenAI `/audio/speech` 协议），
+原则：**用时启动、不用释放**（本机 16GB 显存放不下视频与 TTS 两套常驻权重）。
+
+- **拉起**：首个 `/audio/speech` 请求发现 9891 不可达 → detached 拉起 `tts.command`（进程就绪 ~15 秒，
+  模型在首次合成时懒加载，首句约 1 分钟，之后热请求 4-6 秒/句）。
+- **挤占释放**：视频/生图任务出队时若 TTS 存活（`tts.stopBeforeGpuWorkload`），先 `taskkill` 退出
+  （释放 ~6.5GB 显存）再执行；反向进入 tts 车道时先对 ComfyUI `/free` 卸载模型（进程保留，原有策略）。
+- **闲置回收**：最后一次合成后 `tts.idleStopMs`（默认 10 分钟）无请求 → 自动退出进程。
+- **音色**：`voice` 名 → `tts.voicesDir/{voice}.wav` 参考音频克隆（与 CosyVoice voiceforge 共用音色池）；
+  `instructions` 为中文情感词（高兴/愤怒/悲伤/恐惧/反感/低落/惊讶/自然）。未知音色 400 报错不漂移。
+- **管理**：`/admin` 头部有 TTS 状态与手动启停；`/healthz` 的 `tts` 字段；手动脚本
+  `C:\AI\IndexTTS\start-voiceforge2-detached.cmd` 仍可用（外部实例同样会被网关按端口回收）。
+- ComfyUI 本身维持原有策略：按需拉起 + 负载切换时 `/free` 卸载，不做进程级闲置退出（与过夜守护冲突，用户已确认）。
 
 #### `h3-hybrid-flf`：首尾帧咬合（镜头间接续）
 
