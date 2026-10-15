@@ -15,6 +15,8 @@ const CanvasPage = lazy(loadCanvasPage);
 const CanvasProjectPage = lazy(loadCanvasProjectPage);
 const ComicBookPage = lazy(() => import("@/pages/comic-book"));
 const ComicBooksPage = lazy(() => import("@/pages/comic-books"));
+const StorybookBookPage = lazy(() => import("@/pages/storybook-book"));
+const StorybookBooksPage = lazy(() => import("@/pages/storybook-books"));
 const CreatePage = lazy(loadCreatePage);
 const NotFound = lazy(() => import("@/pages/not-found"));
 const PluginsPage = lazy(() => import("@/pages/plugins"));
@@ -131,6 +133,8 @@ export const router = createWorkspaceRouter([
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/comic-book/:id", element: deferred(<ComicBookPage />) },
             { path: "/comic-books", element: deferred(<ComicBooksPage />) },
+            { path: "/storybook-book/:id", element: deferred(<StorybookBookPage />) },
+            { path: "/storybook-books", element: deferred(<StorybookBooksPage />) },
         ],
     },
     { path: "*", element: fullScreenDeferred(<NotFound />) },
