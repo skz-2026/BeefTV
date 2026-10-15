@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { App, Button, Input, Select, Skeleton, Space, Tag, Tooltip } from "antd";
-import { ArrowLeftOutlined, BookOutlined, DeleteOutlined, DownOutlined, DownloadOutlined, EditOutlined, LeftOutlined, LoadingOutlined, PictureOutlined, PlusOutlined, RedoOutlined, ReloadOutlined, RightOutlined, SaveOutlined, StopOutlined, ThunderboltOutlined, UndoOutlined, UpOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, BlockOutlined, BookOutlined, DeleteOutlined, DownOutlined, DownloadOutlined, EditOutlined, LeftOutlined, LoadingOutlined, PictureOutlined, PlusOutlined, RedoOutlined, ReloadOutlined, RightOutlined, SaveOutlined, StopOutlined, ThunderboltOutlined, UndoOutlined, UpOutlined } from "@ant-design/icons";
 
 import { http } from "@/services/api/request";
 import { createZip } from "@/lib/zip";
@@ -29,7 +29,7 @@ type ComicPage =
     | { type: "title" }
     | { type: "grid"; layout: GridLayoutId; panels: string[]; end?: boolean }
     | { type: "wide2" | "twoV"; panels: string[]; end?: boolean };
-type ComicConfig = { subtitle: string; chapter: string; chapterEnd: string; pages: ComicPage[] };
+type ComicConfig = { subtitle: string; chapter: string; chapterEnd: string; pages: ComicPage[]; /* @deprecated 曾用于 StoryDiffusion 整页一致性生成（已下线）；保留字段兼容已存数据 */ roles?: string };
 
 // ---------- 漫画式动态分格模板（渲染与导出共用同一几何） ----------
 // areas 行×列命名格子；cols/rows 为相对占比。大格承载开场/闪回/高潮/章末。
@@ -144,6 +144,7 @@ function parseComic(canvas: CanvasProject): { config: ComicConfig | null; panels
         }
         if (node.type === "image" && node.id.startsWith("panel-")) {
             const pid = node.id.slice("panel-".length);
+            const refs = panelRefs.get(node.id) ?? [];
             panels.set(pid, {
                 id: pid,
                 title: String(md.panelTitle ?? node.title ?? pid),
@@ -154,7 +155,7 @@ function parseComic(canvas: CanvasProject): { config: ComicConfig | null; panels
                 model: String(md.model ?? ""),
                 size: String(md.size ?? "1152x1536"),
                 prompt: String(md.prompt ?? ""),
-                refStorageKeys: (panelRefs.get(node.id) ?? [])
+                refStorageKeys: refs
                     .map((castId) => castStorage.get(castId))
                     .filter((key): key is string => !!key)
                     .map((key, i) => ({ storageKey: key, name: `ref-${i}.png` })),
@@ -718,8 +719,24 @@ export default function ComicBookPage() {
         setDirty(true);
     }, []);
 
+    // ---------- 帧重摇：画布同款任务链路（canvas_image + 逻辑模型），完成后写回节点并刷新 ----------
     // 返回是否成功（批量生成复用）。写回走 generated-assets（媒体节点必须带 asset 原子提交），
     // 提交前把本地未保存的台词/帧配置/comic-config 叠加到最新文档，重摇不再覆盖本地编辑。
+    /** 轮询任务到终态；isCancelled 为真时抛"已取消"。连续 5 次轮询失败或超时抛错 */
+    const pollTaskUntilDone = useCallback(async (taskId: string, isCancelled: () => boolean): Promise<TaskSummary> => {
+        let pollErrors = 0;
+        for (let i = 0; i < 200; i++) {
+            await new Promise((r) => setTimeout(r, 3000));
+            if (isCancelled()) throw new Error("已取消");
+            try {
+                const t = await http.get<TaskSummary>(`/tasks/${encodeURIComponent(taskId)}`);
+                pollErrors = 0;
+                if (t.status === "succeeded" || t.status === "failed" || t.status === "cancelled") return t;
+            } catch { pollErrors++; if (pollErrors >= 5) break; }
+        }
+        throw new Error("生成超时");
+    }, []);
+
     const regeneratePanel = useCallback(async (pid: string): Promise<boolean> => {
         if (!canvas || !id) return false;
         const panel = parseComic(canvas).panels.get(pid);
@@ -759,20 +776,15 @@ export default function ComicBookPage() {
                 return false;
             }
             setRegenerating((prev) => new Map(prev).set(pid, taskId));
-            let done: TaskSummary | null = null;
-            let pollErrors = 0;
-            for (let i = 0; i < 200; i++) {
-                await new Promise((r) => setTimeout(r, 3000));
+            let done: TaskSummary;
+            try {
+                done = await pollTaskUntilDone(taskId, () => cancelRegenRef.current.has(pid));
+            } catch (pollError) {
                 if (cancelRegenRef.current.has(pid)) { message.info(`已取消 ${pid} 的生成`); return false; }
-                try {
-                    // GET /tasks/:id 的 data 即任务对象本身
-                    const t = await http.get<TaskSummary>(`/tasks/${encodeURIComponent(taskId)}`);
-                    pollErrors = 0;
-                    if (t.status === "succeeded" || t.status === "failed" || t.status === "cancelled") { done = t; break; }
-                } catch { pollErrors++; if (pollErrors >= 5) break; }
+                throw pollError;
             }
-            if (!done || done.status !== "succeeded") {
-                throw new Error(done?.status === "cancelled" ? "任务已取消" : (done?.error?.slice(0, 160) || "生成超时"));
+            if (done.status !== "succeeded") {
+                throw new Error(done.status === "cancelled" ? "任务已取消" : (done.error?.slice(0, 160) || "生成超时"));
             }
             const images = JSON.parse(done.resultJson ?? "{}").images as Array<{ resourceId?: string; bytes?: number; width?: number; height?: number }> | undefined;
             const img = images?.[0];
@@ -846,13 +858,35 @@ export default function ComicBookPage() {
             cancelRegenRef.current.delete(pid);
             setRegenerating((prev) => { const next = new Map(prev); next.delete(pid); return next; });
         }
-    }, [canvas, id, message, panels]);
+    }, [canvas, id, message, panels, pollTaskUntilDone]);
 
     const cancelRegen = useCallback((pid: string) => {
         cancelRegenRef.current.add(pid);
         const tid = regenerating.get(pid);
         if (tid && tid !== "pending") void http.post(`/tasks/${encodeURIComponent(tid)}/cancel`).catch(() => undefined);
     }, [regenerating]);
+
+    // ---------- 整页重做：本页每帧依次走「重新生成本帧」同款链路（各自模型+角色参考卡），串行防显存挤兑 ----------
+    const generatePage = useCallback(async (): Promise<boolean> => {
+        if (!config) return false;
+        const page = config.pages[pageIndex];
+        if (!page || page.type === "title") return false;
+        const pids = pagePanelsOf(page).filter((pid) => panels.has(pid));
+        if (!pids.length) { message.error("本页没有可生成的帧"); return false; }
+        let ok = 0;
+        let fail = 0;
+        for (const pid of pids) {
+            // 任一帧点了取消即停止后续帧
+            if (pids.some((p) => cancelRegenRef.current.has(p))) break;
+            if (await regeneratePanel(pid)) ok++; else fail++;
+        }
+        const stopped = pids.some((p) => cancelRegenRef.current.has(p));
+        pids.forEach((p) => cancelRegenRef.current.delete(p));
+        if (stopped) message.info(`已停止整页重做（完成 ${ok} 帧）`);
+        else if (fail) message.warning(`整页重做完成：成功 ${ok} 帧，失败 ${fail} 帧`);
+        else message.success(`第 ${pageIndex + 1} 页整页重做完成（${ok} 帧）`);
+        return fail === 0;
+    }, [config, pageIndex, panels, message, regeneratePanel]);
 
     // ---------- 批量生成缺帧：按册内顺序串行重摇（本地网关一次一张），可中途停止 ----------
     const generateMissing = useCallback(async () => {
@@ -1239,6 +1273,16 @@ export default function ComicBookPage() {
                             生成缺帧{missingPanels.length ? ` (${missingPanels.length})` : ""}
                         </Button>
                     )}
+                    {page.type !== "title" && pagePanelsOf(page).length > 0 ? (
+                        <Button
+                            icon={<BlockOutlined />}
+                            title="本页每帧依次用各自模型重做（带角色卡的帧走参考图锚定），串行执行"
+                            loading={pagePanelsOf(page).some((pid) => regenerating.has(pid))}
+                            onClick={() => void generatePage()}
+                        >
+                            整页重做
+                        </Button>
+                    ) : null}
                     <Button icon={<ReloadOutlined />} onClick={() => { if (id) navigate(`/canvas/${id}`); }}>打开画布</Button>
                     <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
                     <Button icon={<SaveOutlined />} type="primary" loading={saving} disabled={!dirty} onClick={() => void save()}>保存</Button>

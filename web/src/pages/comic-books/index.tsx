@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
-import { Skeleton, Tag } from "antd";
-import { FileImageOutlined } from "@ant-design/icons";
+import { Button, Skeleton, Tag } from "antd";
+import { FileAddOutlined, FileImageOutlined } from "@ant-design/icons";
 import { BookOpen } from "lucide-react";
 
 import { http } from "@/services/api/request";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
+import { NovelSplitModal } from "./novel-split";
 
 // 漫画书架：列出工作区内所有含 comic-config 节点的画布（= 漫画集），点击进入成书页。
 type ComicSummary = {
@@ -51,6 +52,7 @@ async function probeCanvas(id: string): Promise<ComicSummary | null> {
 export default function ComicBooksPage() {
     const [books, setBooks] = useState<ComicSummary[] | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [splitOpen, setSplitOpen] = useState(false);
 
     const load = useCallback(async () => {
         setError(null);
@@ -72,7 +74,9 @@ export default function ComicBooksPage() {
                 <BookOpen style={{ fontSize: 22 }} />
                 <span style={{ fontSize: 20, fontWeight: 700 }}>漫画成书</span>
                 <span style={{ opacity: 0.6, fontSize: 13 }}>从画布生成到分页排版、台词气泡与整本导出</span>
+                <Button style={{ marginLeft: "auto" }} icon={<FileAddOutlined />} onClick={() => setSplitOpen(true)}>从小说新建</Button>
             </div>
+            <NovelSplitModal open={splitOpen} onClose={() => { setSplitOpen(false); void load(); }} />
             {error ? <div style={{ color: "#d46b08" }}>加载失败：{error}</div> : null}
             {books === null && !error ? (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
