@@ -7,13 +7,51 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/app"
+	"infinite-canvas/backend/internal/workspace"
 
 	"github.com/gin-gonic/gin"
 )
+
+// resolveWorkspaceChannelAPIKey 按 host 匹配 workspace 渠道配置里的密钥（明文只存在于服务端解密后的内存中）。
+func resolveWorkspaceChannelAPIKey(c *gin.Context, svc *app.Service, targetURL string) string {
+	if svc == nil {
+		return ""
+	}
+	providerConfig := requestProviderConfig(c, svc)
+	versioned, ok := providerConfig.(VersionedProviderConfig)
+	if !ok {
+		return ""
+	}
+	effective, _, err := versioned.LoadEffectiveModelConfig()
+	if err != nil {
+		return ""
+	}
+	target, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil || target.Host == "" {
+		return ""
+	}
+	channels, _ := effective.Config["channels"].([]any)
+	for _, raw := range channels {
+		channel, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		base, _ := channel["baseUrl"].(string)
+		parsed, err := url.Parse(strings.TrimSpace(base))
+		if err != nil || parsed.Host == "" || !strings.EqualFold(parsed.Host, target.Host) {
+			continue
+		}
+		if key, _ := channel["apiKey"].(string); strings.TrimSpace(key) != "" && key != workspace.RedactedSecret {
+			return key
+		}
+	}
+	return ""
+}
 
 const maxCustomRelayErrorResponseBytes int64 = 64 << 10
 
@@ -87,6 +125,12 @@ func proxyCustomRelayRequestWithService(c *gin.Context, policy app.RuntimeReques
 		if resolved != "" {
 			apiKey = resolved
 		}
+	}
+	// 本地工作台渠道密钥解析：浏览器端配置永不回显明文（GET 只给脱敏标记），前端中转请求
+	// 拿不到真实 key。workspace 加密渠道配置按域名解析优先于 incoming——本地工作台下服务端配置即真相，
+	// 也兼容脚本/调试入口携带占位密钥的场景；不匹配任何渠道时维持 incoming（外部业务不受影响）。
+	if key := resolveWorkspaceChannelAPIKey(c, svc, target.String()); key != "" {
+		apiKey = key
 	}
 	if apiKey == "" {
 		fail(c, http.StatusUnauthorized, errors.New("自定义渠道 API Key 无效"))
