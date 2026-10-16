@@ -1,4 +1,4 @@
-import { BookOpen, ChevronLeft, ChevronRight, Home, Images, Palette, Plug, Plus, Settings2, Sun, Moon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Home, Images, Megaphone, Palette, Plug, Plus, Settings2, Sun, Moon } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -53,6 +53,7 @@ function buildNav(features: FeatureAvailability): { groups: WorkspaceNavGroup[];
                 { id: "prompt-library", title: "提示词参考库", icon: Images, to: "/prompt-library" },
                 { id: "comic-books", title: "漫画成书", icon: BookOpen, to: "/comic-books" },
                 { id: "storybook-books", title: "绘本成书", icon: Palette, to: "/storybook-books" },
+                { id: "digital-human-books", title: "数字人口播", icon: Megaphone, to: "/digital-human-books" },
                 { id: "settings:channels", title: "模型配置", icon: Settings2, to: "/settings?section=channels" },
                 { id: "agents", title: "BeefTV MCP", icon: Plug, to: "/agents" },
             ],

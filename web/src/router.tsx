@@ -15,6 +15,8 @@ const CanvasPage = lazy(loadCanvasPage);
 const CanvasProjectPage = lazy(loadCanvasProjectPage);
 const ComicBookPage = lazy(() => import("@/pages/comic-book"));
 const ComicBooksPage = lazy(() => import("@/pages/comic-books"));
+const DigitalHumanBookPage = lazy(() => import("@/pages/digital-human-book"));
+const DigitalHumanBooksPage = lazy(() => import("@/pages/digital-human-books"));
 const StorybookBookPage = lazy(() => import("@/pages/storybook-book"));
 const StorybookBooksPage = lazy(() => import("@/pages/storybook-books"));
 const CreatePage = lazy(loadCreatePage);
@@ -135,6 +137,8 @@ export const router = createWorkspaceRouter([
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/comic-book/:id", element: deferred(<ComicBookPage />) },
             { path: "/comic-books", element: deferred(<ComicBooksPage />) },
+            { path: "/digital-human-book/:id", element: deferred(<DigitalHumanBookPage />) },
+            { path: "/digital-human-books", element: deferred(<DigitalHumanBooksPage />) },
             { path: "/storybook-book/:id", element: deferred(<StorybookBookPage />) },
             { path: "/storybook-books", element: deferred(<StorybookBooksPage />) },
         ],
