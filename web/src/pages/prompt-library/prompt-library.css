@@ -1,0 +1,110 @@
+/* 提示词参考库：消费 --user-* 语义 token，明暗主题自动适配。
+   侧栏的显示/隐藏由 tailwind（hidden/block/lg:block）控制，这里只放视觉样式。 */
+
+.prompt-library-filter-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+    color: var(--user-ink);
+}
+
+.prompt-library-filter-group {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--user-border);
+}
+
+.prompt-library-filter-group:last-child {
+    border-bottom: none;
+}
+
+.prompt-library-filter-dimension {
+    display: block;
+    margin-bottom: 0.375rem;
+    font-size: var(--fs-tiny, 11px);
+    font-weight: 600;
+    color: var(--user-ink-muted);
+}
+
+.prompt-library-tag {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid var(--user-border);
+    background: var(--user-surface);
+    color: var(--user-ink-muted);
+    padding: 1px 8px;
+    font-size: var(--fs-tiny, 11px);
+    line-height: 1.6;
+    cursor: pointer;
+    transition: color var(--user-motion), background var(--user-motion), border-color var(--user-motion);
+}
+
+.prompt-library-tag:hover {
+    background: var(--user-surface-hover);
+    color: var(--user-ink);
+}
+
+.prompt-library-tag.is-active {
+    border-color: var(--user-accent, var(--workspace-accent));
+    background: var(--user-accent-soft, var(--workspace-accent-soft));
+    color: var(--user-ink);
+    font-weight: 600;
+}
+
+.prompt-library-tag.is-static {
+    cursor: default;
+}
+
+.prompt-library-tag.is-static:hover {
+    background: var(--user-surface);
+    color: var(--user-ink-muted);
+}
+
+.prompt-library-cover-fallback {
+    display: flex;
+    height: 100%;
+    min-height: 120px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    background: var(--user-surface-muted);
+    color: var(--user-ink-muted);
+    font-size: var(--fs-tiny, 11px);
+}
+
+.prompt-library-gallery {
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.prompt-library-gallery-item img {
+    display: block;
+    width: 100%;
+    border-radius: var(--user-radius-control, 12px);
+    border: 1px solid var(--user-border);
+    object-fit: cover;
+}
+
+.prompt-library-gallery-placeholder {
+    display: flex;
+    min-height: 110px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: var(--user-radius-control, 12px);
+    border: 1px dashed var(--user-border);
+    background: var(--user-surface-muted);
+    color: var(--user-ink-muted);
+    font-size: var(--fs-tiny, 11px);
+}
+
+.prompt-library-prompt-text {
+    margin: 0;
+    font-family: inherit;
+    max-height: 320px;
+    overflow-y: auto;
+}

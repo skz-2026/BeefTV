@@ -16,6 +16,7 @@ import (
 	"infinite-canvas/backend/internal/localapp"
 	"infinite-canvas/backend/internal/model"
 	localproject "infinite-canvas/backend/internal/project"
+	"infinite-canvas/backend/internal/promptlibrary"
 	localtask "infinite-canvas/backend/internal/task"
 	"infinite-canvas/backend/internal/textreplay"
 	"infinite-canvas/backend/internal/workspace"
@@ -59,6 +60,9 @@ type RuntimeDependencies struct {
 	// AssistantHost is the per-runtime supervisor for the built-in agent-host child.
 	// Separate runtimes must not share this value.
 	AssistantHost *assistantruntime.Host
+	// PromptLibrary 是 open-image-prompts 数据集的只读检索服务；未安装数据集时
+	// 服务仍存在（检索接口降级），只有数据目录不可用时才为 nil。
+	PromptLibrary *promptlibrary.Service
 	// DesktopTrust verifies both the launch token and the separate Wails UI bootstrap credential.
 	// 桌面形态用它代替开发引导开关签发 UI 会话；服务端形态为 nil。
 	DesktopTrust func(*http.Request) bool

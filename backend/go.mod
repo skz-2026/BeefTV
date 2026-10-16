@@ -3,9 +3,11 @@ module infinite-canvas/backend
 go 1.25.0
 
 require (
+	github.com/aws/aws-sdk-go-v2 v1.44.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/uuid v1.6.0
+	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/shirou/gopsutil/v4 v4.25.9
@@ -21,7 +23,6 @@ require (
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.44.0 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
@@ -55,7 +56,6 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.23 // indirect
-	github.com/mattn/go-sqlite3 v1.14.48 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect

@@ -27,7 +27,112 @@ tags:
   - name: agent-ops
   - name: assistant
   - name: creation-conversations
+  - name: prompt-library
 paths:
+  /prompt-library/status:
+    get:
+      tags: [prompt-library]
+      summary: Dataset install status, remote assets and installer progress
+      description: |
+        Local-only prompt reference library backed by the open-image-prompts
+        dataset. Returns availability, dataset counts, installed db/pack ledger,
+        cached GitHub Releases assets and in-memory installer progress. Always
+        200 unless auth fails; the page renders install guidance from this data.
+      responses:
+        "200":
+          description: Envelope data contains availability, counts, packs and progress
+  /prompt-library/install:
+    post:
+      tags: [prompt-library]
+      summary: Start an async install or update of the dataset
+      description: |
+        body `{ target }`: `db`, `packs` (all image packs) or a concrete pack
+        name like `images-2026-10.tar.gz`. Downloads go through the GitHub
+        releases/assets API endpoint with sha256 verification and `.part`
+        resume. One installer at a time; a second call returns 409. Installing
+        `db` while CANVAS_PROMPT_LIBRARY_DB pins an external file returns 400.
+      responses:
+        "200":
+          description: Install started; poll /prompt-library/status for progress
+        "409":
+          description: Installer busy
+        "400":
+          description: Missing target or externally managed database
+  /prompt-library/labels:
+    get:
+      tags: [prompt-library]
+      summary: Bilingual taxonomy labels for filtering
+      responses:
+        "200":
+          description: Envelope data contains labels
+        "503":
+          description: Dataset not installed
+  /prompt-library/prompts:
+    get:
+      tags: [prompt-library]
+      summary: Search prompts by bilingual keywords and tag intersection
+      parameters:
+        - in: query
+          name: query
+          schema: { type: string }
+          description: Matches prompt text, zh-Hans translation, author and tool
+        - in: query
+          name: tags
+          schema: { type: string }
+          description: Comma-separated dimension:key filters, AND semantics
+        - in: query
+          name: tool
+          schema: { type: string }
+        - in: query
+          name: author
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, default: 24, maximum: 60 }
+      responses:
+        "200":
+          description: Envelope data contains items/page/pageSize/total/hasMore
+        "503":
+          description: Dataset not installed
+  /prompt-library/prompts/{tweetId}:
+    get:
+      tags: [prompt-library]
+      summary: Prompt detail with all images, tags and optional recipe
+      parameters:
+        - in: path
+          name: tweetId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Envelope data contains the prompt record
+        "404":
+          description: Record not found
+  /prompt-library/images/{tweetId}/{index}/file:
+    get:
+      tags: [prompt-library]
+      summary: Serve an image from the local image pack (raw bytes)
+      description: |
+        Raw image bytes with cache headers, resolved from the images table
+        local_path inside the data dir. Missing pack returns 404 with
+        reason prompt_library_image_pack_missing.
+      parameters:
+        - in: path
+          name: tweetId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: index
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Image file bytes
+        "404":
+          description: Image record or image pack missing
   /business/tools:
     get:
       tags: [agent-ops]

@@ -1,7 +1,7 @@
 import { Button, Image as AntImage, InputNumber, Modal, Popover } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ArrowLeftRight, ArrowUp, AtSign, Boxes, Camera, ChevronDown, FileText, GripVertical, ImageIcon, ImagePlus, Link2, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
+import { ArrowLeftRight, ArrowUp, AtSign, Boxes, Camera, ChevronDown, FileText, GripVertical, ImageIcon, ImagePlus, LibraryBig, Link2, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, modelOptionName, resolveModelChannel, selectableModelsByCapability, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -23,6 +23,7 @@ import { seedanceSettingsConstraints } from "@/lib/seedance-task-constraints";
 import { CanvasVideoPromptTools } from "./canvas-video-prompt-tools";
 import { CanvasPresetPicker, type CanvasPromptPreset } from "./canvas-preset-picker";
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
+import { CanvasPromptLibraryModal } from "./canvas-prompt-library-modal";
 import { CanvasPromptOptimizerDrawer } from "./canvas-prompt-optimizer-drawer";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@/types/canvas";
 import { autoMentionCanvasResourceReferences, canvasResourceMentionToken, normalizeCanvasNodeMentionTokens, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -91,6 +92,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const [manualPromptHeight, setManualPromptHeight] = useState<number | null>(null);
     const [paramsExpanded, setParamsExpanded] = useState(false); // #98 决策2：B区参数区折叠状态（手风琴）
     const [promptOptimizerOpen, setPromptOptimizerOpen] = useState(false);
+    const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
     const [autoLinkEnabled, setAutoLinkEnabled] = useState(true);
     const resolvedMentionReferences = useResolvedCanvasResourceReferences(mentionReferences, { projectId });
     const normalizedSavedPrompt = useMemo(() => normalizeCanvasNodeMentionTokens(savedPrompt, mentionReferences), [mentionReferences, savedPrompt]);
@@ -211,6 +213,12 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         updatePrompt(withoutSlash ? `${withoutSlash}\n${preset.prompt}` : preset.prompt);
     };
 
+    // 参考库选中的提示词以独立段落追加，与预设/画风注入的追加语义一致。
+    const applyLibraryPrompt = (promptText: string) => {
+        const base = prompt.replace(/\s+$/, "");
+        updatePrompt(base ? `${base}\n${promptText}` : promptText);
+    };
+
     const insertPromptReference = (reference: CanvasResourceReference) => {
         const insertText = `${canvasResourceMentionToken(reference)} `;
         const pendingMentionMatch = /@[^\s@，。！？、,.!?;:]*\s*$/.exec(prompt);
@@ -262,6 +270,17 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                 </div>
             )}
             <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
+            <Tooltip title="从提示词参考库搜索并追加">
+                <button
+                    type="button"
+                    className="canvas-node-composer-header-action inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5"
+                    onClick={() => setPromptLibraryOpen(true)}
+                    aria-label="打开提示词参考库"
+                >
+                    <LibraryBig className="size-3" />
+                    <span className="text-[var(--fs-tiny)] font-medium">参考库</span>
+                </button>
+            </Tooltip>
             {canOptimizePrompt ? (
                 <Tooltip title="用 AI 润色提示词">
                     <button
@@ -590,6 +609,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                 </div>
             </Modal>
 
+            <CanvasPromptLibraryModal open={promptLibraryOpen} onClose={() => setPromptLibraryOpen(false)} onInsert={applyLibraryPrompt} />
             </div>
         </CanvasPromptOptimizerDrawer>
     );

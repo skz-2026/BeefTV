@@ -80,6 +80,12 @@ Windows 安装包自带视频处理工具，无需另外安装 FFmpeg。预览�
 
 批量创作表保留当前画布样式：顶栏拖动整表，表内控件不会打开“放入创作空间”遮罩。支持全局提示词覆盖各任务行、空槽点击/拖入上传、已有缩略图点击替换、参考图列拖拽重排，以及缩略图跨行跨列交换。连线到参考端口后会自动刷新任务行，“同步连线”仍可手动增量同步。全局提示词可手动编辑；批量创作表的读取结果会带上 `globalPrompt` 和按全局提示词计算的 `generationPreview`。
 
+
+
+
+
+
+
 ## 提示词放大编辑
 
 图片和视频节点的提示词面板支持放大编辑：窗口默认约 `min(1200px, 92vw)`，编辑区最小高度 200px，右下角可对角拖拽，方向键可微调。切换节点后尺寸恢复默认，节点上的紧凑面板外观不变。
@@ -376,3 +382,22 @@ SEO 标题、描述、可选关键词会投影到浏览器 metadata、Open Graph
 - `backend/internal/editing`：语义渲染计划编译。
 - `backend/internal/task`：本机转写/渲染/深度捕捉准入。`task_timeline.go`、`task_render.go`：领取后的转写与 native 渲染执行。
 - `backend/internal/repository/project_workbench_read.go`：项目概览指标聚合（含成片完成度计数）。
+
+## 提示词参考库
+
+接入开源数据集 [open-image-prompts](https://github.com/NanmiCoder/open-image-prompts)：两万余条来自公开推文的生图提示词（Midjourney、GPT-Image、Nano Banana、Flux 等），每条带对应成图、中文翻译和 185 个受控视觉标签，全部本地检索、离线可用。
+
+侧栏「提示词参考库」页面负责数据集安装与浏览：数据库（约 130 MB 下载，解压后约 420 MB）与按月图片包从 GitHub Releases 下载，sha256 校验、断点续传，落盘在后端数据目录 `prompt-library/`。支持中英文关键词搜索（提示词原文、中文翻译、作者、工具）、按视觉标签（视觉风格、场景、光线、构图等 12 个维度）交集筛选，详情页可查看全部成图、复制提示词原文或中文翻译并跳转来源推文。画布图片/视频节点的提示词面板有「参考库」按钮，搜索选中后一键把提示词追加进当前节点提示词。
+
+数据集是推文公开素材的镜像（DATA_LICENSE），仅作本地参考检索；图片与提示词不再分发。
+
+### 使用入口
+
+- 侧栏「提示词参考库」页面（`/prompt-library`）：安装/更新数据集与图片包、搜索浏览、详情复制。
+- 画布节点提示词面板「参考库」按钮：搜索并追加提示词到当前节点。
+
+
+- `backend/internal/promptlibrary/`：只读 SQLite 检索（LIKE + 标签索引，不依赖 FTS5）、GitHub Releases 安装器（断点续传、sha256 校验、tar 解包防路径穿越）。
+- `backend/internal/handler/prompt_library.go`：`/api/prompt-library/*` 路由（status/install/labels/prompts/images）。
+- `web/src/pages/prompt-library/`：参考库页面（安装引导、搜索、标签筛选、详情抽屉）。
+- `web/src/components/canvas/canvas-prompt-library-modal.tsx`：画布提示词面板的选择弹窗。

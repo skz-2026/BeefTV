@@ -23,6 +23,7 @@ import (
 	"infinite-canvas/backend/internal/eagle"
 	canvasHandler "infinite-canvas/backend/internal/handler"
 	"infinite-canvas/backend/internal/localapp"
+	"infinite-canvas/backend/internal/promptlibrary"
 	"infinite-canvas/backend/internal/repository"
 	"infinite-canvas/backend/internal/runtimeinfo"
 	httptransport "infinite-canvas/backend/internal/transport/http"
@@ -45,6 +46,7 @@ type Runtime struct {
 	uiBootstrapToken string
 	beefAPI          *beefapi.Service
 	assistantHost    *assistantruntime.Host
+	promptLibrary    *promptlibrary.Service
 	listener         net.Listener
 	httpServer       *http.Server
 	serveErr         chan error
@@ -208,6 +210,13 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 	// 本机可信凭据在组合根生成：owner 凭据与宿主凭据只在本机数据目录，0600。
 	agentops.EnsureAgentCredentials(svc.DataDir())
 	assistantHost := assistantruntime.New(assistantruntime.OptionsFromService(svc))
+	// 提示词参考库（open-image-prompts 数据集）：未安装/打开失败都不阻断启动，
+	// 页面会引导下载；数据库路径可由 CANVAS_PROMPT_LIBRARY_DB 外部指定。
+	promptLibrary, promptLibraryErr := promptlibrary.Open(promptlibrary.Options{DataDir: cfg.DataDir})
+	if promptLibraryErr != nil {
+		promptLibrary = nil
+		log.Printf("提示词参考库服务不可用（不影响应用启动）：%v", promptLibraryErr)
+	}
 	api := router.Group("/api")
 	status := newSystemStatus(db, svc, true)
 	registerSystemStatusRoutes(api, status)
@@ -220,6 +229,7 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 		Generation:         localRoot.Generation,
 		BeefAPI:            beefAPIConnection,
 		AssistantHost:      assistantHost,
+		PromptLibrary:      promptLibrary,
 		Conversations:      conversation.New(conversation.NewStore(repo)),
 		TextReplay:         svc.TextReplay(),
 		Appearance:         svc.AppearanceDomain(),
@@ -300,6 +310,7 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 		uiBootstrapToken: uiBootstrapToken,
 		beefAPI:          beefAPIConnection,
 		assistantHost:    assistantHost,
+		promptLibrary:    promptLibrary,
 		serveErr:         make(chan error, 1),
 	}, nil
 }
@@ -469,6 +480,11 @@ func (r *Runtime) Close(ctx context.Context) error {
 		}
 		if serviceErr != nil {
 			failures = append(failures, serviceErr)
+		}
+		if r.promptLibrary != nil {
+			if err := r.promptLibrary.Close(); err != nil {
+				failures = append(failures, fmt.Errorf("关闭提示词参考库：%w", err))
+			}
 		}
 		if sqlDB, err := r.db.DB(); err == nil {
 			if err := sqlDB.Close(); err != nil {
