@@ -8,9 +8,13 @@ describe("asset library category sidebar", () => {
         const css = readFileSync(resolve(import.meta.dir, "../src/styles/workspace-product.css"), "utf8");
         expect(page).toContain("assets-collection-layout");
         expect(page).toContain('aria-label="素材分类"');
-        expect(page).toContain('title="默认标签"');
+        expect(page).toContain("builtinFolderCounts");
+        expect(page).toContain('aria-label="新建分类"');
+        expect(page).not.toContain('title="默认标签"');
         expect(page).not.toContain('title="标签与分类"');
-        expect(page).toContain("我的分类");
+        expect(page).toContain('className="collection-filter-label">分类</span>');
+        expect(page).toContain('"character", "environment", "prop"');
+        expect(page).toContain("folders.map((folder) => (");
         expect(page).not.toContain("全部自定义分类");
         expect(css).toContain(".assets-library-source-rail");
         expect(css).toContain(".assets-library-source-rail");
@@ -136,12 +140,14 @@ describe("project card actions", () => {
 });
 
 describe("asset card actions", () => {
-    test("asset overflow menu supports tag editing for every asset kind", () => {
+    test("asset overflow menu supports rename, categorization, download and deletion", () => {
         const page = readFileSync(resolve(import.meta.dir, "../src/pages/assets/index.tsx"), "utf8");
-        expect(page).toContain('label: "编辑标签"');
-        expect(page).toContain('label: asset.metadata?.favorite === true ? "取消收藏" : "收藏"');
-        expect(page).toContain("openTagEditor");
-        expect(page).toContain("标签已更新");
+        expect(page).toContain('label: "重命名"');
+        expect(page).toContain('label: "移动到分类"');
+        expect(page).toContain('label: "下载"');
+        expect(page).toContain("永久删除");
+        expect(page).not.toContain('label: "编辑标签"');
+        expect(page).not.toContain('label: asset.metadata?.favorite === true ? "取消收藏" : "收藏"');
     });
 
     test("asset overflow trigger behaves as an isolated menu control", () => {

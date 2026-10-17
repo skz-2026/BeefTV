@@ -2,7 +2,7 @@ import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageV
 import { normalizeVideoBoolean, normalizeVideoResolutionValue, videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import { imageSizePresets } from "@/lib/image-size-presets";
 import { sanitizeVideoPriceQuote, seedancePortraitLabel, seedancePortraitModel } from "@/lib/seedance-portrait";
-import { modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
+import { channelModelProfile, modelOptionName, normalizeModelOptionValue, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 export type ModelInputSummary = {
     textCount: number;
@@ -51,7 +51,7 @@ export function configuredModelDisplayName(config: AiConfig, value: string) {
     if (portrait) return portrait;
     const model = modelOptionName(value);
     const channel = resolveModelChannel(config, value);
-    return channel.modelProfiles?.find((item) => item.model === model)?.displayName?.trim() || model;
+    return channelModelProfile(channel, model)?.displayName?.trim() || model;
 }
 
 // Shared by selection and paid submission, including retries and batch jobs.
@@ -61,7 +61,7 @@ export function portraitGenerationError(config: AiConfig, model: string, resolut
     const channel = resolveModelChannel(config, model);
     const profile = channel.modelProfiles?.find((item) => item.model === modelOptionName(model));
     const quote = sanitizeVideoPriceQuote(profile?.videoPricing);
-    if (!quote) return "真人素材版价格暂不可用，请刷新模型列表";
+    if (!quote || quote.mode !== "tokens") return "真人素材版价格暂不可用，请刷新模型列表";
     if (resolution !== undefined) {
         const normalized = normalizeVideoResolutionValue(resolution);
         const key = normalized === "2160" ? "4k" : `${normalized}p`;

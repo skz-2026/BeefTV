@@ -178,7 +178,7 @@ export function CanvasTopBar({
                                     { key: "projects", label: <Link to="/canvas">全部项目</Link> },
                                     { type: "divider" },
                                     { key: "new", label: <Link to="/canvas?mode=new">创建新项目</Link> },
-                                    { key: "delete", label: "删除项目", onClick: onDeleteProject },
+                                    { key: "delete", danger: true, label: "删除当前画布", onClick: onDeleteProject },
                                 ],
                             }}
                         >

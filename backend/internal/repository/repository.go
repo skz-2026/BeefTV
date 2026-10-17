@@ -431,7 +431,9 @@ func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskSta
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		updated := taskLeaseWriter(tx.Model(&model.Task{}), task.LeaseOwner).
 			Where("id = ? AND status = ?", task.ID, expected).
-			Select("*").Omit("id", "created_at").Updates(task)
+			// Completion owns the result, not the worker's routing, lease or
+			// cancellation snapshot, which may have changed during execution.
+			Select("status", "stage", "progress", "result_json", "input_json", "text_draft", "error", "failure_diagnostics", "completed_at", "updated_at").Updates(task)
 		if updated.Error != nil {
 			return updated.Error
 		}
@@ -2024,11 +2026,10 @@ func (r *Repository) DeleteShotAssetReferenceAndInvalidate(projectID string, sho
 }
 
 func invalidateUnitWorkflowTx(tx *gorm.DB, projectID string, unitID string, fromStepKey string, updatedAt time.Time) error {
-	if strings.TrimSpace(unitID) == "" {
-		return nil
-	}
 	var instances []model.WorkflowInstance
-	if err := tx.Where("project_id = ? AND unit_id = ?", projectID, unitID).Find(&instances).Error; err != nil {
+	// Unit changes also invalidate the project's aggregate approval. Other
+	// units keep their own confirmations and existing task/resource identities.
+	if err := tx.Where("project_id = ? AND (unit_id = ? OR scope = ?)", projectID, unitID, "project").Find(&instances).Error; err != nil {
 		return err
 	}
 	for _, instance := range instances {

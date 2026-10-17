@@ -14,6 +14,9 @@ func TestBusinessCatalogProjectsQueriesAndTrustedTaskFields(t *testing.T) {
 		{Method: "GET", Path: "/api/projects/:id/chapter-apply-receipts"},
 		{Method: "POST", Path: "/api/tasks"},
 		{Method: "GET", Path: "/api/assistant/runtime/turns/:id"},
+		{Method: "GET", Path: "/api/skills/market/authorization"},
+		{Method: "POST", Path: "/api/skills/market/publish-plans/:id/upload"},
+		{Method: "POST", Path: "/api/skills/market/publish-plans/:id/submit"},
 	})
 	if len(catalog.Tools) != 3 {
 		t.Fatalf("sensitive route discovered: %#v", catalog.Tools)
@@ -42,6 +45,11 @@ func TestBusinessCatalogProjectsQueriesAndTrustedTaskFields(t *testing.T) {
 	}
 	if _, ok := catalog.Match("GET", "/api/projects/../chapter-apply-receipts"); ok {
 		t.Fatal("unsafe path accepted")
+	}
+	for _, path := range []string{"/api/skills/market/authorization", "/api/skills/market/publish-plans/p/upload", "/api/skills/market/publish-plans/p/submit"} {
+		if _, ok := catalog.Match("POST", path); ok {
+			t.Fatal("UI publishing confirmation exposed", path)
+		}
 	}
 }
 

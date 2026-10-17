@@ -208,7 +208,7 @@ func TestNilServiceAnalyticsRecordsHTTPEvidenceAndKeepsImageFailClosed(t *testin
 		t.Fatalf("nil-service evidence %+v", d)
 	}
 
-	expired, cancel := context.WithTimeout(ctx, 0)
+	expired, cancel := context.WithTimeout(generation.WithImageReplayProtocol(ctx, generation.ImageReplayProtocol), 0)
 	cancel()
 	beef, err := http.NewRequestWithContext(expired, http.MethodPost, "https://beefapi.com/v1/images/generations", strings.NewReader(`{"prompt":"draw"}`))
 	if err != nil {

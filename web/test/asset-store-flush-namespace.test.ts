@@ -3,7 +3,7 @@ import localforage from "localforage";
 
 import { getActiveUserScope, setActiveUserScope } from "@/lib/user-scope";
 import { captureUserScope } from "@/lib/user-scope-guard";
-import { ASSET_STORE_KEY, flushAssetStorePersistence, resetAssetStoreDraftsForTests, useAssetStore } from "@/stores/use-asset-store";
+import { ASSET_STORE_KEY, flushAssetStorePersistence, hasActiveAssetStorePersistence, resetAssetStoreDraftsForTests, useAssetStore } from "@/stores/use-asset-store";
 
 function deferred<T = void>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
@@ -65,6 +65,7 @@ describe("asset store flush namespace isolation", () => {
                 data: { content: "old" },
             });
             await entered.promise;
+            expect(hasActiveAssetStorePersistence()).toBe(true);
             setActiveUserScope("owner-b");
             setActiveUserScope("owner-a");
             const secondEpoch = captureUserScope();
@@ -84,6 +85,7 @@ describe("asset store flush namespace isolation", () => {
             const flushing = flushAssetStorePersistence(secondEpoch);
             gate.resolve();
             await flushing;
+            expect(hasActiveAssetStorePersistence()).toBe(false);
 
             expect(writes.some((entry) => entry.endsWith(`:${secondEpoch.epoch}`))).toBe(true);
             expect(writes.some((entry) => entry === `${firstEpoch.userScope}:${firstEpoch.epoch}`)).toBe(false);
@@ -91,6 +93,24 @@ describe("asset store flush namespace isolation", () => {
             gate.resolve();
             getItem.mockRestore();
             setItem.mockRestore();
+            if (!originalWindow) delete (globalThis as { window?: unknown }).window;
+            restore();
+        }
+    });
+
+    test("a failed retained asset queue is not mistaken for ongoing IO", async () => {
+        const restore = switchScope("failed-write-test");
+        const originalWindow = globalThis.window;
+        globalThis.window = originalWindow ?? ({ localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} } } as never);
+        const getItem = spyOn(localforage, "getItem").mockResolvedValue(null);
+        const setItem = spyOn(localforage, "setItem").mockImplementation(async () => { throw new Error("disk write failed"); });
+        try {
+            useAssetStore.getState().addAsset({ kind: "text", title: "failed", coverUrl: "", tags: [], category: "other", status: "confirmed", source: "manual", data: { content: "keep" } });
+            await expect(flushAssetStorePersistence()).rejects.toThrow("disk write failed");
+            await new Promise(resolve => setTimeout(resolve, 0));
+            expect(hasActiveAssetStorePersistence()).toBe(false);
+        } finally {
+            getItem.mockRestore(); setItem.mockRestore();
             if (!originalWindow) delete (globalThis as { window?: unknown }).window;
             restore();
         }

@@ -26,6 +26,7 @@ func (s *Service) processTask(ctx context.Context, task model.Task) (map[string]
 	ctx = withProviderAnalytics(ctx, s, task)
 	runtime, _ := generation.RuntimeFromContext(ctx)
 	runtime.Stages = appTaskStagePort{service: s, task: task}
+	runtime.Delivery = appTaskDeliveryPort{service: s, taskID: task.ID}
 	ctx = generation.WithRuntime(ctx, runtime)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	if result, recovered, err := s.recoverImageSubmission(ctx, task); recovered {

@@ -1,6 +1,7 @@
 import { getMediaBlob } from "@/services/file-storage";
 import { AUDIO_COPY_OUTPUT_NAME, AUDIO_OUTPUT_NAME, assertUsableSegmentOutput, buildCopyAudioArgs, buildExtractAudioArgs, buildRemoveAudioArgs, buildSegmentTrimArgs, buildVideoCropArgs, CROP_OUTPUT_NAME, isFullSourceRange, MUTED_VIDEO_OUTPUT_NAME, SEGMENT_INPUT_NAME, SEGMENT_OUTPUT_NAME, WAV_OUTPUT_NAME } from "./canvas-video-segment-args";
 import { withFFmpegLease } from "./canvas-ffmpeg-session";
+import { assertVideoAudioProbe } from "./canvas-video-segment-args";
 
 export type VideoSegmentRange = {
     startMs: number;
@@ -99,6 +100,7 @@ export async function extractVideoAudio(source: VideoSegmentSource, range: Video
         const audioName = `${filePrefix}${AUDIO_OUTPUT_NAME}`;
         const wavName = `${filePrefix}${WAV_OUTPUT_NAME}`;
         const audioCopyName = `${filePrefix}${AUDIO_COPY_OUTPUT_NAME}`;
+        const probeName = `${filePrefix}audio-probe.json`;
         const blob = await readVideoSourceBlob(source);
         onProgress?.({ phase: "reading", progress: 45 });
         await ffmpeg.writeFile(inputName, await fetchFile(blob));
@@ -106,6 +108,12 @@ export async function extractVideoAudio(source: VideoSegmentSource, range: Video
         const durationSec = String((range.endMs - range.startMs) / 1000);
         onProgress?.({ phase: "encoding", progress: 55 });
         try {
+            const probeCode = await ffmpeg.ffprobe(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index:format=duration", "-of", "json", inputName, "-o", probeName]);
+            // The bundled ffprobe writes valid JSON while leaving ret at -1.
+            // Validate its output and duration; do not mistake that sentinel for an encoder failure.
+            if (probeCode !== 0 && probeCode !== -1) throw new Error("无法读取视频音轨信息，请检查素材是否完整");
+            const probe = await ffmpeg.readFile(probeName);
+            assertVideoAudioProbe(typeof probe === "string" ? probe : new TextDecoder().decode(probe));
             const args = (audioCodec: string, outputName = audioName) => buildExtractAudioArgs(audioCodec, startSec, durationSec, outputName, inputName);
             let outputName = audioName;
             let outputType = "audio/mpeg";
@@ -137,7 +145,7 @@ export async function extractVideoAudio(source: VideoSegmentSource, range: Video
             onProgress?.({ phase: "encoding", progress: 100 });
             return new Blob([output as BlobPart], { type: outputType });
         } finally {
-            await Promise.all([inputName, `${filePrefix}${OUTPUT_NAME}`, audioName, wavName, audioCopyName].map((file) => ffmpeg.deleteFile(file).catch(() => undefined)));
+            await Promise.all([inputName, `${filePrefix}${OUTPUT_NAME}`, audioName, wavName, audioCopyName, probeName].map((file) => ffmpeg.deleteFile(file).catch(() => undefined)));
         }
     }, { onProgress: leaseProgress(onProgress) });
 }

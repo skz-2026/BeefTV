@@ -17,7 +17,7 @@ type MotionRenderAdmission interface {
 }
 
 func registerCanvasMotionOps(r *Registry) {
-	r.Register(Op{ID: "canvas.motion.render", Summary: "用已导入的动效模板本地渲染成片（免费、确定性、不调用付费生成）", Scope: ScopeCanvas,
+	r.Register(Op{ReplaySafe: true, AssistantCanvas: true, ID: "canvas.motion.render", Summary: "用已导入的动效模板本地渲染成片（免费、确定性、不调用付费生成）", Scope: ScopeCanvas,
 		Params:  json.RawMessage(`{"type":"object","properties":{"canvasId":{"type":"string"},"templateId":{"type":"string"},"versionId":{"type":"string"},"contentDigest":{"type":"string"},"params":{"type":"object"}},"required":["canvasId","templateId","versionId","contentDigest","params"]}`),
 		Handler: opCanvasMotionRender})
 }

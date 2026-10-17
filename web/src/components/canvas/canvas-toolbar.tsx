@@ -302,7 +302,7 @@ export function CanvasToolbar({
     const createCommands = useCanvasCreateCommands(ctx, runAddAction);
 
     return (
-        <div ref={rootRef} data-canvas-no-zoom className={`canvas-main-toolbar pointer-events-none absolute inset-x-[var(--canvas-inset-x)] bottom-[var(--canvas-inset-y)] flex justify-center${libtvChrome ? " canvas-libtv-compat-toolbar" : ""}`} style={{ zIndex }} onPointerDownCapture={bringToFront} onFocusCapture={bringToFront}>
+        <div ref={rootRef} data-onboarding="canvas-tools" data-canvas-no-zoom className={`canvas-main-toolbar pointer-events-none absolute inset-x-[var(--canvas-inset-x)] bottom-[var(--canvas-inset-y)] flex justify-center${libtvChrome ? " canvas-libtv-compat-toolbar" : ""}`} style={{ zIndex }} onPointerDownCapture={bringToFront} onFocusCapture={bringToFront}>
             {shortcutsOpen ? <CanvasShortcutsPopover x={panelX} theme={theme} /> : null}
             <AnimatePresence>
                 {modeMenuOpen ? (

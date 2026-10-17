@@ -344,3 +344,25 @@ describe("workspace asset repository runtime boundary", () => {
         }
     });
 });
+
+test("desktop deletes all selected media without browser cleanup blocking the next item", async () => {
+    const restore = switchScope("batch-media-delete");
+    desktopBackend();
+    const assets = [sampleAsset("batch-1"), sampleAsset("batch-2"), sampleAsset("batch-3")];
+    useAssetStore.setState({ assets });
+    const cleanup = spyOn(useAssetStore.getState(), "cleanupImages").mockRejectedValue(new Error("IndexedDB unavailable"));
+    const deleted: string[] = [];
+    try {
+        await withAdapter(async config => {
+            if (config.method !== "delete") throw new Error("Unexpected request");
+            deleted.push(String(config.url));
+            return envelope({});
+        }, async () => {
+            const scope = captureUserScope();
+            for (const asset of assets) await deleteWorkspaceAsset(asset.id, scope);
+        });
+        expect(deleted).toEqual(["/assets/batch-1", "/assets/batch-2", "/assets/batch-3"]);
+        expect(useAssetStore.getState().assets).toEqual([]);
+        expect(cleanup).not.toHaveBeenCalled();
+    } finally { cleanup.mockRestore(); restore(); }
+});

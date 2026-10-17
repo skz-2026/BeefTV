@@ -6,6 +6,39 @@ import { mergeManagedBeefAPICatalog } from "../src/pages/settings/channel-settin
 import { createModelChannel, defaultConfig, type AiConfig } from "../src/stores/use-config-store";
 import { createModelConfigRepository } from "../src/services/model-config-repository";
 
+test("an unacknowledged config write remains dirty and can be retried", async () => {
+    let acknowledge = false;
+    const repository = createModelConfigRepository({
+        read: async () => ({ config: defaultConfig, revision: 1, health: "ready", source: "builtin+local" }),
+        write: async () => ({ saved: acknowledge, revision: acknowledge ? 2 : 1 }),
+    });
+    await repository.hydrate();
+    await repository.commit({ ...defaultConfig, channels: [] });
+    expect(repository.getState()).toMatchObject({ status: "error", dirty: true, revision: 1 });
+    acknowledge = true;
+    await repository.flush();
+    expect(repository.getState()).toMatchObject({ status: "saved", dirty: false, revision: 2 });
+});
+
+test("a deleted custom channel stays absent after a new repository hydrates", async () => {
+    let stored = { ...defaultConfig, channels: [createModelChannel({ id: "custom", apiKey: "dummy", models: ["chat"] })] };
+    let revision = 3;
+    const dependencies = {
+        read: async () => ({ config: structuredClone(stored), revision, health: "ready" as const, source: "builtin+local" as const }),
+        write: async (config: AiConfig, expectedRevision: number) => {
+            expect(expectedRevision).toBe(revision);
+            stored = structuredClone(config);
+            return { saved: true, revision: ++revision };
+        },
+    };
+    const repository = createModelConfigRepository(dependencies);
+    await repository.hydrate();
+    await repository.commit({ ...stored, channels: [] });
+    const restarted = createModelConfigRepository(dependencies);
+    expect((await restarted.hydrate()).config.channels).toEqual([]);
+    expect(restarted.getState().revision).toBe(4);
+});
+
 test("local-mode startup restores the local model config after the session", async () => {
     const initialize = (workspaceBootstrap as Record<string, unknown>).initializeWorkspaceState as undefined | ((input: {
         loadWorkspace: () => Promise<{ source: string }>;

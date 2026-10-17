@@ -81,7 +81,13 @@ func mediaFilename(media Media, mimeType string) string {
 	if base == "" {
 		base = "reference"
 	}
-	extensions, _ := mime.ExtensionsByType(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	// The system MIME database may list .m2a before .mp3. Audio endpoints
+	// commonly validate the filename extension even when audio/mpeg is correct.
+	if mediaType == "audio/mpeg" {
+		return "reference-" + base + ".mp3"
+	}
+	extensions, _ := mime.ExtensionsByType(mediaType)
 	extension := ".bin"
 	if len(extensions) > 0 {
 		extension = extensions[0]

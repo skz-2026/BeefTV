@@ -120,7 +120,6 @@ jobs:
             prerelease_args+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" \
-            docker-compose.deploy.yml \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
             --notes-file dist/RELEASE_NOTES.md \

@@ -387,6 +387,13 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
             run.recovery = { sessionId: run.sessionId, knownTurnIds: run.turns.map((turn) => turn.turnId), text: message, selectedNodeIds: selectedSnapshot };
             run.dispatched = true;
             await streamAgentChat(targetCanvas, message, {
+                onSession: (sessionId) => {
+                    if (!userScopeMatches(expectedScope)) return;
+                    const current = runFor(targetCanvas);
+                    current.sessionId = sessionId;
+                    if (current.recovery) current.recovery.sessionId = sessionId;
+                    rerenderIfActive(targetCanvas);
+                },
                 onDelta: (delta) => {
                     if (!userScopeMatches(expectedScope)) return;
                     const current = runFor(targetCanvas);
@@ -423,6 +430,8 @@ export function useCanvasAssistant({ canvasId, onCanvasChanged }: Options) {
                     };
                     current.turns = [...current.turns, turn];
                     current.recovery = null;
+                    // 旧 JSONL 会话首次发消息会交接给新的 Durable 会话：后续回合都走它。
+                    if (end.sessionId && end.sessionId !== current.sessionId) current.sessionId = end.sessionId;
                     current.backgroundActive = false;
                     current.historyError = null;
                     current.pendingUserText = null;

@@ -37,6 +37,11 @@ func externalBusiness(c *gin.Context) (externalBusinessPrincipal, bool) {
 }
 
 func businessPathAllowed(p string) bool {
+	// Publishing credentials and user confirmations belong to the trusted UI.
+	// External agents publish through the separate cloud grant/API instead.
+	if p == "/skills/market" || strings.HasPrefix(p, "/skills/market/") {
+		return false
+	}
 	for _, prefix := range []string{"/assets", "/asset-folders", "/resources", "/canvas-projects", "/canvas-folders", "/projects", "/project-folders", "/voice-profiles", "/style-profiles", "/tasks", "/timeline", "/depth-captures", "/creation-runs", "/creation-conversations", "/skills", "/plugins", "/runninghub", "/settings/prompt-templates"} {
 		if p == prefix || strings.HasPrefix(p, prefix+"/") {
 			return true

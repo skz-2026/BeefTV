@@ -138,22 +138,6 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	return s.upsertUserCanvasProjectWithHistory(userID, raw, "automatic")
 }
 
-func (s *Service) CommitUserCanvasProjectAssets(userID string, raw json.RawMessage, assetPayloads []json.RawMessage) (UserDataSummary, error) {
-	items := make([]model.Asset, 0, len(assetPayloads))
-	for _, payload := range assetPayloads {
-		item, err := asset.AssetFromJSON(userID, payload)
-		if err != nil {
-			return UserDataSummary{}, err
-		}
-		items = append(items, item)
-	}
-	bound, err := BindCanvasMediaAssets(raw, items)
-	if err != nil {
-		return UserDataSummary{}, err
-	}
-	return s.upsertUserCanvasProjectWithAssets(userID, bound, items, "automatic")
-}
-
 func (s *Service) upsertUserCanvasProjectWithHistory(userID string, raw json.RawMessage, reason string) (UserDataSummary, error) {
 	return s.upsertUserCanvasProjectWithAssets(userID, raw, nil, reason)
 }

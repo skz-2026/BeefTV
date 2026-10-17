@@ -11,7 +11,7 @@ import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { isUserScopeAbandonedError } from "@/lib/user-scope-guard";
 import { createStyleProfileSnapshot, resolveStyleProfile, serializeStyleProfile } from "@/lib/canvas/style-profile";
 import { getProject } from "@/services/api/projects";
-import { queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { queryGenerationTask, retryGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { loadAssetsForUse } from "@/services/local-workspace-sync";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
@@ -22,6 +22,7 @@ import { CanvasNodeType, type CanvasNodeData, type Position } from "@/types/canv
 
 import { readOwnedCanvasNodes, runOwnedCanvasEnsureQueue, runOwnedCanvasPageCommit, useCanvasOwnerLifetime } from "./canvas-owner-epoch";
 import { applyArchivedCanvasNodeAssets, CANVAS_HANDOFF_PERSIST_FAILED_MESSAGE, commitOwnedCanvasAssetHandoff, rebaseCreatedCanvasNodes } from "./canvas-resource-handoff-commit";
+import { canvasGenerationFailureMetadata } from "./canvas-generation-failure";
 import { linkedFolderPresentation, planCanvasHandoffEffect, resolveCanvasAssetHandoffPlan } from "./canvas-resource-handoff-plan";
 
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -294,17 +295,28 @@ export function useCanvasResourceHandoff({
             if (!taskId || !node.metadata?.resourceReloadAvailable) return;
             const owner = lifetime.capture(projectId);
             const targetNodeId = node.id;
-            // 查询旧任务不改变可恢复状态，切换画布后仍可再次重新加载。
+            // 继续取回只等待并绑定原任务已生成的结果，不会重新提交生成。
+            // 等待期间节点显示取回进度；失败后仍保留「继续取回」。
+            setNodes((current) =>
+                current.map((item) => (item.id === targetNodeId ? { ...item, metadata: { ...item.metadata, status: "loading", errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined } } : item)),
+            );
             try {
-                const task = await queryGenerationTask(taskId);
+                let task = await queryGenerationTask(taskId);
                 if (!lifetime.matches(owner, projectIdRef.current)) return;
-                if (task.status !== "succeeded") throw new Error("原生成任务尚未成功，无法重新加载资源");
+                if (task.status !== "succeeded") throw new Error("原生成任务尚未成功，暂时无法取回结果");
+                if (task.stage === "delivery_paused" || task.stage === "delivery_timed_out") {
+                    task = await retryGenerationTask(taskId);
+                    if (!lifetime.matches(owner, projectIdRef.current)) return;
+                }
                 await applyGenerationTaskResult(targetNodeId, task);
             } catch (error) {
                 if (!lifetime.matches(owner, projectIdRef.current)) return;
+                if (isUserScopeAbandonedError(error) || (error instanceof Error && error.name === "AbortError")) return;
+                const failure = canvasGenerationFailureMetadata(error, { prompt: node.metadata?.prompt || "" });
                 setNodes((current) =>
-                    current.map((item) => (item.id === targetNodeId ? { ...item, metadata: { ...item.metadata, status: "error", errorDetails: error instanceof Error ? error.message : "资源重新加载失败", resourceReloadAvailable: true } } : item)),
+                    current.map((item) => (item.id === targetNodeId ? { ...item, metadata: { ...item.metadata, status: "error", ...failure, resourceReloadAvailable: true } } : item)),
                 );
+                message.error(failure.errorDetails || "继续取回失败，请稍后重试");
             }
         },
         [applyGenerationTaskResult, lifetime, message, projectId, setNodes],

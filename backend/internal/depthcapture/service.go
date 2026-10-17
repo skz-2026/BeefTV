@@ -7,7 +7,6 @@ import (
 	"runtime"
 
 	"infinite-canvas/backend/internal/depthruntime"
-	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
 )
 
@@ -28,7 +27,6 @@ type Service struct {
 	stat       func(name string) error
 	mkdirTemp  func(dir, pattern string) (string, error)
 	configure  func(*exec.Cmd)
-	truncate   func(string, int) string
 }
 
 func New(deps Deps) *Service {
@@ -92,7 +90,6 @@ func New(deps Deps) *Service {
 		stat:       stat,
 		mkdirTemp:  mkdirTemp,
 		configure:  configure,
-		truncate:   kernel.TruncateRunes,
 	}
 	return s
 }

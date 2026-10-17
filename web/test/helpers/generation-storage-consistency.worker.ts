@@ -411,7 +411,7 @@ async function runCopiedVideoSave() {
         const { parseCanvasStorageDocument, serializeCanvasStorageDocument } = await import("../../src/lib/canvas/canvas-storage-revision");
         const { localForageStorageForScope } = await import("../../src/lib/localforage-storage");
         const { isolateCopiedNodeMetadata } = await import("../../src/lib/canvas/canvas-node-copy");
-        const { persistCanvasGenerationEffect } = await import("../../src/services/canvas-generation-consumer");
+        const { persistCanvasDocument } = await import("../../src/services/local-workspace-repository");
         const { CanvasNodeType } = await import("../../src/types/canvas");
         await useCanvasStore.persist.rehydrate();
         const source = { id: "source", type: CanvasNodeType.Video, title: "480P", position: { x: 0, y: 0 }, width: 340, height: 240, metadata: { content: "video-480p", taskId: "old-task", generationEffectKeys: ["attach-node:old-task:source:0"] } };
@@ -429,8 +429,9 @@ async function runCopiedVideoSave() {
         const copiedIds = saved.state.projects[0].nodes.map((node) => node.id);
         const effectKey = "attach-node:new-task:copy:0";
         const completed = { ...copy, metadata: { ...copy.metadata, content: "video-720p", taskId: "new-task", generationEffectKeys: [effectKey] } };
-        // Only the backend transport is stubbed; storage and generation reconciliation are real.
-        const persisted = await persistCanvasGenerationEffect({ projectId: project.id, previousNodes, nodes: [source, completed], effectKey });
+        // Only the backend transport is stubbed; storage and the ordinary canvas commit are real.
+        await persistCanvasDocument(project.id, { nodes: [source, completed] });
+        const persisted = useCanvasStore.getState().openProject(project.id)!;
         return { copiedIds, completedIds: persisted.nodes.map((node) => node.id), content: persisted.nodes.find((node) => node.id === "copy")?.metadata?.content, sourceKeys: persisted.nodes[0].metadata?.generationEffectKeys, copyKeys: persisted.nodes.find((node) => node.id === "copy")?.metadata?.generationEffectKeys };
     } finally {
         put.mockRestore();

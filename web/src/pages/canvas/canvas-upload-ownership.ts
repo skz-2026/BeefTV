@@ -37,6 +37,7 @@ export type PersistOwnedCanvasUploadNodeResult = {
 export type PersistOwnedCanvasUploadNodeDeps = {
     ensureCanvasNodeAsset: (options: EnsureCanvasNodeAssetOptions) => Promise<CanvasNodeAssetResult>;
     setNodes: (updater: (current: CanvasNodeData[]) => CanvasNodeData[]) => void;
+    nodesRef?: { current: CanvasNodeData[] };
     invalidateProject?: (projectId: string) => Promise<void>;
     warn?: (message: string) => void;
 };
@@ -139,13 +140,19 @@ export async function persistOwnedCanvasUploadNode(
             expectedScope: input.expectedScope,
         });
         if (!stillOwned()) return { ...abandoned, assetId: result.assetId };
+        const stampAssetId = (current: CanvasNodeData[]) => current.map((item) => (
+            item.id === input.node.id
+                ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } }
+                : item
+        ));
+        if (deps.nodesRef) {
+            deps.nodesRef.current = stampAssetId(deps.nodesRef.current);
+        }
         deps.setNodes((current) => {
             if (!stillOwned()) return current;
-            return current.map((item) => (
-                item.id === input.node.id
-                    ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } }
-                    : item
-            ));
+            const next = stampAssetId(current);
+            if (deps.nodesRef) deps.nodesRef.current = next;
+            return next;
         });
         if (result.confirmed && input.domainProjectId) {
             await deps.invalidateProject?.(input.domainProjectId);

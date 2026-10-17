@@ -7,6 +7,8 @@ import { exportDiagnosticBundle, downloadDiagnosticBundle, previewDiagnosticBund
 import { getClientDiagnosticEvents, getDiagnosticRuntime } from "@/services/diagnostics/client-diagnostics";
 import { clearVideoPreviewCache } from "@/services/api/resources";
 import { AppModal } from "@/components/ui/product/app-modal";
+import { getDesktopAppBinding } from "@/services/desktop-runtime";
+import { EnvironmentChecks } from "./environment-checks";
 
 type DiagnosticsPanelProps = {
     taskId?: string;
@@ -33,6 +35,8 @@ export default function DiagnosticsPanel({ taskId, projectId, open, onClose }: D
     const [exporting, setExporting] = useState(false);
     const [bundleId, setBundleId] = useState("");
     const [clearingPreviews, setClearingPreviews] = useState(false);
+	const openUpdateLogs = getDesktopAppBinding()?.OpenUpdateLogDirectory;
+	const [updateLogError, setUpdateLogError] = useState("");
 
     useEffect(() => {
         if (!open) return;
@@ -87,6 +91,7 @@ export default function DiagnosticsPanel({ taskId, projectId, open, onClose }: D
             )}
         >
             <div className="max-h-[calc(100dvh-180px)] space-y-5 overflow-y-auto pt-4">
+                {open ? <EnvironmentChecks /> : null}
                 <div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <span className="text-sm font-medium">日志范围</span>
@@ -105,6 +110,16 @@ export default function DiagnosticsPanel({ taskId, projectId, open, onClose }: D
                         {loadingPreview ? "正在读取日志…" : preview ? `包含 ${preview.taskCount} 个任务、${preview.apiCallCount} 次模型调用及前端日志。` : "暂时无法读取记录数量，可继续尝试导出。"}
                     </p>
                 </div>
+                {openUpdateLogs ? <div>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-sm font-medium">应用更新日志</p>
+                        <Button onClick={() => { setUpdateLogError(""); void openUpdateLogs().catch(() => setUpdateLogError("无法打开日志文件夹，请在存储设置中查看当前目录。")); }}>打开日志文件夹</Button>
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-foreground/55">{preview?.updateLog?.status === "available" ? `诊断包将包含 ${preview.updateLog.lines} 条更新记录。` : preview?.updateLog?.status === "unreadable" ? "部分更新日志无法读取，其他信息仍可导出。" : preview?.updateLog?.status === "missing" ? "未找到更新日志，其他信息仍可导出。" : "请选择覆盖更新失败时间的日志范围。"}</p>
+                    {preview?.updateLog?.truncated ? <p className="mt-1 text-xs leading-5 text-foreground/55">日志较多，仅包含最近的部分更新记录。</p> : null}
+                    <p className="mt-1 text-xs leading-5 text-foreground/55">日志位于当前数据目录，文件名为 update.log。</p>
+                    {updateLogError ? <p className="mt-1 text-xs leading-5 text-destructive" role="alert">{updateLogError}</p> : null}
+                </div> : null}
                 <div>
                     <label className="mb-3 block text-sm font-medium" htmlFor="diagnostic-description">
                         问题描述 <span className="ml-1 text-xs font-normal text-foreground/55">可选</span>

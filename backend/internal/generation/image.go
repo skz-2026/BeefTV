@@ -16,9 +16,15 @@ import (
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/providerpreset"
 )
 
 func RunImageTask(ctx context.Context, input Input) (map[string]interface{}, error) {
+	if providerpreset.IsBeefAPIEndpoint(input.Config.BaseURL) {
+		if contract, ok := providerpreset.BeefAPIImageContract(input.Config.Model); ok {
+			return runBeefAPIImageTask(ctx, input, contract)
+		}
+	}
 	if _, ok := DeclarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
 		return RunDeclarativeProtocolTask(ctx, input)
 	}
@@ -390,14 +396,14 @@ func RunVolcengineArkImageTask(ctx context.Context, input Input) (map[string]int
 	if err := PostJSON(ctx, input.Config, "/images/generations", body, &payload); err != nil {
 		return nil, err
 	}
-	images, err := VolcengineArkImageDataURLs(ctx, input.Config, payload)
+	images, err := MaterializeImageDataURLs(ctx, input.Config, payload)
 	if err != nil {
 		return nil, err
 	}
 	return map[string]interface{}{"mode": "image", "images": images}, nil
 }
 
-func VolcengineArkImageDataURLs(ctx context.Context, config Config, payload ImageResponse) ([]map[string]string, error) {
+func MaterializeImageDataURLs(ctx context.Context, config Config, payload ImageResponse) ([]map[string]string, error) {
 	images, err := ImageDataURLs(payload)
 	if err != nil {
 		return nil, err
@@ -408,18 +414,18 @@ func VolcengineArkImageDataURLs(ctx context.Context, config Config, payload Imag
 			continue
 		}
 		if !IsPublicMediaURL(value) {
-			return nil, errors.New("火山方舟图片接口没有返回可下载的图片")
+			return nil, errors.New("图片接口没有返回可下载的图片")
 		}
-		// 方舟默认返回临时 CDN 地址。必须由后端下载成内联结果，后续资源持久化才能
-		// 原子地写入服务器或用户配置的对象存储，且不依赖浏览器跨域访问方舟 CDN。
+		// URL results must become bytes before task persistence. Keep provider
+		// authentication on same-origin content routes, never on external CDNs.
 		data, mimeType, err := GetProviderExternalBinary(WithRequestKind(ctx, "download"), config, value)
 		if err != nil {
-			return nil, fmt.Errorf("火山方舟图片结果下载失败：%w", err)
+			return nil, fmt.Errorf("图片结果下载失败：%w", err)
 		}
 		detected := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0]))
 		mimeType = strings.ToLower(NormalizedMediaMIMEType(mimeType, data))
 		if len(data) == 0 || strings.Contains(detected, "json") || strings.HasPrefix(detected, "text/") || !strings.HasPrefix(mimeType, "image/") {
-			return nil, fmt.Errorf("火山方舟图片结果无效：%s", defaultString(detected, mimeType))
+			return nil, fmt.Errorf("图片结果无效：%s", defaultString(detected, mimeType))
 		}
 		image["dataUrl"] = DataURL(mimeType, data)
 		image["mimeType"] = mimeType

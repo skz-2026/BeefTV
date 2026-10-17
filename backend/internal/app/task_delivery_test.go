@@ -1207,7 +1207,7 @@ func seedLeftoverGenerationArtifact(t *testing.T, svc *Service, resourceID, user
 	t.Helper()
 	// NewService releases FAILED leftovers. Initialize the domain while empty.
 	_ = svc.resourceDomain()
-	kind, data, mimeType, fileName, width, height, durationMs, err := (generationDeliveryMediaAdapter{service: svc}).decodeGenerationArtifact("image", artifactURL)
+	kind, data, mimeType, fileName, width, height, durationMs, err := (generationDeliveryMediaAdapter{service: svc}).decodeGenerationArtifact(userID, identity, "image", artifactURL)
 	if err != nil {
 		t.Fatal(err)
 	}

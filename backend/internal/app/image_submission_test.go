@@ -48,6 +48,7 @@ func imageSubmissionFixture(t *testing.T, multipartBody bool) (*Service, *gorm.D
 		body, contentType, path = buffer.Bytes(), writer.FormDataContentType(), "/v1/images/edits"
 	}
 	ctx := withProviderSubmissionKey(withProviderAnalytics(context.Background(), s, task), attempt)
+	ctx = generation.WithImageReplayProtocol(ctx, generation.ImageReplayProtocol)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://enterprise.beefapi.com"+path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", contentType)
@@ -136,7 +137,10 @@ func TestImageSubmissionDiskRestartReplaysOneGenerationAndCompletesOnce(t *testi
 	s, db, task, row, body := imageSubmissionFixture(t, false)
 	var wireCalls, generations int
 	key := ""
-	send := func(req *http.Request) ([]byte, string, error) {
+	send := func(req *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
 		wireCalls++
 		got, _ := io.ReadAll(req.Body)
 		if !bytes.Equal(got, body) {
@@ -288,7 +292,10 @@ func TestImageSubmissionLostResponsePendingAndReplay(t *testing.T) {
 		t.Run(map[bool]string{false: "generation", true: "edit"}[multipartBody], func(t *testing.T) {
 			s, _, task, row, body := imageSubmissionFixture(t, multipartBody)
 			calls, key := 0, ""
-			data, _, err := s.sendImageSubmissionWith(context.Background(), task, row, func(req *http.Request) ([]byte, string, error) {
+			data, _, err := s.sendImageSubmissionWith(context.Background(), task, row, func(req *http.Request, admit func() error) ([]byte, string, error) {
+				if err := admit(); err != nil {
+					return nil, "", err
+				}
 				calls++
 				got, _ := io.ReadAll(req.Body)
 				if !bytes.Equal(got, body) {
@@ -340,7 +347,10 @@ func TestImageSubmissionRestartKeepsWireAndBudget(t *testing.T) {
 		t.Fatal("restart reset request budget")
 	}
 	loaded.CreatedAt = time.Now().Add(-2 * time.Hour)
-	_, _, err = restarted.sendImageSubmissionWith(context.Background(), task, loaded, func(req *http.Request) ([]byte, string, error) {
+	_, _, err = restarted.sendImageSubmissionWith(context.Background(), task, loaded, func(req *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
 		got, _ := io.ReadAll(req.Body)
 		if !bytes.Equal(got, body) {
 			t.Fatal("restart rebuilt request")
@@ -365,7 +375,10 @@ func TestImageSubmissionTerminalResponsesNeverRegenerate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, task, row, _ := imageSubmissionFixture(t, false)
 			calls := 0
-			_, _, err := s.sendImageSubmissionWith(context.Background(), task, row, func(*http.Request) ([]byte, string, error) {
+			_, _, err := s.sendImageSubmissionWith(context.Background(), task, row, func(req *http.Request, admit func() error) ([]byte, string, error) {
+				if err := admit(); err != nil {
+					return nil, "", err
+				}
 				calls++
 				return nil, "", providerHTTPError{StatusCode: tc.status, Body: `{"error":{"code":"` + tc.code + `"}}`}
 			}, noImageWait)
@@ -382,7 +395,13 @@ func TestImageSubmissionTerminalResponsesNeverRegenerate(t *testing.T) {
 func TestImageSubmissionBudgetCancelAndOwnership(t *testing.T) {
 	s, db, task, row, _ := imageSubmissionFixture(t, false)
 	calls := 0
-	send := func(*http.Request) ([]byte, string, error) { calls++; return nil, "", io.ErrUnexpectedEOF }
+	send := func(req *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
+		calls++
+		return nil, "", io.ErrUnexpectedEOF
+	}
 	_, _, err := s.sendImageSubmissionWith(context.Background(), task, row, send, noImageWait)
 	if calls != imageRecoveryMaxSends || classifyTaskFailure(err).Category != generation.CategorySubmissionUncertain {
 		t.Fatalf("calls=%d err=%v", calls, err)
@@ -439,12 +458,13 @@ func TestImageSubmissionPermanentErrorsDoNotFallBackToAnotherRoute(t *testing.T)
 	}
 }
 
-func TestImageSubmissionPersistenceRequiredAndScopeAllowlist(t *testing.T) {
+func TestImageSubmissionRequiresProtocolAndPersistence(t *testing.T) {
 	s, db, task, row, _ := imageSubmissionFixture(t, false)
 	if err := db.Migrator().DropTable(&model.ImageSubmission{}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := withProviderSubmissionKey(withProviderAnalytics(context.Background(), s, task), &model.RouteAttempt{ID: row.AttemptID, TaskID: task.ID})
+	ctx = generation.WithImageReplayProtocol(ctx, generation.ImageReplayProtocol)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	req, _ := http.NewRequestWithContext(ctx, "POST", "https://enterprise.beefapi.com/v1/images/generations", strings.NewReader(`{}`))
 	_, handled, err := prepareImageSubmission(s, req)
@@ -462,7 +482,10 @@ func TestImageSubmissionPersistenceRequiredAndScopeAllowlist(t *testing.T) {
 func TestImageSubmissionExpiredMalformedAndStaleLeaseStop(t *testing.T) {
 	s, db, task, row, _ := imageSubmissionFixture(t, false)
 	calls := 0
-	send := func(*http.Request) ([]byte, string, error) {
+	send := func(req *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
 		calls++
 		return []byte(`{"data":[]}`), "application/json", nil
 	}
@@ -612,7 +635,10 @@ func TestImageSubmissionTwelfthSuccessSurvivesStorageFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, calls := "", 0
-	send := func(req *http.Request) ([]byte, string, error) {
+	send := func(req *http.Request, admit func() error) ([]byte, string, error) {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
 		calls++
 		actual, _ := io.ReadAll(req.Body)
 		if !bytes.Equal(actual, body) {
@@ -716,7 +742,7 @@ func TestImageSubmissionDownloadThrottleCannotBecomeNewPaidAttempt(t *testing.T)
 
 func TestRecoverableImageMissingOwnerSendsZeroUpstream(t *testing.T) {
 	s, _, task, row, _ := imageSubmissionFixture(t, false)
-	ctx := withProviderAnalytics(context.Background(), s, task)
+	ctx := generation.WithImageReplayProtocol(withProviderAnalytics(context.Background(), s, task), generation.ImageReplayProtocol)
 	runtime, ok := generation.RuntimeFromContext(ctx)
 	if !ok {
 		t.Fatal("analytics did not bind runtime")
@@ -733,7 +759,7 @@ func TestRecoverableImageMissingOwnerSendsZeroUpstream(t *testing.T) {
 		t.Fatalf("missing owner error = %v", err)
 	}
 
-	ctx = withProviderAnalytics(context.Background(), s, task)
+	ctx = generation.WithImageReplayProtocol(withProviderAnalytics(context.Background(), s, task), generation.ImageReplayProtocol)
 	ctx = context.WithValue(ctx, imageTaskContext{}, task)
 	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, "https://enterprise.beefapi.com/v1/images/generations", strings.NewReader(`{}`))
 	_, handled, err := prepareImageSubmission(s, req)
@@ -757,6 +783,7 @@ func TestTwoImagePortsCannotStealOwner(t *testing.T) {
 	}
 
 	ctx1 := withProviderSubmissionKey(withProviderAnalytics(context.Background(), s1, task1), &model.RouteAttempt{ID: row1.AttemptID, TaskID: task1.ID})
+	ctx1 = generation.WithImageReplayProtocol(ctx1, generation.ImageReplayProtocol)
 	ctx1 = context.WithValue(ctx1, imageTaskContext{}, task1)
 	req1, _ := http.NewRequestWithContext(ctx1, http.MethodPost, "https://enterprise.beefapi.com/v1/images/generations", strings.NewReader(`{"prompt":"owner-one"}`))
 	got, handled, err := prepareImageSubmission(port2.service, req1)

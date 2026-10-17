@@ -13,7 +13,7 @@ const projectRepository = readFileSync(new URL("../src/services/workspace-projec
 
 test("local project library exposes the complete local workspace lifecycle", () => {
     expect(libraryPage).toContain("useCanvasStore");
-    expect(libraryPage).toContain("createLocalCanvasProject");
+    expect(libraryPage).toContain("beginLocalCanvasProject");
     expect(libraryPage).not.toContain("createCanvasProjectWithRemoteSync");
     expect(libraryPage).toContain("新建文件夹");
     expect(libraryPage).toContain("回收站");

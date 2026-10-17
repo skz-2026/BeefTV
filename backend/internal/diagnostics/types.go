@@ -1,6 +1,10 @@
 package diagnostics
 
-import "time"
+import (
+	"infinite-canvas/backend/internal/environment"
+	"infinite-canvas/backend/internal/model"
+	"time"
+)
 
 const (
 	SchemaVersion    = 1
@@ -13,6 +17,7 @@ const (
 )
 
 type ClientEvent struct {
+	Reason     string `json:"reason,omitempty"`
 	ID         string `json:"id"`
 	Timestamp  string `json:"timestamp"`
 	Level      string `json:"level"`
@@ -31,11 +36,12 @@ type ClientEvent struct {
 }
 
 type Runtime struct {
-	AppVersion  string `json:"appVersion,omitempty"`
-	BuildCommit string `json:"buildCommit,omitempty"`
-	Browser     string `json:"browser,omitempty"`
-	OS          string `json:"os,omitempty"`
-	Timezone    string `json:"timezone,omitempty"`
+	Capabilities *ClientCapabilities `json:"capabilities,omitempty"`
+	AppVersion   string              `json:"appVersion,omitempty"`
+	BuildCommit  string              `json:"buildCommit,omitempty"`
+	Browser      string              `json:"browser,omitempty"`
+	OS           string              `json:"os,omitempty"`
+	Timezone     string              `json:"timezone,omitempty"`
 }
 
 type ExportRequest struct {
@@ -49,12 +55,13 @@ type ExportRequest struct {
 }
 
 type Preview struct {
-	ClientEventLimit int   `json:"clientEventLimit"`
-	TaskCount        int   `json:"taskCount"`
-	TaskLogCount     int   `json:"taskLogCount"`
-	APICallCount     int   `json:"apiCallCount"`
-	EstimatedBytes   int64 `json:"estimatedBytes"`
-	WillTruncate     bool  `json:"willTruncate"`
+	UpdateLog        *updateLogSummary `json:"updateLog,omitempty"`
+	ClientEventLimit int               `json:"clientEventLimit"`
+	TaskCount        int               `json:"taskCount"`
+	TaskLogCount     int               `json:"taskLogCount"`
+	APICallCount     int               `json:"apiCallCount"`
+	EstimatedBytes   int64             `json:"estimatedBytes"`
+	WillTruncate     bool              `json:"willTruncate"`
 }
 
 type Bundle struct {
@@ -69,6 +76,8 @@ type timeWindow struct {
 }
 
 type collection struct {
+	Environment  environment.Report
+	UpdateLog    *updateLogSummary
 	Window       timeWindow
 	Description  string
 	TaskID       string
@@ -78,18 +87,69 @@ type collection struct {
 	Tasks        []taskRecord
 	TaskLogs     []taskLogRecord
 	APICalls     []apiCallRecord
+	ModelConfig  *modelConfigSummary
 	Truncated    bool
 }
 
+// modelConfigSummary is the redacted model-configuration view written to the
+// bundle. It never carries apiKey, secretKey, header values, full URLs or
+// query strings — only the base-URL host.
+type modelConfigSummary struct {
+	Channels []channelConfigSummary `json:"channels"`
+	Defaults defaultModelSelection  `json:"defaults"`
+}
+
+type channelConfigSummary struct {
+	ID            string             `json:"id"`
+	Name          string             `json:"name,omitempty"`
+	APIFormat     string             `json:"apiFormat,omitempty"`
+	InterfaceType string             `json:"interfaceType,omitempty"`
+	Scope         string             `json:"scope,omitempty"`
+	Enabled       bool               `json:"enabled"`
+	BaseURLHost   string             `json:"baseUrlHost,omitempty"`
+	ModelCount    int                `json:"modelCount"`
+	Models        []modelConfigEntry `json:"models"`
+}
+
+type modelConfigEntry struct {
+	Model      string `json:"model"`
+	Capability string `json:"capability,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+}
+
+type defaultModelSelection struct {
+	ImageModel     string `json:"imageModel,omitempty"`
+	VideoModel     string `json:"videoModel,omitempty"`
+	TextModel      string `json:"textModel,omitempty"`
+	AudioModel     string `json:"audioModel,omitempty"`
+	AssistantModel string `json:"assistantModel,omitempty"`
+}
+
 type runtimeRecord struct {
-	AppVersion  string `json:"appVersion,omitempty"`
-	BuildCommit string `json:"buildCommit,omitempty"`
-	Browser     string `json:"browser,omitempty"`
-	OS          string `json:"os,omitempty"`
-	Timezone    string `json:"timezone,omitempty"`
+	Capabilities *ClientCapabilities `json:"capabilities,omitempty"`
+	AppVersion   string              `json:"appVersion,omitempty"`
+	BuildCommit  string              `json:"buildCommit,omitempty"`
+	Browser      string              `json:"browser,omitempty"`
+	OS           string              `json:"os,omitempty"`
+	Timezone     string              `json:"timezone,omitempty"`
+}
+
+// Fixed boolean fields prevent client-supplied environment reports from
+// smuggling URLs, paths, credentials or arbitrary text into a bundle.
+type ClientCapabilities struct {
+	StorageWritable *bool `json:"storageWritable,omitempty"`
+	StorageTimedOut *bool `json:"storageTimedOut,omitempty"`
+	SecureRandom    *bool `json:"secureRandom,omitempty"`
+	RandomUUID      *bool `json:"randomUUID,omitempty"`
+	StructuredClone *bool `json:"structuredClone,omitempty"`
+	IndexedDB       *bool `json:"indexedDB,omitempty"`
+	WebGL           *bool `json:"webGL,omitempty"`
+	H264            *bool `json:"h264,omitempty"`
+	HEVC            *bool `json:"hevc,omitempty"`
 }
 
 type clientEventRecord struct {
+	Reason     string `json:"reason,omitempty"`
 	ID         string `json:"id,omitempty"`
 	Timestamp  string `json:"timestamp,omitempty"`
 	Level      string `json:"level,omitempty"`
@@ -108,25 +168,26 @@ type clientEventRecord struct {
 }
 
 type taskRecord struct {
-	ID                string     `json:"id"`
-	TraceID           string     `json:"traceId,omitempty"`
-	RequestID         string     `json:"requestId,omitempty"`
-	ProjectID         string     `json:"projectId,omitempty"`
-	Type              string     `json:"type,omitempty"`
-	Status            string     `json:"status,omitempty"`
-	Stage             string     `json:"stage,omitempty"`
-	Progress          int        `json:"progress,omitempty"`
-	Operation         string     `json:"operation,omitempty"`
-	Provider          string     `json:"provider,omitempty"`
-	Model             string     `json:"model,omitempty"`
-	LogicalModelID    string     `json:"logicalModelId,omitempty"`
-	ProviderRequestID string     `json:"providerRequestId,omitempty"`
-	Error             string     `json:"error,omitempty"`
-	Attempts          int        `json:"attempts,omitempty"`
-	StartedAt         *time.Time `json:"startedAt,omitempty"`
-	CompletedAt       *time.Time `json:"completedAt,omitempty"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	FailureDiagnostics *model.TaskFailureDiagnostics `json:"failureDiagnostics,omitempty"`
+	ID                 string                        `json:"id"`
+	TraceID            string                        `json:"traceId,omitempty"`
+	RequestID          string                        `json:"requestId,omitempty"`
+	ProjectID          string                        `json:"projectId,omitempty"`
+	Type               string                        `json:"type,omitempty"`
+	Status             string                        `json:"status,omitempty"`
+	Stage              string                        `json:"stage,omitempty"`
+	Progress           int                           `json:"progress,omitempty"`
+	Operation          string                        `json:"operation,omitempty"`
+	Provider           string                        `json:"provider,omitempty"`
+	Model              string                        `json:"model,omitempty"`
+	LogicalModelID     string                        `json:"logicalModelId,omitempty"`
+	ProviderRequestID  string                        `json:"providerRequestId,omitempty"`
+	Error              string                        `json:"error,omitempty"`
+	Attempts           int                           `json:"attempts,omitempty"`
+	StartedAt          *time.Time                    `json:"startedAt,omitempty"`
+	CompletedAt        *time.Time                    `json:"completedAt,omitempty"`
+	CreatedAt          time.Time                     `json:"createdAt"`
+	UpdatedAt          time.Time                     `json:"updatedAt"`
 }
 
 type taskLogRecord struct {

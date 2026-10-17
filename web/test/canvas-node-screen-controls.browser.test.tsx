@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { CanvasNodeContent } from "@/components/canvas/canvas-node-content";
+import { CanvasNode } from "@/components/canvas/canvas-node";
 import { CanvasVideoCropEditor } from "@/components/canvas/canvas-video-crop-dialog";
 import { CanvasImageCropEditor } from "@/components/canvas/canvas-node-crop-dialog";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -68,6 +69,24 @@ async function setZoom(zoom: number) {
         world.style.setProperty("--canvas-live-scale", String(scale));
         world.style.setProperty("--canvas-live-inverse-scale", String(1 / scale));
     }, zoom);
+}
+
+for (const scale of [0.5, 0.35, 0.349, 0.25, 0.1, 0.05]) {
+    test(`asset names remain available at ${scale * 100}% zoom, including grouped assets`, async () => {
+        const noop = () => {};
+        const nodes: CanvasNodeData[] = [
+            { id: "image", type: CanvasNodeType.Image, title: "主角正面参考", position: { x: 0, y: 0 }, width: 320, height: 240 },
+            { id: "grouped-video", parentId: "group", type: CanvasNodeType.Video, title: "第一场雨夜街道镜头", position: { x: 400, y: 0 }, width: 320, height: 240 },
+            { id: "grouped-image", parentId: "group", type: CanvasNodeType.Image, title: "第二场室内参考", position: { x: 800, y: 0 }, width: 320, height: 240 },
+        ];
+        const markup = renderToStaticMarkup(<>{nodes.map((data) => <CanvasNode key={data.id} data={data} scale={scale} isSelected={false} isRelated={false} isFocusRelated={false} isConnectionTarget={false} onMouseDown={noop} onHoverStart={noop} onHoverEnd={noop} onConnectStart={noop} onResize={noop} onTitleChange={noop} onContentChange={noop} onContextMenu={noop} />)}</>);
+        await page.setContent(`${layout}<div id="world">${markup}</div>`);
+        await setZoom(scale);
+        for (const node of nodes) {
+            expect(await page.getByRole("button", { name: `编辑节点名称：${node.title}`, exact: true }).count()).toBe(1);
+            expect(await page.locator(".canvas-node-external-header").getByText(node.title, { exact: true }).count()).toBe(1);
+        }
+    });
 }
 
 test("video crop controls stay legible and clickable at 20% zoom", async () => {

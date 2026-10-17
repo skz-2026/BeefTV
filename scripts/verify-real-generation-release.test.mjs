@@ -27,7 +27,7 @@ const BUNNY_FIXTURES = {
 function copyGate(dir) {
   mkdirSync(join(dir, 'scripts'), { recursive: true });
   mkdirSync(join(dir, 'docs/release-evidence'), { recursive: true });
-  for (const name of ['verify-real-generation-release.mjs', 'real-generation-release-contract.mjs']) {
+  for (const name of ['verify-real-generation-release.mjs', 'real-generation-release-contract.mjs', 'h3-family-release-contract.mjs', 'video-direct-delivery-release-contract.mjs']) {
     writeFileSync(join(dir, 'scripts', name), readFileSync(new URL(`./${name}`, import.meta.url)));
   }
 }
@@ -49,6 +49,321 @@ function setupRepo(version) {
   };
   return { dir, git, run, save, commitVersion };
 }
+
+test('v1.7.24 packages cross-reviewed PRs and BytePlus/TLS fixes and cannot carry the waiver forward', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.24');
+  try {
+    assert.throws(() => run());
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic receipt for gate testing; not live acceptance'];
+    const passed = (method) => ({ status: 'passed', method, sourceDigest, evidence });
+    const value = {
+      version: 'v1.7.24', sourceDigest,
+      ownerException: { scope: 'cross-reviewed-prs-and-byteplus-tls-20261015', approvedBy: 'Ender', instruction: '把已 commit 的 codex/byteplus-compat 和 fix/tls-submission-20261015 合进 main 后一起发 v1.7.24（未 commit 的 4 个工作区留下一版）', evidence },
+      releaseAuthorization: { additionalHumanReplyRequired: false, scope: 'v1.7.24 only' },
+      baseRelease: 'v1.7.23', baseCommit: 'cabdbdd116530feaac04bb93d940162d586413d4',
+      includedPullRequests: [147, 154, 157, 153, 155, 156, 158, 159], paidSubmissionPathChanged: false,
+      paidSubmissionLimit: 0, newBudgetCNY: 0, newSpentCNY: 0, newPendingCNY: 0,
+      cases: [], billingAttempts: [], budgetCNY: null, spentCNY: null, pendingCNY: null,
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived', acceptanceComplete: false,
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.23', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'synthetic reviewer', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: {
+        canvasAndWebviewFixes: passed('test'),
+        externalVideoAndBytePlus: passed('test'),
+        updaterAndSubmissionDiagnostics: passed('test'),
+        noNewPaidGeneration: passed('source-diff'),
+        localReleaseGate: passed('local-script'),
+        ci: passed('github-actions'),
+      },
+      packages: { platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'], status: 'pending_release_workflow', archives: null,
+        windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true,
+        signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: evidence },
+      releasePublished: false, releaseComplete: false,
+    };
+    save(value);
+    assert.match(run(), /v1\.7\.24 cross-reviewed canvas, updater, external video and BytePlus\/TLS package/);
+    commitVersion('v1.7.25');
+    save({ ...value, version: 'v1.7.25', sourceDigest: run('--fingerprint').trim() }, 'v1.7.25');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.23 packages Windows installer and canvas media bind fixes and cannot carry the waiver forward', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.23');
+  try {
+    assert.throws(() => run());
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic receipt for gate testing; not live acceptance'];
+    const passed = (method) => ({ status: 'passed', method, sourceDigest, evidence });
+    const value = {
+      version: 'v1.7.23', sourceDigest,
+      ownerException: { scope: 'late-merged-installer-canvas-bind-20261015', approvedBy: 'Ender', instruction: '把那两个lucas没review的群里在提醒一遍lucas 然后发版吧 发版后告诉lucas这版更新了什么', evidence },
+      releaseAuthorization: { additionalHumanReplyRequired: false, scope: 'v1.7.23 only' },
+      baseRelease: 'v1.7.22', baseCommit: 'a99c0c41c0bbb71a4b2b2479e5e5c14f14c3151a',
+      includedPullRequests: [151], paidSubmissionPathChanged: false,
+      paidSubmissionLimit: 0, newBudgetCNY: 0, newSpentCNY: 0, newPendingCNY: 0,
+      cases: [], billingAttempts: [], budgetCNY: null, spentCNY: null, pendingCNY: null,
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived', acceptanceComplete: false,
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.22', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'synthetic reviewer', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: {
+        windowsInstallerUX: passed('test'),
+        canvasMediaBindAndRetry: passed('test'),
+        noNewPaidGeneration: passed('source-diff'),
+        localReleaseGate: passed('local-script'),
+        ci: passed('github-actions'),
+      },
+      packages: { platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'], status: 'pending_release_workflow', archives: null,
+        windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true,
+        signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: evidence },
+      releasePublished: false, releaseComplete: false,
+    };
+    save(value);
+    assert.match(run(), /Windows installer and canvas media bind package/);
+    const deny = mutate => { const changed = structuredClone(value); mutate(changed); save(changed); assert.throws(() => run()); };
+    for (const mutate of [
+      r => r.ownerException.instruction = '发版吧', r => r.ownerException.approvedBy = 'other',
+      r => r.releaseAuthorization.additionalHumanReplyRequired = true, r => r.releaseAuthorization.scope = 'later versions',
+      r => r.baseRelease = 'v1.7.21', r => r.baseCommit = '0'.repeat(40),
+      r => r.includedPullRequests = [], r => r.includedPullRequests = [151, 147],
+      r => r.paidSubmissionPathChanged = true, r => r.paidSubmissionLimit = 1, r => r.newBudgetCNY = 1,
+      r => r.cases.push({}), r => r.billingAttempts.push({}), r => r.budgetCNY = 0, r => r.spentCNY = 0, r => r.pendingCNY = 0,
+      r => r.liveMatrixStatus = 'passed', r => r.acceptanceComplete = true,
+      r => r.priorFinancialUncertainty.carriedFromVersion = 'v1.7.21', r => r.priorFinancialUncertainty.pendingCNY = 0,
+      r => r.review.independent = false, r => r.upgrade.preservedData = false,
+      r => r.verification.ci.method = 'test', r => r.verification.windowsInstallerUX.status = 'pending',
+      r => r.packages.platforms.pop(), r => r.packages.archives = {}, r => r.releaseComplete = true,
+    ]) deny(mutate);
+    save(value);
+    commitVersion('v1.7.25');
+    save({ ...value, version: 'v1.7.25', sourceDigest: run('--fingerprint').trim() }, 'v1.7.25');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.19 packages only the three late merges and cannot carry the waiver forward', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.19');
+  try {
+    assert.throws(() => run());
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic receipt for gate testing; not live acceptance'];
+    const passed = (method) => ({ status: 'passed', method, sourceDigest, evidence });
+    const value = {
+      version: 'v1.7.19', sourceDigest,
+      ownerException: { scope: 'late-merged-installer-ui-20261013', approvedBy: 'Ender', instruction: '继续打包有两项pr晚于这次打包但是合了', evidence },
+      releaseAuthorization: { additionalHumanReplyRequired: false, scope: 'v1.7.19 only' },
+      baseRelease: 'v1.7.18', baseCommit: '3df73e4da93e30b4fdf394e6ed317ed7d90dcdd0',
+      includedPullRequests: [136, 137, 135], paidSubmissionPathChanged: false,
+      paidSubmissionLimit: 0, newBudgetCNY: 0, newSpentCNY: 0, newPendingCNY: 0,
+      cases: [], billingAttempts: [], budgetCNY: null, spentCNY: null, pendingCNY: null,
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived', acceptanceComplete: false,
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.18', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'synthetic reviewer', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: {
+        singleExtractProgress: passed('test'),
+        reducedMotionModelMenu: passed('test'),
+        installSaveAndRetry: passed('test'),
+        noNewPaidGeneration: passed('source-diff'),
+        localReleaseGate: passed('local-script'),
+        ci: passed('github-actions'),
+      },
+      packages: { platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'], status: 'pending_release_workflow', archives: null,
+        windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true,
+        signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: evidence },
+      releasePublished: false, releaseComplete: false,
+    };
+    save(value);
+    assert.match(run(), /late installer and settings package/);
+    const deny = mutate => { const changed = structuredClone(value); mutate(changed); save(changed); assert.throws(() => run()); };
+    for (const mutate of [
+      r => r.ownerException.instruction = '继续打包', r => r.ownerException.approvedBy = 'other',
+      r => r.releaseAuthorization.additionalHumanReplyRequired = true, r => r.releaseAuthorization.scope = 'later versions',
+      r => r.baseRelease = 'v1.7.17', r => r.baseCommit = '0'.repeat(40),
+      r => r.includedPullRequests = [136, 137], r => r.includedPullRequests = [136, 137, 135, 119],
+      r => r.paidSubmissionPathChanged = true, r => r.paidSubmissionLimit = 1, r => r.newBudgetCNY = 1,
+      r => r.cases.push({}), r => r.billingAttempts.push({}), r => r.budgetCNY = 0, r => r.spentCNY = 0, r => r.pendingCNY = 0,
+      r => r.liveMatrixStatus = 'passed', r => r.acceptanceComplete = true,
+      r => r.priorFinancialUncertainty.carriedFromVersion = 'v1.7.17', r => r.priorFinancialUncertainty.pendingCNY = 0,
+      r => r.review.independent = false, r => r.upgrade.preservedData = false,
+      r => r.verification.ci.method = 'test', r => r.verification.singleExtractProgress.status = 'pending',
+      r => r.packages.platforms.pop(), r => r.packages.archives = {}, r => r.releaseComplete = true,
+    ]) deny(mutate);
+    save(value);
+    commitVersion('v1.7.20');
+    save({ ...value, version: 'v1.7.20', sourceDigest: run('--fingerprint').trim() }, 'v1.7.20');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.18 H3-only receipt requires current native settlement, bounded funding and all package gates', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.18');
+  try {
+    assert.throws(() => run());
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic receipt for gate testing; not live acceptance'];
+    const passed = { status: 'passed', sourceDigest, evidence };
+    const value = {
+      version: 'v1.7.18', sourceDigest,
+      ownerException: { scope: 'fal-h3-targeted-20261013', approvedBy: 'Ender', instruction: '本版采用 H3 专项验收（推荐）', evidence },
+      releaseAuthorization: { additionalHumanReplyRequired: false, scope: 'v1.7.18 only' },
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived', acceptanceComplete: false,
+      cases: [], billingAttempts: [], budgetCNY: null, spentCNY: null, pendingCNY: null, newSpentCNY: null, newPendingCNY: null,
+      paidSubmissionLimit: 5,
+      priorH3Canaries: Object.entries({ 'text-768p': '768p', 'first-last-480p': '480p', 'last-only-1080p': '1080p', 'pinned-audio-768p': '768p' }).map(([id, resolution]) => ({
+        id, resolution, seconds: 3, method: 'production-go-test', model: 'minimax-h3-max-turbo', status: 'succeeded',
+        executedSourceDigest: '1eca0cde63aaa9d09431465f997c9959d523ca2cda60cb8dcf00e132a6f55f50', providerRequestId: id, artifactSHA256: 'a'.repeat(64), evidence,
+      })),
+      h3Funding: { budgetCNY: 20, reservedUpperCNY: 7.10326, inferenceRequestIds: ['text-768p','first-last-480p','last-only-1080p','pinned-audio-768p','native-task'], supplierInvoiceConfirmed: false, supplierBillingReadHTTPStatus: 403, evidence },
+      productionH3: { sourceDigest, evidence, method: 'native-cli', clientVersion: 'v1.7.18', model: 'minimax-h3-max-turbo', resolution: '768p', seconds: 3,
+        status: 'succeeded', billing: 'settled', billingMarket: 'enterprise', costCNY: 0.7323912, canvasVerified: true, saved: true, reopened: true,
+        mediaDecoded: true, mediaOpened: true, noDuplicateSubmission: true, taskId: 'local-task', gatewayTaskId: 'gateway-task', providerRequestId: 'native-task', artifactSHA256: 'b'.repeat(64) },
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.17', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'synthetic reviewer', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: Object.fromEntries(['h3Catalog', 'h3KeyframesAudio', 'nativeCanvasDelivery', 'noDuplicateSubmission', 'localReleaseGate', 'ci'].map(id => [id, { ...passed }])),
+      packages: { platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'], status: 'pending_release_workflow', windowsReleasedUpgradeAndRollbackBeforeUpload: true,
+        finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true, signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: evidence },
+      releasePublished: false, releaseComplete: false,
+    };
+    save(value);
+    assert.match(run(), /full matrix NOT run/);
+    const deny = mutate => { const changed = structuredClone(value); mutate(changed); save(changed); assert.throws(() => run()); };
+    for (const mutate of [
+      r => r.ownerException.instruction = '继续上线', r => r.releaseAuthorization.additionalHumanReplyRequired = true,
+      r => r.cases.push({ billing: 'settled', costCNY: 100 }), r => r.billingAttempts.push({ costCNY: 100 }),
+      r => r.budgetCNY = 20, r => r.spentCNY = 0, r => r.pendingCNY = 0, r => r.newSpentCNY = 0, r => r.newPendingCNY = 0,
+      r => r.sourceDigest = '0'.repeat(64), r => r.priorH3Canaries[0].method = 'native', r => r.priorH3Canaries[0].executedSourceDigest = sourceDigest,
+      r => r.priorH3Canaries[0].providerRequestId = r.priorH3Canaries[1].providerRequestId, r => r.priorH3Canaries.pop(),
+      r => r.h3Funding.reservedUpperCNY = 20.01, r => r.h3Funding.reservedUpperCNY = 0, r => r.h3Funding.reservedUpperCNY = null,
+      r => r.h3Funding.reservedUpperCNY = 5.018236, r => r.h3Funding.inferenceRequestIds.push('extra-request'),
+      r => r.h3Funding.inferenceRequestIds[4] = r.h3Funding.inferenceRequestIds[0], r => r.h3Funding.inferenceRequestIds[4] = 'unrecorded-request',
+      r => r.h3Funding.supplierInvoiceConfirmed = true, r => r.paidSubmissionLimit = 6,
+      r => r.productionH3.method = 'mock', r => r.productionH3.billing = 'pending', r => r.productionH3.billingMarket = 'domestic',
+      r => r.productionH3.costCNY = 0, r => r.productionH3.costCNY = 0.2441304, r => r.productionH3.reopened = false,
+      r => r.productionH3.sourceDigest = '0'.repeat(64), r => r.productionH3.providerRequestId = r.priorH3Canaries[0].providerRequestId,
+      r => r.productionH3.noDuplicateSubmission = false, r => r.productionH3.mediaOpened = false,
+      r => r.priorFinancialUncertainty.pendingCNY = 0, r => r.verification.ci.status = 'pending', r => r.review.independent = false,
+      r => r.packages.platforms.pop(), r => r.packages.signedManifestBeforePublish = false, r => r.packages.windowsReleasedUpgradeAndRollbackBeforeUpload = false,
+      r => r.packages.linuxNativeWindowBeforeUpload = false, r => r.releaseComplete = true,
+    ]) deny(mutate);
+    save(value);
+    commitVersion('v1.7.19');
+    save({ ...value, version: 'v1.7.19', sourceDigest: run('--fingerprint').trim() }, 'v1.7.19');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.17 rejects the superseded paid-rerun authorization', () => {
+  const { run, save, dir } = setupRepo('v1.7.17');
+  try {
+    save({
+      version: 'v1.7.17', sourceDigest: run('--fingerprint').trim(),
+      ownerException: { approvedBy: 'Ender', scope: 'generation-delivery-targeted-20261012' },
+      paidSubmissionLimit: 5, newBudgetCNY: 10,
+    });
+    assert.throws(() => run(), /paid rerun authorization was superseded/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.17 owner acceptance forbids new spending, preserves evidence and cannot carry forward', () => {
+  const { run, save, commitVersion, dir } = setupRepo('v1.7.17');
+  try {
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic test receipt, not live acceptance'];
+    const accepted = { confirmedBy: 'Ender', method: 'native', status: 'passed', testedSourceDigest: 'a'.repeat(64), instruction: '实测通过', evidence };
+    const value = {
+      version: 'v1.7.17', sourceDigest, newBudgetCNY: 0, newSpentCNY: 0, newPendingCNY: 0, paidSubmissionLimit: 0,
+      budgetCNY: null, spentCNY: null, pendingCNY: null, cases: [],
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived',
+      acceptanceComplete: false, releasePublished: false, releaseComplete: false,
+      ownerException: { approvedBy: 'Ender', instruction: '采用本次实测，不重复付费（推荐）', scope: 'generation-delivery-owner-accepted-20261013', evidence },
+      ownerAcceptance: {
+        generationDelivery: { ...accepted, testedSourceDigest: 'd8024f245c9fdbb054a1f4adc705e783caed2e5e6b4fb07ea43e9c043aea9b3c' },
+        videoFullscreen: { ...accepted, testedSourceDigest: 'a25801431e4bf791ee0ef8679fbc6ba1ddae717ac737fc0feeec730225ab6870' },
+      },
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.16', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'fixture', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: Object.fromEntries(['generationDelivery', 'imageRecoveryBudget', 'noDuplicateSubmission', 'videoFullscreen', 'localReleaseGate', 'ci'].map(id => [id, { status: 'passed', sourceDigest, evidence }])),
+      packages: { status: 'pending_release_workflow', archives: null, platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'],
+        windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true,
+        signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: evidence },
+    };
+    save(value); assert.match(run(), /owner native acceptance; no new paid generation.*package gates pending/);
+    const mutations = [
+      r => r.ownerException.instruction = '发吧', r => r.ownerException.approvedBy = 'other', r => r.ownerException.evidence = [],
+      r => r.paidSubmissionLimit = 1, r => r.newBudgetCNY = 1, r => r.newSpentCNY = 1, r => r.newPendingCNY = 1, r => r.cases.push({}),
+      r => r.liveMatrixStatus = 'passed', r => r.agentAcceptanceStatus = 'passed', r => r.acceptanceComplete = true,
+      r => r.spentCNY = 0, r => r.priorFinancialUncertainty.status = 'resolved', r => r.review.independent = false,
+      r => r.review.sourceDigest = 'old', r => r.upgrade.preservedData = false, r => r.releasePublished = true,
+      r => r.packages.platforms.pop(), r => r.packages.publicReadbackAfterPublish = false,
+    ];
+    for (const id of Object.keys(value.ownerAcceptance)) mutations.push(r => delete r.ownerAcceptance[id], r => r.ownerAcceptance[id].confirmedBy = 'agent',
+      r => r.ownerAcceptance[id].method = 'mock', r => r.ownerAcceptance[id].status = 'pending', r => r.ownerAcceptance[id].testedSourceDigest = 'unknown',
+      r => r.ownerAcceptance[id].testedSourceDigest = sourceDigest, r => r.ownerAcceptance[id].testedSourceDigest = 'a'.repeat(64), r => r.ownerAcceptance[id].evidence = []);
+    for (const id of Object.keys(value.verification)) mutations.push(r => r.verification[id].status = 'pending', r => r.verification[id].sourceDigest = 'old');
+    for (const mutate of mutations) { const invalid = structuredClone(value); mutate(invalid); save(invalid); assert.throws(() => run()); }
+    commitVersion('v1.7.18');
+    save({ ...value, version: 'v1.7.18', sourceDigest: run('--fingerprint').trim() }, 'v1.7.18');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('v1.7.16 requires one settled native ASR and cannot waive evidence or carry forward', () => {
+  const { dir, run, save, commitVersion } = setupRepo('v1.7.16');
+  try {
+    assert.throws(() => run()); // A missing live receipt is never release-ready.
+    const sourceDigest = run('--fingerprint').trim();
+    const evidence = ['synthetic test receipt, not live acceptance'];
+    const value = {
+      version: 'v1.7.16', sourceDigest, newBudgetCNY: 1, newSpentCNY: 0.001, newPendingCNY: 0,
+      budgetCNY: null, spentCNY: null, pendingCNY: null, paidSubmissionLimit: 1,
+      liveMatrixStatus: 'not_run_owner_waived', agentAcceptanceStatus: 'not_run_owner_waived',
+      acceptanceComplete: false, releasePublished: false, releaseComplete: false,
+      ownerException: { approvedBy: 'Ender', instruction: '按建议专项验收后发布，本版豁免完整矩阵', scope: 'asr-transcription-targeted-20261011', evidence },
+      cases: [{ path: 'audio-transcription', model: 'hy-asr-3.0-preview', attempts: 1, status: 'succeeded', method: 'native',
+        clientSubmitted: true, subtitleTextVerified: true, subtitleTimingVerified: true, subtitleSaved: true, subtitleReopened: true, srtExported: true,
+        billing: 'settled', costCNY: 0.001, executedSourceDigest: sourceDigest, clientVersion: 'v1.7.16', taskId: 'fixture-task', providerRequestId: 'fixture-request', artifactSHA256: 'a'.repeat(64), evidence }],
+      priorFinancialUncertainty: { status: 'unresolved', carriedFromVersion: 'v1.7.15', pendingCNY: null, evidence },
+      review: { result: 'approved', independent: true, reviewer: 'fixture', sourceDigest, evidence },
+      upgrade: { preservedData: true, sourceDigest, evidence },
+      verification: Object.fromEntries(['asrCatalog', 'nativeSubtitleSave', 'scopeIsolation', 'noDuplicateSubmission', 'localReleaseGate', 'ci'].map(id => [id, { status: 'passed', method: 'native', sourceDigest, evidence }])),
+      packages: { status: 'pending_release_workflow', archives: null, platforms: ['darwin-arm64', 'darwin-amd64', 'windows-amd64', 'linux-amd64'],
+        windowsReleasedUpgradeAndRollbackBeforeUpload: true, finalArchiveSmokeBeforeUpload: true, linuxNativeWindowBeforeUpload: true,
+        signedManifestBeforePublish: true, publicReadbackAfterPublish: true, workflowEvidence: evidence },
+    };
+    save(value); assert.match(run(), /native ASR saved and settled within CNY 1.*package gates pending/);
+    const mutations = [
+      r => r.ownerException.instruction = '发布吧', r => r.ownerException.evidence = [],
+      r => r.ownerException.scope = 'other', r => r.ownerException.approvedBy = 'other',
+      r => r.paidSubmissionLimit = 2, r => r.newBudgetCNY = 2, r => r.cases = [], r => r.cases.push(r.cases[0]),
+      r => r.newSpentCNY = 0, r => r.newPendingCNY = null, r => r.newPendingCNY = 0.1,
+      r => r.cases[0].costCNY = 1.01, r => r.cases[0].costCNY = 0, r => r.cases[0].attempts = 2,
+      r => r.cases[0].status = 'pending', r => r.cases[0].billing = 'unknown', r => r.cases[0].method = 'mock',
+      r => r.cases[0].model = 'speech', r => r.cases[0].path = 'text-image', r => r.cases[0].executedSourceDigest = 'old',
+      r => r.cases[0].clientVersion = 'v1.7.15', r => r.cases[0].taskId = '', r => r.cases[0].providerRequestId = '',
+      r => r.cases[0].artifactSHA256 = '', r => r.cases[0].evidence = [],
+      r => r.priorFinancialUncertainty.pendingCNY = 0, r => r.priorFinancialUncertainty.evidence = [], r => r.pendingCNY = 0,
+      r => r.review.independent = false, r => r.review.sourceDigest = 'old', r => r.review.result = 'pending',
+      r => r.upgrade.preservedData = false, r => r.upgrade.sourceDigest = 'old',
+      r => r.verification.nativeSubtitleSave.method = 'mock', r => r.liveMatrixStatus = 'passed', r => r.agentAcceptanceStatus = 'passed',
+      r => r.acceptanceComplete = true, r => r.releasePublished = true, r => r.releaseComplete = true,
+      r => r.packages.platforms.pop(), r => r.packages.platforms.push('linux-amd64'), r => r.packages.status = 'passed',
+      r => r.packages.archives = {}, r => r.packages.workflowEvidence = [],
+    ];
+    for (const field of ['clientSubmitted', 'subtitleTextVerified', 'subtitleTimingVerified', 'subtitleSaved', 'subtitleReopened', 'srtExported']) mutations.push(r => r.cases[0][field] = false);
+    for (const field of ['windowsReleasedUpgradeAndRollbackBeforeUpload', 'finalArchiveSmokeBeforeUpload', 'linuxNativeWindowBeforeUpload', 'signedManifestBeforePublish', 'publicReadbackAfterPublish']) mutations.push(r => r.packages[field] = false);
+    for (const id of Object.keys(value.verification)) mutations.push(r => delete r.verification[id], r => r.verification[id].status = 'pending', r => r.verification[id].sourceDigest = 'old', r => r.verification[id].evidence = []);
+    for (const mutate of mutations) { const invalid = structuredClone(value); mutate(invalid); save(invalid); assert.throws(() => run()); }
+    commitVersion('v1.7.17');
+    save({ ...value, version: 'v1.7.17', sourceDigest: run('--fingerprint').trim() }, 'v1.7.17');
+    assert.throws(() => run());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('v1.7.15 waiver keeps source review and all four package gates and cannot carry forward', () => {
   const { dir, run, save, commitVersion } = setupRepo('v1.7.15');

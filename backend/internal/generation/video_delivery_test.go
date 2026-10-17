@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"infinite-canvas/backend/internal/outbound"
 )
 
 func TestSeedanceDispatchUsesGatewayDeliveryFallback(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "1")
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	for _, withURL := range []bool{true, false} {
 		t.Run(map[bool]string{true: "result URL", false: "content endpoint"}[withURL], func(t *testing.T) {
 			creates, polls, direct, proxy := 0, 0, 0, 0
@@ -31,7 +33,7 @@ func TestSeedanceDispatchUsesGatewayDeliveryFallback(t *testing.T) {
 					}
 					_ = json.NewEncoder(w).Encode(state)
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/original/content":
-					if r.URL.Query().Get("delivery") != "proxy" {
+					if r.URL.Query().Get("delivery") != "backup" {
 						direct++
 						w.WriteHeader(http.StatusServiceUnavailable)
 						return
@@ -82,7 +84,7 @@ func (l *deliveryCircuitLimits) AcquireChannelSlot(context.Context, string, stri
 }
 
 func TestCompletedVideoDownloadDoesNotUseGenerationCircuit(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "1")
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	for _, status := range []int{200, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			hits := 0
@@ -106,7 +108,7 @@ func TestCompletedVideoDownloadDoesNotUseGenerationCircuit(t *testing.T) {
 }
 
 func TestVideoDeliveryFallbackReadsSameTaskWithoutGeneration(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "1")
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	for _, directStatus := range []int{200, 503, 401} {
 		t.Run(http.StatusText(directStatus), func(t *testing.T) {
 			direct, proxy := 0, 0
@@ -117,7 +119,7 @@ func TestVideoDeliveryFallbackReadsSameTaskWithoutGeneration(t *testing.T) {
 				if r.Header.Get("Authorization") != "Bearer test-key" {
 					t.Error("missing provider credential")
 				}
-				if r.URL.Query().Get("delivery") == "proxy" {
+				if r.URL.Query().Get("delivery") == "backup" {
 					proxy++
 				} else {
 					direct++
@@ -131,7 +133,7 @@ func TestVideoDeliveryFallbackReadsSameTaskWithoutGeneration(t *testing.T) {
 			}))
 			defer server.Close()
 			ctx := WithEndpoints(context.Background(), Endpoints{BeefAPIVideoBaseURL: server.URL})
-			data, _, err := getVideoResultWithGatewayFallback(ctx, Config{BaseURL: server.URL, APIKey: "test-key"}, server.URL+"/v1/videos/original/content", "original")
+			data, _, err := videoResultDownloader(Config{BaseURL: server.URL, APIKey: "test-key"}, server.URL+"/v1/videos/original/content", "original")(ctx)
 			if directStatus == 401 {
 				if err == nil || proxy != 0 {
 					t.Fatal("retried rejected credential")
@@ -150,13 +152,22 @@ func TestVideoDeliveryFallbackReadsSameTaskWithoutGeneration(t *testing.T) {
 	}
 }
 
-func TestVideoDeliveryFallbackDoesNotFollowOldGatewayRedirect(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "1")
+func TestVideoDeliveryFallbackFollowsBackupWithoutCredentials(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	redirected := 0
-	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected++; w.WriteHeader(200) }))
+	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected++
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Gateway-Secret") != "" {
+			t.Error("gateway credentials reached the signed media endpoint")
+		}
+		_, _ = w.Write([]byte("original video"))
+	}))
 	defer media.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("delivery") == "proxy" {
+		if r.URL.Query().Get("delivery") == "backup" {
+			if r.Header.Get("Authorization") != "Bearer test-key" {
+				t.Error("backup endpoint missing gateway credential")
+			}
 			http.Redirect(w, r, media.URL, 302)
 			return
 		}
@@ -164,8 +175,9 @@ func TestVideoDeliveryFallbackDoesNotFollowOldGatewayRedirect(t *testing.T) {
 	}))
 	defer server.Close()
 	ctx := WithEndpoints(context.Background(), Endpoints{BeefAPIVideoBaseURL: server.URL})
-	_, _, err := getVideoResultWithGatewayFallback(ctx, Config{BaseURL: server.URL}, server.URL+"/v1/videos/original/content", "original")
-	if err == nil || redirected != 0 {
-		t.Fatalf("followed unsupported fallback: %d %v", redirected, err)
+	config := Config{BaseURL: server.URL, APIKey: "test-key", Headers: []outbound.OutboundHeader{{Name: "X-Gateway-Secret", Value: "private-value"}}}
+	data, _, err := videoResultDownloader(config, server.URL+"/v1/videos/original/content", "original")(ctx)
+	if err != nil || redirected != 1 || string(data) != "original video" {
+		t.Fatalf("backup redirect: %d %v", redirected, err)
 	}
 }

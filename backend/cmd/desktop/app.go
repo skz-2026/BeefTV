@@ -25,16 +25,17 @@ type DesktopRuntimeConfig struct {
 }
 
 type DesktopApp struct {
-	mu              sync.RWMutex
-	migrationMu     sync.Mutex
-	migrating       bool
-	migrationCancel context.CancelFunc
-	closing         bool
-	storageRoot     string
-	dataDir         string
-	wailsCtx        context.Context
-	chooseSavePath  func(ctx context.Context, fileName string) (string, error)
-	copyOwnedMedia  func(resourceID, destPath string) error
+	mu               sync.RWMutex
+	migrationMu      sync.Mutex
+	migrating        bool
+	migrationCancel  context.CancelFunc
+	closing          bool
+	storageRoot      string
+	dataDir          string
+	wailsCtx         context.Context
+	pendingSkillLink string
+	chooseSavePath   func(ctx context.Context, fileName string) (string, error)
+	copyOwnedMedia   func(resourceID, destPath string) error
 }
 
 // Wails reflects every field type reachable from a bound object. Keeping the
@@ -245,7 +246,12 @@ func (a *DesktopApp) startup(ctx context.Context) {
 	a.mu.Lock()
 	a.wailsCtx = ctx
 	a.mu.Unlock()
-	if err := a.start(ctx); err != nil {
+	for _, arg := range os.Args[1:] {
+		if _, err := skillInstallRoute(arg); err == nil {
+			a.acceptSkillLink(arg)
+		}
+	}
+	if err := prepareDesktopApp(ctx, a); err != nil {
 		log.Printf("启动本地后端失败: %v", err)
 		wailsruntime.LogErrorf(ctx, "启动本地后端失败: %v", err)
 		wailsruntime.Quit(ctx)

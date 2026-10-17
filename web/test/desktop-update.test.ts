@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import type { DesktopRuntimeBinding, DesktopUpdateState } from "@/services/desktop-runtime";
-import { prepareDesktopEditorsForUpdate, registerDesktopUpdatePreparation } from "@/services/desktop-update-preparation";
+import { flushCanvasStorePersistence, withCanvasStorePersistenceLock } from "@/stores/canvas/use-canvas-store";
+import { flushAssetStorePersistence } from "@/stores/use-asset-store";
+import * as modelConfig from "@/services/model-config-repository";
+import { withGenerationArtifactCommitLock, withGenerationAssetStorageLock } from "@/services/generation-asset-repository";
+import { DesktopUpdateSaveInProgressError, prepareDesktopEditorsForUpdate, registerDesktopUpdatePreparation } from "@/services/desktop-update-preparation";
 import {
     createDesktopUpdateController,
+    persistWorkspaceBeforeDesktopInstall,
     desktopUpdateActionLabel,
+    desktopUpdateProgressPercent,
     desktopUpdateDetailLabel,
     desktopUpdateProgressLabel,
     formatDesktopUpdateRemaining,
@@ -20,6 +26,169 @@ import {
 
 afterEach(() => {
     resetSharedDesktopUpdateController();
+});
+
+test("model config writes that resolve with an error state still refuse ordinary installation", async () => {
+    const flush = spyOn(modelConfig, "flushModelConfig").mockResolvedValue(undefined);
+    const state = spyOn(modelConfig, "getModelConfigPersistenceState").mockReturnValue({ status: "error", dirty: true, revision: 1, error: "disk failed" });
+    try {
+        await expect(persistWorkspaceBeforeDesktopInstall()).rejects.toThrow("模型配置尚未保存完成");
+    } finally { flush.mockRestore(); state.mockRestore(); }
+});
+
+test("the real force guard refuses pending canvas and generation IO even without progress records", async () => {
+    await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
+    for (const lock of [withCanvasStorePersistenceLock, withGenerationAssetStorageLock, withGenerationArtifactCommitLock]) {
+        const mock = mockBinding(state({ status: "ready", latestVersion: "v1.5.2" }));
+        const controller = createDesktopUpdateController({
+            getBinding: () => mock.binding, isDesktopRuntime: () => true,
+            persistWorkspace: async () => { throw new Error("保存失败"); },
+            scheduler: { interval: () => () => {} },
+        });
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const writing = lock("force-test", () => gate);
+        try {
+            await controller.start();
+            await controller.install();
+            await controller.forceInstall();
+            expect(mock.calls.install).toBe(0);
+            expect(controller.getSnapshot().canForceInstall).toBe(false);
+            release();
+            await writing;
+            await controller.install();
+            await controller.forceInstall();
+            expect(mock.calls.install).toBe(1);
+        } finally { release(); await writing; controller.dispose(); }
+    }
+});
+
+test("forced installation is offered only after a save failure and still rechecks active writes", async () => {
+    const mock = mockBinding(state({status: "ready", latestVersion: "v1.5.2"}));
+    let saving = false;
+    let saveCalls = 0;
+    const controller = createDesktopUpdateController({
+        getBinding: () => mock.binding, isDesktopRuntime: () => true,
+        persistWorkspace: async () => {saveCalls++; throw new Error("保存失败");},
+        assertNoActiveSaves: async () => {if (saving) throw new DesktopUpdateSaveInProgressError();},
+        scheduler: {interval: () => () => {}},
+    });
+    try {
+        await controller.start();
+        await controller.forceInstall();
+        expect(mock.calls.install).toBe(0);
+        await controller.install();
+        expect(controller.getSnapshot().canForceInstall).toBe(true);
+        expect(mock.calls.install).toBe(0);
+        saving = true;
+        await controller.forceInstall();
+        expect(mock.calls.install).toBe(0);
+        expect(controller.getSnapshot().canForceInstall).toBe(false);
+        saving = false;
+        await controller.install();
+        await controller.forceInstall();
+        expect(mock.calls.install).toBe(1);
+        expect(saveCalls).toBe(2);
+        expect(controller.getSnapshot().canForceInstall).toBe(false);
+    } finally {controller.dispose();}
+});
+
+test("ongoing save and native install failures never offer forced installation", async () => {
+    const mock = mockBinding(state({status: "ready", latestVersion: "v1.5.2"}));
+    let saving = true;
+    mock.binding.InstallUpdate = async () => {throw new Error("native failure");};
+    const controller = createDesktopUpdateController({
+        getBinding: () => mock.binding, isDesktopRuntime: () => true,
+        persistWorkspace: async () => {if(saving) throw new DesktopUpdateSaveInProgressError();},
+        scheduler: {interval: () => () => {}},
+    });
+    try {
+        await controller.start();await controller.install();
+        expect(controller.getSnapshot().canForceInstall).toBe(false);
+        saving = false;await controller.retry();
+        expect(controller.getSnapshot().state.error).toBe("native failure");
+        expect(controller.getSnapshot().canForceInstall).toBe(false);
+    } finally {controller.dispose();}
+});
+
+test("native preparation phases survive polling and expose file progress", () => {
+    const parsed = parseDesktopUpdateState({ status: "installing", phase: "extracting", completedFiles: 128, totalFiles: 512 });
+    expect(parsed.phase).toBe("extracting");
+    expect(desktopUpdateDetailLabel(parsed)).toBe("128 / 512 个文件");
+    expect(parseDesktopUpdateState({ status: "installing", phase: "untrusted" }).phase).toBeUndefined();
+    expect(desktopUpdateDetailLabel({ ...parsed, phase: "restarting" })).toBe("完成后将自动打开新版本");
+});
+
+test("save timeout allows retry but late completion never installs", async () => {
+    const save = deferred<void>();
+    let stuck = true;
+    const mock = mockBinding(state({ status: "ready", latestVersion: "v1.5.2" }));
+    const controller = createDesktopUpdateController({
+        getBinding: () => mock.binding,
+        isDesktopRuntime: () => true,
+        persistWorkspace: () => stuck ? save.promise : Promise.resolve(),
+        persistTimeoutMs: 5,
+        scheduler: { interval: () => () => {} },
+    });
+    await controller.start();
+    await controller.install();
+    expect(controller.getSnapshot().state.status).toBe("error");
+    expect(controller.getSnapshot().persistBusy).toBe(false);
+    expect(controller.getSnapshot().state.error).toContain("保存耗时较长");
+    expect(mock.calls.install).toBe(0);
+    save.resolve();
+    await Promise.resolve();
+    expect(mock.calls.install).toBe(0);
+    stuck = false;
+    await controller.retry();
+    expect(mock.calls.install).toBe(1);
+    controller.dispose();
+});
+
+test("disposing during save never starts native installation", async () => {
+    const save = deferred<void>();
+    const mock = mockBinding(state({ status: "ready", latestVersion: "v1.5.2" }));
+    const controller = createDesktopUpdateController({ getBinding: () => mock.binding, isDesktopRuntime: () => true, persistWorkspace: () => save.promise, scheduler: { interval: () => () => {} } });
+    await controller.start();
+    const install = controller.install();
+    controller.dispose();
+    save.resolve();
+    await install;
+    expect(mock.calls.install).toBe(0);
+});
+
+test("retry cannot overlap a timed-out save; a late rejection is handled and a fresh save is required", async () => {
+    const pending = deferred<void>();
+    const mock = mockBinding(state({ status: "ready", latestVersion: "v1.5.2" }));
+    let saves = 0;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown) => { unhandled.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    const controller = createDesktopUpdateController({
+        getBinding: () => mock.binding,
+        isDesktopRuntime: () => true,
+        persistWorkspace: () => ++saves === 1 ? pending.promise : Promise.resolve(),
+        persistTimeoutMs: 5,
+        scheduler: { interval: () => () => {} },
+    });
+    try {
+        await controller.start();
+        await controller.install();
+        await controller.retry();
+        expect(saves).toBe(1);
+        expect(mock.calls.install).toBe(0);
+        expect(controller.getSnapshot().state.error).toBe("上次保存仍未结束，请稍后重试。");
+        pending.reject(new Error("late save failure"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(unhandled).toEqual([]);
+        expect(mock.calls.install).toBe(0);
+        await controller.retry();
+        expect(saves).toBe(2);
+        expect(mock.calls.install).toBe(1);
+    } finally {
+        process.off("unhandledRejection", onUnhandled);
+        controller.dispose();
+    }
 });
 
 test("an editor save refusal prevents native installation and retries after saving", async () => {
@@ -189,6 +358,9 @@ describe("desktop update progress", () => {
         expect(desktopUpdateDetailLabel(state({ status: "downloading", downloadedBytes: 30 * mb, totalBytes: 150 * mb, bytesPerSecond: 512 * 1024 }))).toBe("512 KB/s · 剩余约 4 分钟");
         expect(desktopUpdateDetailLabel(state({ status: "downloading", downloadedBytes: 30 * mb, totalBytes: 150 * mb }))).toBe("30 MB / 150 MB");
         expect(desktopUpdateDetailLabel(state({ status: "downloading", totalBytes: 150 * mb }))).toBe("正在连接");
+        const downloaded = state({ status: "downloading", downloadedBytes: 150 * mb, totalBytes: 150 * mb, bytesPerSecond: mb });
+        expect(desktopUpdateDetailLabel(downloaded)).toBe("下载完成，正在校验更新包");
+        expect(desktopUpdateProgressPercent(downloaded)).toBeLessThan(100);
         expect(desktopUpdateDetailLabel(state({ status: "downloading", downloadedBytes: 30 * mb, totalBytes: 150 * mb, bytesPerSecond: mb, reconnecting: true }))).toBe("网络中断，正在重新连接");
         expect(desktopUpdateDetailLabel(state({ status: "error", error: "网络不稳定，已保留下载进度" }))).toBe("网络不稳定，已保留下载进度");
     });
@@ -312,6 +484,9 @@ describe("desktop update controller", () => {
         expect(mock.calls.download).toBe(1);
 
         mock.holdInstall();
+        const installationStarted = deferred<void>();
+        const originalInstall = mock.binding.InstallUpdate!;
+        mock.binding.InstallUpdate = () => { installationStarted.resolve(); return originalInstall(); };
         const installPromise = controller.install();
         await Promise.resolve();
         expect(persistCalls).toBe(1);
@@ -319,8 +494,7 @@ describe("desktop update controller", () => {
         expect(view.latest().persistBusy).toBe(true);
 
         persist.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
+        await installationStarted.promise;
         expect(mock.calls.install).toBe(1);
         expect(view.latest().state.status).toBe("installing");
         mock.finishInstall();
@@ -575,3 +749,12 @@ describe("desktop update controller", () => {
         controller.dispose();
     });
 });
+
+ test("100 percent requires helper readiness, never just complete bytes", () => {
+    const base = { status: "downloading", currentVersion: "v1.7.16", latestVersion: "v1.7.17", releaseNotes: "", downloadedBytes: 100, totalBytes: 100, bytesPerSecond: 0, reconnecting: false, error: "" } as DesktopUpdateState;
+    expect(desktopUpdateProgressPercent(base)).toBe(95);
+    expect(desktopUpdateProgressPercent({ ...base, status: "ready" })).toBe(96);
+    expect(desktopUpdateProgressPercent({ ...base, status: "installing" })).toBe(98);
+    expect(desktopUpdateProgressPercent({ ...base, status: "installing", installPrepared: true })).toBe(100);
+    expect(desktopUpdateProgressPercent({ ...base, status: "error", installPrepared: true })).toBeLessThan(100);
+ });

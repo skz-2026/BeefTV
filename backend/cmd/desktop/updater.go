@@ -34,7 +34,7 @@ func (a *DesktopApp) updater() *desktopupdate.Engine {
 				return errors.New("应用尚未就绪，无法安装更新")
 			}
 			go func() {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(500 * time.Millisecond)
 				wailsruntime.Quit(ctx)
 			}()
 			return nil

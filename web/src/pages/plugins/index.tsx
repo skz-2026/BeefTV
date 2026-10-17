@@ -15,7 +15,7 @@ import { RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 import { isOfficialApplicationPluginId } from "@/lib/plugins/official-applications";
 import type { PluginManifest, PluginManifestV2, RegisteredPlugin } from "@/lib/plugins/plugin-types";
 import { getEagleLibrary, type EagleFolder } from "@/services/api/eagle";
-import { fetchPlugins, setUserPluginEnabled, type BackendPlugin, type PluginState } from "@/services/api/plugins";
+import { fetchPlugins, fetchPluginRuntimeState, setUserPluginEnabled, type BackendPlugin, type PluginState } from "@/services/api/plugins";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -105,7 +105,8 @@ export default function PluginsPage() {
     const reloadBackendPlugins = async () => {
         if (localRuntime) {
             setBackendPlugins([]);
-            setPluginStates({});
+            try { const r=await fetchPluginRuntimeState();setPluginStates(r.states); if(r.states[EAGLE_PLUGIN_ID])setEnabled(EAGLE_PLUGIN_ID,r.states[EAGLE_PLUGIN_ID].effectiveEnabled); }
+            catch(error){message.error(error instanceof Error?error.message:"插件状态暂时无法读取");}
             return;
         }
         setBackendPluginsLoading(true);
@@ -210,7 +211,7 @@ export default function PluginsPage() {
 
     const togglePlugin = async (plugin: RegisteredPlugin, enabled: boolean) => {
         try {
-            if (localRuntime) {
+            if (localRuntime && plugin.manifest.id!==EAGLE_PLUGIN_ID) {
                 setEnabled(plugin.manifest.id, enabled);
                 message.success(`${plugin.manifest.name}${enabled ? "已启用" : "已停用"}`);
                 return;

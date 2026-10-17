@@ -56,7 +56,7 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
 
     const compact = variant === "recent";
     return (
-        <article className={cn("app-canvas-project-card group h-full cursor-pointer", compact ? "is-recent" : "is-library", selected && "is-selected")} onClick={() => (!editing || readOnly) && open()}>
+        <article data-onboarding-project={project.id} className={cn("app-canvas-project-card group h-full cursor-pointer", compact ? "is-recent" : "is-library", selected && "is-selected")} onClick={() => (!editing || readOnly) && open()}>
             <div className="app-canvas-project-preview relative">
                 <button
                     type="button"

@@ -13,6 +13,12 @@ import (
 )
 
 var opaqueVideoAssetPattern = regexp.MustCompile(`^asset://[A-Za-z0-9_-]+$`)
+var dreaminaSeedancePattern = regexp.MustCompile(`^dreamina-seedance-2[.-](0|5)(-|$)`)
+
+func isNativeDreaminaSeedance(protocol, modelName string) bool {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(modelName)), "/")
+	return model.IsVolcengineArkVideoProtocol(model.ChannelInterfaceType(protocol)) && dreaminaSeedancePattern.MatchString(parts[len(parts)-1])
+}
 
 func referenceDurationIsOpaqueAsset(media MediaRef) bool {
 	return media.DurationMs == 0 && !strings.HasPrefix(media.StorageKey, "resource:") && opaqueVideoAssetPattern.MatchString(strings.TrimSpace(media.URL))
@@ -50,7 +56,7 @@ func isSeedance2Family(protocol, modelName string) bool {
 func isSeedance25Model(modelName string) bool {
 	parts := strings.Split(strings.ToLower(strings.TrimSpace(modelName)), "/")
 	base := parts[len(parts)-1]
-	return base == "seedance-2.5" || strings.HasPrefix(base, "seedance-2.5-") || strings.HasPrefix(base, "doubao-seedance-2-5") || strings.HasPrefix(base, "doubao-seedance-2.5")
+	return base == "seedance-2.5" || strings.HasPrefix(base, "seedance-2.5-") || strings.HasPrefix(base, "doubao-seedance-2-5") || strings.HasPrefix(base, "doubao-seedance-2.5") || base == "dreamina-seedance-2-5" || strings.HasPrefix(base, "dreamina-seedance-2-5-") || base == "dreamina-seedance-2.5" || strings.HasPrefix(base, "dreamina-seedance-2.5-")
 }
 
 const documentedSeedanceVideoMinPixels = 407696
@@ -122,6 +128,9 @@ func validateVideoReferenceMedia(profile *VideoCapabilityConfig, input TaskInput
 	}
 	refs := profile.References
 	applySeedanceDocumentedVideoPixelFloor(input.Config, &refs)
+	if isNativeDreaminaSeedance(input.Config.InterfaceType, input.Config.Model) && isSeedance25Model(input.Config.Model) && metadataString(input.Metadata, "videoEditOperation") == "inpaint" && refs.MinVideoDuration < 4 {
+		refs.MinVideoDuration = 4
+	}
 
 	if len(input.ReferenceImages) > refs.MaxImages {
 		return kernel.BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 张参考图", refs.MaxImages))

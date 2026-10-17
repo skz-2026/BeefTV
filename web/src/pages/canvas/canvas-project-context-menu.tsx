@@ -1,9 +1,14 @@
+import { useState } from "react";
+import { ProductionRecordModal } from "./production-record-modal";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@/types/canvas";
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
 type CanvasProjectContextMenuProps = {
+    canvasId:string;
+    projectId?:string;
+    readOnly?:boolean;
     menu: ContextMenuState | null;
     node: CanvasNodeData | null;
     workspaceMode: CanvasWorkspaceMode;
@@ -46,10 +51,10 @@ type CanvasProjectContextMenuProps = {
 };
 
 export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props }: CanvasProjectContextMenuProps) {
-    if (!menu) return null;
-    const menuPosition = () => menu.type === "canvas" ? menu.position : screenToCanvas(menu.x, menu.y);
+    const [record,setRecord]=useState<CanvasNodeData|null>(null);
+    const menuPosition = () => !menu ? {x:0,y:0} : menu.type === "canvas" ? menu.position : screenToCanvas(menu.x, menu.y);
     return (
-        <CanvasNodeContextMenu
+        <> {menu && <CanvasNodeContextMenu
             menu={menu}
             node={node}
             workspaceMode={props.workspaceMode}
@@ -87,6 +92,7 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
                 if (menu.type === "node") props.onDeleteNode(menu.nodeId);
                 else if (menu.type === "connection") props.onDeleteConnection(menu.connectionId);
             }}
+            onRegisterProduction={!props.readOnly && node?.metadata?.taskId ? ()=>setRecord(node) : undefined}
             onSaveAsset={() => {
                 if (node) props.onSaveAsset(node);
             }}
@@ -116,6 +122,8 @@ export function CanvasProjectContextMenu({ menu, node, screenToCanvas, ...props 
             onSpreadSelection={props.onSpreadSelection}
             onCopySelection={props.onCopySelection}
             onDeleteSelection={props.onDeleteSelection}
-        />
+        />}
+        <ProductionRecordModal node={record} canvasId={props.canvasId} projectId={props.projectId} onClose={()=>setRecord(null)}/>
+        </>
     );
 }

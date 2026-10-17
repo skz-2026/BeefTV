@@ -21,6 +21,7 @@ function payloadToTimelineMedia(payload: InsertAssetPayload): TimelineDirectMedi
             id: payload.assetId || `asset-${randomSuffix}`,
             kind: "video",
             title: payload.title,
+            assetId: payload.assetId,
             storageKey: payload.storageKey,
             url: payload.url,
             width: payload.width,
@@ -31,7 +32,7 @@ function payloadToTimelineMedia(payload: InsertAssetPayload): TimelineDirectMedi
         };
     }
     if (payload.kind === "audio") {
-        return { id: payload.assetId || `asset-${randomSuffix}`, kind: "audio", title: payload.title, storageKey: payload.storageKey, url: payload.url, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType };
+        return { id: payload.assetId || `asset-${randomSuffix}`, kind: "audio", title: payload.title, assetId: payload.assetId, storageKey: payload.storageKey, url: payload.url, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType };
     }
     return null;
 }

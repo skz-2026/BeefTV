@@ -13,6 +13,12 @@ type Store interface {
 	DiagnosticAPICallLogs(userID string, from time.Time, to time.Time, taskID string, projectID string) ([]model.ApiCallLog, error)
 }
 
+// ModelConfigProvider exposes the local workspace provider snapshot so the
+// diagnostics bundle can include a redacted model-configuration summary.
+type ModelConfigProvider interface {
+	ReadLocalModelConfig() ([]byte, error)
+}
+
 type Brand interface {
 	NameAndSlug() (string, string)
 }

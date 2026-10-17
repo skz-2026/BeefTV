@@ -8,6 +8,12 @@ type VideoContract = {
     // An omitted kind keeps the model's existing capability limit, matching Go.
     maxReferences?: Partial<Record<"image" | "video" | "audio", number>>;
     operations?: string[];
+    resolutions?: string[];
+    referenceResolution?: string;
+    ratios?: string[];
+    duration?: { min: number; max: number; default: number };
+    maxImageDuration?: number;
+    generateAudio?: boolean;
 };
 
 export function isBeefAPIEndpoint(baseUrl: string): boolean {

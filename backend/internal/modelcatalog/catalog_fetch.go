@@ -3,6 +3,7 @@ package modelcatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 
@@ -127,6 +128,9 @@ func ParseChannelModelCatalog(data []byte, apiFormat string) ([]ChannelModelCata
 	items := payload.Data
 	if apiFormat == "gemini" {
 		items = payload.Models
+	}
+	if items == nil {
+		return nil, CatalogJSONError{Cause: errors.New("missing model catalog array")}
 	}
 	seen := make(map[string]bool, len(items))
 	catalog := make([]ChannelModelCatalogItem, 0, len(items))

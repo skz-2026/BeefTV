@@ -24,7 +24,12 @@ func (s *Service) DiagnosticsDomain() *diagnostics.Service {
 		return diagnostics.New(diagnostics.Dependencies{})
 	}
 	s.diagnosticsOnce.Do(func() {
-		s.diagnostics = diagnostics.New(diagnostics.Dependencies{Store: s.repo, Brand: diagnosticBrand{svc: s}})
+		deps := diagnostics.Dependencies{Store: s.repo, Brand: diagnosticBrand{svc: s}, Config: s}
+		if s.mode == serviceModeLocal {
+			deps.DataDir = s.dataDir
+			deps.UpdateLogDir = s.dataDir
+		}
+		s.diagnostics = diagnostics.New(deps)
 	})
 	return s.diagnostics
 }

@@ -69,6 +69,22 @@ func TestTimelineTranscriptionFailsFastWhenWhisperUnconfigured(t *testing.T) {
 	}
 }
 
+func TestCloudTranscriptionNeverResubmitsReclaimedTask(t *testing.T) {
+	svc, db := newTimelineTaskTestService(t)
+	task := seedRunningTimelineTask(t, db, `{"resourceId":"res-1","model":"hy-asr-3.0-preview","managedTokenId":"fixture"}`)
+	task.Attempts = 2
+	if err := newTaskWorkerCoordinator(svc).processTimelineTranscription(task, context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var stored model.Task
+	if err := db.First(&stored, "id = ?", task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.TaskStatusFailed || !strings.Contains(stored.Error, "未重复提交") {
+		t.Fatalf("unexpected status=%s error=%s", stored.Status, stored.Error)
+	}
+}
+
 func TestTimelineTranscriptionRejectsMissingResourceRef(t *testing.T) {
 	svc, db := newTimelineTaskTestService(t)
 	task := seedRunningTimelineTask(t, db, `{"resourceId":"  "}`)

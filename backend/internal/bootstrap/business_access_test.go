@@ -43,6 +43,11 @@ func TestExternalBusinessRealUploadRenderAndIsolation(t *testing.T) {
 			t.Fatal("sensitive tool", tool.Path)
 		}
 	}
+	for _, path := range []string{"/skills/market/authorization/start", "/skills/market/publish-plans/p/upload", "/skills/market/publish-plans/p/submit"} {
+		if response := call("POST", path, `{"confirmed":true}`); response.Code != http.StatusForbidden {
+			t.Fatalf("external client reached trusted publishing UI %s: %d %s", path, response.Code, response.Body.String())
+		}
+	}
 	var picture bytes.Buffer
 	if err := png.Encode(&picture, image.NewRGBA(image.Rect(0, 0, 32, 32))); err != nil {
 		t.Fatal(err)

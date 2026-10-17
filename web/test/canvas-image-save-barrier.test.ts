@@ -18,8 +18,28 @@ const task: GenerationTask = { id: "task-original", type: "canvas_image", status
 
 beforeEach(() => useCanvasStore.setState({ projects: [structuredClone(project)] }));
 
+test("submission creates a stable operation ID without randomUUID in an HTTP WebView", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    let savedOperation = "";
+    let submittedOperation = "";
+    try {
+        await runCanvasGenerationTaskToConsumer({ ...input, clientOperationId: undefined }, {
+            prepareTarget: async (options) => { savedOperation = options.clientOperationId || ""; },
+            bindTask: () => undefined,
+            consumeTask: async () => undefined,
+            runTask: async (options) => { submittedOperation = options.clientOperationId || ""; options.onTaskCreated?.(task); return { images: [] }; },
+        });
+        expect(savedOperation).toMatch(/^[A-Za-z0-9_-]{21}$/);
+        expect(submittedOperation).toBe(savedOperation);
+    } finally {
+        if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+        else delete (crypto as Partial<Crypto>).randomUUID;
+    }
+});
+
 test("restoring a completed image retains recovery flags and cannot open a second paid generation", () => {
-    const target = { ...project.nodes[0], metadata: { taskId: task.id, taskStatus: "succeeded" as const, status: "error" as const, resourceReloadAvailable: true, generationErrorCode: "canvas_conflict" as const, errorDetails: "生成结果已保留，请重新加载资源" } };
+    const target = { ...project.nodes[0], metadata: { taskId: task.id, taskStatus: "succeeded" as const, status: "error" as const, resourceReloadAvailable: true, generationErrorCode: "canvas_conflict" as const, errorDetails: "生成结果已保留，请点击「继续取回」" } };
     const restored = canvasGenerationTaskNodes([target], target.id, task)[0];
     expect(restored.metadata).toMatchObject({ status: "error", taskStatus: "succeeded", resourceReloadAvailable: true, generationErrorCode: "canvas_conflict" });
     expect(isCanvasNodeGenerating(restored)).toBe(true);
@@ -85,6 +105,62 @@ test("abort and abandoned account saves cannot proceed to a paid task", async ()
     const controller = new AbortController();
     await expect(persistCanvasGenerationTarget({ ...input, signal: controller.signal, expectedScope: captureUserScope() }, async () => { controller.abort(); })).rejects.toMatchObject({ name: "AbortError" });
     await expect(persistCanvasGenerationTarget({ ...input, expectedScope: captureUserScope() }, async () => { throw new UserScopeAbandonedError(); })).rejects.toBeInstanceOf(UserScopeAbandonedError);
+    const refNode = { id: "ref-image", type: CanvasNodeType.Image, title: "参考图", position: { x: 0, y: 0 }, width: 320, height: 320, metadata: { status: "success" as const, storageKey: "resource:res-ref", content: "/api/resources/res-ref/file" } };
+    useCanvasStore.setState({ projects: [{ ...structuredClone(project), nodes: [...project.nodes, refNode] }] });
+    let current = true;
+    let persistAttempts = 0;
+    await expect(
+        persistCanvasGenerationTarget(
+            {
+                ...input,
+                expectedScope: captureUserScope(),
+                isCurrent: () => current,
+                ensureNodeAsset: async () => {
+                    current = false;
+                    return { assetId: "asset-ref", created: false, linkedToProject: false, confirmed: true };
+                },
+            },
+            async () => {
+                persistAttempts += 1;
+                throw new ApiError("画布媒体尚未进入素材库，请等待同步完成后重试", { status: 400 });
+            },
+        ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(persistAttempts).toBe(1);
+    expect(useCanvasStore.getState().projects[0]?.nodes.find((item) => item.id === "ref-image")?.metadata?.assetId).toBeUndefined();
+
+    let hookCurrent = true;
+    let hookPersistAttempts = 0;
+    let hookSubmissions = 0;
+    await expect(
+        runCanvasGenerationTaskToConsumer(
+            {
+                ...input,
+                clientOperationId: "test-image-save-owner-change",
+                expectedScope: captureUserScope(),
+                ensureNodeAsset: async () => {
+                    hookCurrent = false;
+                    return { assetId: "asset-ref", created: false, linkedToProject: false, confirmed: true };
+                },
+            } as Parameters<typeof runCanvasGenerationTaskToConsumer>[0],
+            {
+                isCurrent: () => hookCurrent,
+                prepareTarget: (options) =>
+                    persistCanvasGenerationTarget(options, async () => {
+                        hookPersistAttempts += 1;
+                        throw new ApiError("画布媒体尚未进入素材库，请等待同步完成后重试", { status: 400 });
+                    }),
+                bindTask: () => undefined,
+                consumeTask: async () => undefined,
+                runTask: async () => {
+                    hookSubmissions += 1;
+                    return { images: [] };
+                },
+            },
+        ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(hookPersistAttempts).toBe(1);
+    expect(hookSubmissions).toBe(0);
 });
 
 test("account abandonment or cancellation during result consumption cannot report success", async () => {
@@ -115,7 +191,7 @@ test("main generation and batch generation stop before changing nodes when a pai
             showError: (value: string) => notices.push(value),
         } as unknown as CanvasGenerationExecution);
         expect(mutations).toBe(0);
-        expect(notices).toEqual(["生成结果已保留，请重新加载资源"]);
+        expect(notices).toEqual(["生成结果已保留，请点击「继续取回」"]);
     }
 });
 

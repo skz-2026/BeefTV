@@ -18,14 +18,27 @@ function send(res, model, tool, args = {}) {
 const provider = createServer(async (req, res) => {
   try {
     const request = await readBody(req); modelCalls++;
-    const system = request.messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
-    assert(system.includes(config.instruction), 'selected fixed Skill body absent from real model payload');
-    assert(system.includes(config.pin.versionId), 'version absent from real model payload');
+    const content = m => typeof m.content === 'string' ? m.content : (m.content || []).map(part => part.text || '').join('');
+    const system = request.messages.filter(m => m.role === 'system' || m.role === 'developer').map(content).join('\n');
+    const user = request.messages.filter(m => m.role === 'user').map(content).join('\n');
+    const latest=request.messages.filter(m=>m.role==='user').at(-1);
+    if(content(latest).includes('FRESH_TASK')) {
+      assert(!JSON.stringify(request.messages).includes(config.instruction),'official reset leaked old instructions');
+      return send(res,request.model);
+    }
+    // The transcript records explicit selection; active rules are reconstructed
+    // from the real Go database in the official section on every request.
+    const block = new RegExp(`<skill name="[^"]+" version="[^"]*" skillId="${config.pin.skillId}" versionId="${config.pin.versionId}" contentHash="${config.pin.contentHash}">[\\s\\S]*${config.instruction.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n</skill>`);
+    assert(block.test(user), 'selected fixed Skill block absent from the real user message');
+    assert(system.includes(config.instruction) && system.includes('<beeftv_active_skills>'), 'active rules absent from official section');
+    assert(system.includes('<available_skills>') && system.includes(`<id>${config.pin.skillId}</id>`), 'installed catalog absent from system prompt');
+    assert(!JSON.stringify(request.messages).includes('Removed system prompt section'));
+    if(content(latest).includes('CONTINUE_ACTIVE') || content(latest).includes('RESELECT_SAME')) return send(res,request.model);
     const results = request.messages.filter(m => m.role === 'tool');
     if (!results.length) return send(res, request.model, 'skill_file', { ...config.pin, path: config.path });
     assert(results[0].content.includes(config.reference), 'auxiliary file missing from tool result');
     if (config.script) {
-      assert(system.includes('script_execution'));
+      assert(user.includes('script_execution'));
       return send(res, request.model);
     }
     if (results.length === 1) return send(res, request.model, 'canvas_nodes_create', {
@@ -62,7 +75,6 @@ try {
     BEEFTV_AGENT_PORT: String(port), BEEFTV_AGENT_HOST_TOKEN: config.hostToken, BEEFTV_OPS_URL: config.backend,
     BEEFTV_AGENT_API_KEY: 'fixture-only', BEEFTV_AGENT_API: 'openai-completions', BEEFTV_AGENT_MODEL: 'synthetic',
     BEEFTV_AGENT_BASE_URL: `http://127.0.0.1:${modelPort}/v1`, BEEFTV_AGENT_TOTAL_REQUEST_BUDGET: '0' };
-  delete env.BEEFTV_AGENT_NEW_SESSION_RUNTIME; // Verify the shipped default, not an opt-in test override.
   async function start() {
     child = spawn(process.execPath, [path.join(config.root, 'agent-host/server.mjs')], { cwd: config.root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', (chunk) => { log += chunk; }); child.stderr.on('data', (chunk) => { log += chunk; });
@@ -74,7 +86,22 @@ try {
   await until(async () => { history = await (await api('/history?canvasId=' + config.canvasId)).json(); return history.turns?.length === 1; });
   assert.equal(history.turns[0].error, null, JSON.stringify(history));
   assert.equal((await backend('/assistant/runtime/turns/' + config.turnId)).value.data.open, false);
-  assert.equal(modelCalls, config.script ? 2 : 3);
+  const initialCalls=config.script?2:3;assert.equal(modelCalls,initialCalls);
   if (config.script) assert(JSON.stringify(history).includes('尚未执行'), 'unsupported script must not claim completion');
-  fs.writeFileSync(path.join(config.directory, 'host-result.json'), JSON.stringify({ modelCalls, history, passed: true }));
+  const firstPid=child.pid;await kill('SIGKILL');await start();assert.notEqual(child.pid,firstPid);
+  async function extra(turnId,message,skills=[]) {
+    const response=await api('/chat',{canvasId:config.canvasId,turnId,message,revisionBefore:1,skills});
+    assert.equal(response.status,200,await response.text());
+    await until(async()=>{history=await(await api('/history?canvasId='+config.canvasId)).json();return history.turns?.some(turn=>turn.turnId===turnId);});
+    assert.equal(history.turns.find(turn=>turn.turnId===turnId).error,null,JSON.stringify(history));
+  }
+  await extra(config.continueTurnId,'CONTINUE_ACTIVE');
+  await extra(config.reselectTurnId,'RESELECT_SAME',[config.pin]);
+  const state=await(await api('/skill-context?canvasId='+config.canvasId)).json();
+  assert.equal(state.activePins[0].versionId,config.pin.versionId);
+  const reset=await api('/skill-context',{canvasId:config.canvasId,action:'new_scope',expectedRevision:state.revision,requestId:'independent'});
+  assert.equal(reset.status,200,await reset.text());
+  await extra(config.freshTurnId,'FRESH_TASK');assert.equal(modelCalls,initialCalls+3);
+  assert.equal(history.turns.length,4,'official reset must preserve UI turn history');
+  fs.writeFileSync(path.join(config.directory, 'host-result.json'), JSON.stringify({ modelCalls, history, passed: true,hardkill:{firstPid,resumedPid:child.pid} }));
 } finally { await kill('SIGTERM'); provider.closeAllConnections(); await new Promise((resolve) => provider.close(resolve)); }

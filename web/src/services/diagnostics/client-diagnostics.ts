@@ -2,9 +2,10 @@ import { type AxiosError, type AxiosRequestConfig } from "axios";
 
 import { appPathnameFrom } from "@/lib/app-routing";
 import { apiClient } from "@/services/api/request";
+import { browserCapabilities } from "./browser-environment";
 
 export type ClientDiagnosticLevel = "info" | "warning" | "error";
-export type ClientDiagnosticCategory = "navigation" | "action" | "request" | "runtime" | "task" | "plugin";
+export type ClientDiagnosticCategory = "navigation" | "action" | "request" | "runtime" | "task" | "plugin" | "environment";
 
 export type ClientDiagnosticEvent = {
     id: string;
@@ -12,6 +13,7 @@ export type ClientDiagnosticEvent = {
     level: ClientDiagnosticLevel;
     category: ClientDiagnosticCategory;
     code?: string;
+    reason?: string;
     message: string;
     route?: string;
     durationMs?: number;
@@ -78,6 +80,7 @@ export function initializeClientDiagnostics() {
                 level: status >= 400 || businessCode !== 0 ? "error" : "info",
                 category: "request",
                 code: businessCode !== 0 ? String(businessCode) : undefined,
+                reason: response.data?.reason,
                 message: String(config.method || "GET").toUpperCase() + " " + route,
                 route,
                 durationMs: meta ? Math.max(0, Math.round(performance.now() - meta.startedAt)) : undefined,
@@ -91,12 +94,13 @@ export function initializeClientDiagnostics() {
             const config = error.config;
             const meta = config ? requestMeta.get(config) : undefined;
             const response = error.response;
-            const body = response?.data && typeof response.data === "object" ? (response.data as { code?: number; msg?: string }) : undefined;
+            const body = response?.data && typeof response.data === "object" ? (response.data as { code?: number; msg?: string; reason?: string }) : undefined;
             const route = appPathnameFrom(config?.url);
             recordDiagnosticEvent({
                 level: "error",
                 category: "request",
                 code: body?.code !== undefined ? String(body.code) : response?.status ? "HTTP_" + response.status : "NETWORK_ERROR",
+                reason: body?.reason,
                 message: body?.msg || String(config?.method || "GET").toUpperCase() + " " + route + " 请求失败",
                 route,
                 durationMs: meta ? Math.max(0, Math.round(performance.now() - meta.startedAt)) : undefined,
@@ -124,6 +128,7 @@ export function recordDiagnosticEvent(input: DiagnosticEventInput) {
         level: input.level,
         category: input.category,
         code: redactClientText(input.code),
+        reason: safeDiagnosticId(input.reason),
         message: redactClientText(input.message) || "未命名诊断事件",
         route: appPathnameFrom(input.route),
         durationMs: input.durationMs === undefined ? undefined : clampNumber(input.durationMs, 0, 86_400_000),
@@ -136,7 +141,11 @@ export function recordDiagnosticEvent(input: DiagnosticEventInput) {
         stack: redactClientText(input.stack, 4000),
     };
     events.push(event);
-    if (events.length > maxEvents) events.splice(0, events.length - maxEvents);
+    while (events.length > maxEvents) {
+        const routineRequestIndex = events.findIndex((item) => item.category === "request" && item.level === "info");
+        if (routineRequestIndex >= 0) events.splice(routineRequestIndex, 1);
+        else events.shift();
+    }
 }
 
 export function getClientDiagnosticEvents(range?: { from?: Date; to?: Date }) {
@@ -157,6 +166,7 @@ export function getDiagnosticRuntime() {
         browser: typeof navigator !== "undefined" ? navigator.userAgent : "",
         os: typeof navigator !== "undefined" ? navigator.platform : "",
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+        capabilities: browserCapabilities(),
     };
 }
 

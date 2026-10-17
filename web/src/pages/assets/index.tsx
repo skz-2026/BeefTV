@@ -1,4 +1,4 @@
-import { ArrowDownUp, AudioLines, Box, Check, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FileX2, FolderOpen, FolderPlus, History, Image as ImageIcon, LayoutGrid, List, Maximize2, MoreHorizontal, Pause, PencilLine, Play, Plus, RotateCcw, SlidersHorizontal, Star, Trash2, Upload, Volume2, VolumeX, X, ZoomIn, ZoomOut, type LucideIcon } from "lucide-react";
+import { ArrowDownUp, AudioLines, Box, Check, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FileX2, FolderOpen, FolderPlus, History, Image as ImageIcon, LayoutGrid, List, Maximize2, MoreHorizontal, Pause, PencilLine, Play, Plus, RotateCcw, SlidersHorizontal, Trash2, Upload, Volume2, VolumeX, X, ZoomIn, ZoomOut, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Drawer, Dropdown, Form, Input, Modal, Popover, Progress, Select, Space, Tag, Typography } from "antd";
@@ -42,7 +42,7 @@ import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { assetStorageUsageQueryKey } from "./asset-storage-usage";
 import { loadAssetLibraryPage, localSavedRemotePendingMessage } from "@/services/local-workspace-sync";
 import { isUnsavedWorkspaceAsset, isWorkspaceGeneratedHistoryAsset, usesWorkspaceAssetLibraryApi, WORKSPACE_ASSET_UNLINKED_PROJECT, workspaceAssetAllProjectsCount, workspaceAssetCountSum, workspaceAssetProjectLabel, workspaceAssetProjectOptions, workspaceAssetTraversalTotal } from "@/services/workspace-asset-read";
-import { deleteWorkspaceAsset, persistWorkspaceAssetChanges } from "@/services/workspace-asset-repository";
+import { deleteWorkspaceAsset, persistWorkspaceAssetChanges, persistWorkspaceAssetLink } from "@/services/workspace-asset-repository";
 import {
     assignWorkspaceAssetsFolder,
     createWorkspaceAssetFolder,
@@ -135,10 +135,8 @@ function AssetsPageSession() {
     const folderApi = usesWorkspaceAssetFolderApi();
     const [keyword, setKeyword] = useState("");
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
-    const [categoryFilter, setCategoryFilter] = useState<AssetCategory | "all">("all");
+    const categoryFilter = "all";
     const [folderFilter, setFolderFilter] = useState<AssetFolderFilter>("all");
-    const [favoriteOnly, setFavoriteOnly] = useState(false);
-    const [recentOnly, setRecentOnly] = useState(false);
     const [projectFilter, setProjectFilter] = useState("all");
     const [page, setPage] = useState(1);
     const [pageSize, setPageSize] = useState(40);
@@ -149,8 +147,6 @@ function AssetsPageSession() {
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [sortOrder, setSortOrder] = useState<AssetSortOrder>("updated_desc");
     const [editingAsset, setEditingAsset] = useState<LibraryAsset | null>(null);
-    const [tagEditingAsset, setTagEditingAsset] = useState<LibraryAsset | null>(null);
-    const [tagDraft, setTagDraft] = useState<string[]>([]);
     const [isAssetOpen, setIsAssetOpen] = useState(false);
     const [previewAsset, setPreviewAsset] = useState<LibraryAsset | null>(null);
     const [deletingAsset, setDeletingAsset] = useState<LibraryAsset | null>(null);
@@ -192,7 +188,6 @@ function AssetsPageSession() {
     const [imageUploadProgress, setImageUploadProgress] = useState<{ phase: "uploading" | "confirming"; percent?: number } | null>(null);
     const coverUrl = Form.useWatch("coverUrl", form) || "";
     const title = Form.useWatch("title", form) || "";
-    const tags = Form.useWatch("tags", form) || [];
     const content = Form.useWatch("content", form) || "";
     const debouncedKeyword = useDebouncedValue(keyword.trim(), 250);
 
@@ -220,6 +215,9 @@ function AssetsPageSession() {
     const localGenerationHistoryCount = useMemo(() => activeAssets.filter(isWorkspaceGeneratedHistoryAsset).length, [activeAssets]);
     const validAssets = activeAssets;
     const selectedAssets = useMemo(() => validAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, validAssets]);
+    useEffect(() => {
+        if (batchDeleteOpen && !deletePending && selectedAssets.length === 0) setBatchDeleteOpen(false);
+    }, [batchDeleteOpen, deletePending, selectedAssets.length]);
     const localProjectOptions = useMemo(() => {
         const names = new Set<string>();
         for (const asset of activeAssets) {
@@ -232,31 +230,27 @@ function AssetsPageSession() {
         const query = keyword.trim().toLowerCase();
         const recentCutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
         return validAssets.filter((asset) => {
-            if (favoriteOnly && asset.metadata?.favorite !== true) return false;
-            if (recentOnly && new Date(asset.updatedAt).getTime() < recentCutoff) return false;
             if (projectFilter !== "all" && workspaceAssetProjectLabel(asset) !== projectFilter) return false;
             if (kindFilter !== "all" && asset.kind !== kindFilter) return false;
-            if (categoryFilter !== "all" && (asset.category || "other") !== categoryFilter) return false;
+            if (folderFilter.startsWith("builtin:") && (asset.folderId || asset.category !== folderFilter.slice(8))) return false;
             if (folderFilter === "uncategorized" && asset.folderId) return false;
-            if (folderFilter !== "all" && folderFilter !== "uncategorized" && asset.folderId !== folderFilter) return false;
+            if (folderFilter !== "all" && folderFilter !== "uncategorized" && !folderFilter.startsWith("builtin:") && asset.folderId !== folderFilter) return false;
             if (!query) return true;
             return assetSearchText(asset).includes(query);
         });
-    }, [validAssets, keyword, kindFilter, categoryFilter, folderFilter, favoriteOnly, recentOnly, projectFilter]);
+    }, [validAssets, keyword, kindFilter, categoryFilter, folderFilter, projectFilter]);
 
     const assetPageQuery = useQuery({
-        queryKey: assetLibraryQueryKey(entryScope, page, pageSize, "library", kindFilter, categoryFilter, folderFilter, favoriteOnly, recentOnly, projectFilter, debouncedKeyword),
+        queryKey: assetLibraryQueryKey(entryScope, page, pageSize, "library", kindFilter, categoryFilter, folderFilter, projectFilter, debouncedKeyword),
         queryFn: ({ queryKey, signal }) => loadAssetLibraryPage({
             page,
             pageSize,
             status: "active",
             kind: kindFilter === "all" ? undefined : kindFilter,
-            category: categoryFilter === "all" ? undefined : categoryFilter,
-            folderId: folderFilter !== "all" && folderFilter !== "uncategorized" ? folderFilter : undefined,
-            uncategorized: folderFilter === "uncategorized",
+            category: folderFilter.startsWith("builtin:") ? folderFilter.slice(8) as AssetCategory : undefined,
+            folderId: folderFilter !== "all" && folderFilter !== "uncategorized" && !folderFilter.startsWith("builtin:") ? folderFilter : undefined,
+            uncategorized: folderFilter.startsWith("builtin:"),
             query: debouncedKeyword || undefined,
-            favorite: favoriteOnly || undefined,
-            recent: recentOnly || undefined,
             project: projectFilter === "all" ? undefined : projectFilter,
             signal,
             expectedScope: expectedScopeFromQueryKey(queryKey),
@@ -264,6 +258,24 @@ function AssetsPageSession() {
         enabled: canonicalReads && sessionHydrated,
         placeholderData: (previousData, previousQuery) => keepAssetViewPlaceholder(previousData, previousQuery, entryScope),
     });
+    // Built-in folders contain only assets without a custom folder. Category
+    // facets alone also include custom-folder assets and would overcount them.
+    const builtinCountsQuery = useQuery({
+        queryKey: [...assetFolderQueryKey(entryScope), "builtin-folder-counts"],
+        queryFn: async ({ queryKey, signal }) => {
+            const expectedScope = expectedScopeFromQueryKey(queryKey);
+            const counts = await Promise.all((["character", "environment", "prop"] as const).map(async category => {
+                const result = await loadAssetLibraryPage({ page: 1, pageSize: 1, status: "active", category, uncategorized: true, signal, expectedScope });
+                return [category, result.total] as const;
+            }));
+            return Object.fromEntries(counts);
+        },
+        enabled: canonicalReads && sessionHydrated,
+    });
+    const builtinFolderCounts = canonicalReads
+        ? builtinCountsQuery.data || {}
+        : Object.fromEntries((["character", "environment", "prop"] as const).map(category => [category, activeAssets.filter(asset => !asset.folderId && asset.category === category).length]));
+
     const historyQuery = useQuery({
         queryKey: assetLibraryQueryKey(entryScope, "history", historyPage, historyKind),
         queryFn: ({ queryKey, signal }) => loadAssetLibraryPage({
@@ -312,7 +324,7 @@ function AssetsPageSession() {
     const visibleAssetIds = useMemo(() => visibleAssets.map((asset) => asset.id), [visibleAssets]);
     const allFilteredSelected = visibleAssetIds.length > 0 && visibleAssetIds.every((id) => selectedIds.includes(id));
     const totalAssets = canonicalReads && assetPageQuery.isError ? 0 : remoteReady ? remoteTotal : filteredAssets.length;
-    const hasNarrowingFilters = kindFilter !== "all" || categoryFilter !== "all" || folderFilter !== "all" || Boolean(debouncedKeyword) || favoriteOnly || recentOnly || projectFilter !== "all";
+    const hasNarrowingFilters = kindFilter !== "all" || folderFilter !== "all" || Boolean(debouncedKeyword) || projectFilter !== "all";
     const libraryEmpty = remoteReady
         ? totalAssets === 0 && visibleAssets.length === 0 && !hasNarrowingFilters
         : validAssets.length === 0 && totalAssets === 0;
@@ -323,7 +335,6 @@ function AssetsPageSession() {
         ? assetPageQuery.data?.folderCounts || {}
         : Object.fromEntries([...new Set(activeAssets.map((asset) => asset.folderId).filter((id): id is string => Boolean(id)))].map((folderId) => [folderId, activeAssets.filter((asset) => asset.folderId === folderId).length]));
     const allFoldersCount = remoteReady ? workspaceAssetCountSum(folderCounts) : activeAssets.length;
-    const favoriteCount = remoteReady ? assetPageQuery.data?.favoriteTotal ?? 0 : activeAssets.filter((asset) => asset.metadata?.favorite === true).length;
     const recentCount = remoteReady ? assetPageQuery.data?.recentTotal ?? 0 : activeAssets.filter((asset) => Number.isFinite(new Date(asset.updatedAt).getTime()) && Date.now() - new Date(asset.updatedAt).getTime() <= 30 * 24 * 60 * 60 * 1000).length;
     const generationHistoryCount = remoteReady ? assetPageQuery.data?.generatedTotal ?? 0 : localGenerationHistoryCount;
     const remoteProjectCounts = remoteReady ? assetPageQuery.data?.projectCounts : undefined;
@@ -353,7 +364,8 @@ function AssetsPageSession() {
     }, [assets, canonicalReads, validAssets, visibleAssetIds]);
 
     const folderSelectOptions = useMemo(() => [
-        { label: "未分类", value: "" },
+        { label: "不指定分类", value: "" },
+        ...ASSET_CATEGORY_OPTIONS.filter(item => ["character", "environment", "prop"].includes(item.value)).map(item => ({ label: item.label, value: `builtin:${item.value}` })),
         ...folders.map((folder) => ({ label: folder.name, value: folder.id })),
     ], [folders]);
 
@@ -371,7 +383,7 @@ function AssetsPageSession() {
         queryClient.setQueriesData<Awaited<ReturnType<typeof loadAssetLibraryPage>>>(
             { queryKey: assetLibraryQueryKey(expected) },
             (current) => {
-                if (!current) return current;
+                if (!current || !Array.isArray(current.assets)) return current;
                 const assets = current.assets.filter((asset) => !deletedIds.has(asset.id));
                 const removed = current.assets.length - assets.length;
                 if (!removed) return current;
@@ -470,9 +482,24 @@ function AssetsPageSession() {
         if (!assetIds.length) return;
         try {
             const moved = await runAssetViewAction(entryScope, async (scope) => {
-                await assignWorkspaceAssetsFolder(assetIds, folderId, scope);
+                if (folderId.startsWith("builtin:")) {
+                    for (const id of assetIds) {
+                        const asset = validAssets.find(item => item.id === id);
+                        if (!asset) throw new Error("素材信息已变化，请刷新后重试");
+                        updateAsset(id, { category: folderId.slice(8) as AssetCategory, folderId: undefined });
+                        await persistWorkspaceAssetLink({ asset: { ...asset, folderId: undefined, category: folderId.slice(8) as AssetCategory } as Asset, category: folderId.slice(8) as AssetCategory, folderId: "", expectedScope: scope });
+                    }
+                } else { await assignWorkspaceAssetsFolder(assetIds, folderId, scope); }
                 if (!folderApi) await persistWorkspaceAssetChanges(scope);
                 await flushAssetStorePersistence(scope);
+                const movedIds = new Set(assetIds);
+                const builtin = folderId.startsWith("builtin:");
+                const remainsVisible = folderFilter === "all" || folderFilter === folderId || (folderFilter === "uncategorized" && !folderId);
+                queryClient.setQueryData<Awaited<ReturnType<typeof loadAssetLibraryPage>>>(assetLibraryQueryKey(scope, page, pageSize, "library", kindFilter, categoryFilter, folderFilter, projectFilter, debouncedKeyword), current => {
+                    if (!current) return current;
+                    const assets = current.assets.flatMap(item => !movedIds.has(item.id) ? [item] : remainsVisible ? [{ ...item, folderId: builtin ? undefined : folderId || undefined, category: builtin ? folderId.slice(8) as AssetCategory : item.category }] : []);
+                    return { ...current, assets, total: Math.max(0, current.total - (current.assets.length - assets.length)) };
+                });
                 await invalidateAssetLibrary(scope);
                 return true;
             });
@@ -496,51 +523,19 @@ function AssetsPageSession() {
         setIsAssetOpen(true);
     };
 
-    const openEdit = (asset: LibraryAsset) => {
-        setEditingAsset(asset);
-        setImageFile(null);
-        setImageUploading(false);
-        setImageUploadProgress(null);
-        setFormKind(asset.kind);
-        setImageDraft(asset.kind === "image" ? asset.data : null);
-        form.setFieldsValue({
-            kind: asset.kind,
-            category: asset.category || "other",
-            folderId: asset.folderId || "",
-            title: asset.title,
-            coverUrl: asset.coverUrl,
-            tags: asset.tags || [],
-            source: asset.source,
-            note: asset.note,
-            content: asset.kind === "text" ? asset.data.content : "",
-            arkAssetId: asset.arkAssetId || "",
-            portraitCertified: asset.portraitCertified === true,
-        });
-        setIsAssetOpen(true);
-    };
-
-    const openTagEditor = (asset: LibraryAsset) => {
-        setTagEditingAsset(asset);
-        setTagDraft(asset.tags || []);
-    };
-
-    const saveTags = async () => {
-        if (!tagEditingAsset) return;
-        const assetId = tagEditingAsset.id;
-        const tags = tagDraft.filter(Boolean);
+    const renameAsset = async (asset: LibraryAsset, title: string) => {
+        title = title.trim();
+        if (!title || title === asset.title) return;
         try {
-            const saved = await runAssetViewAction(entryScope, async (scope) => {
-                updateAsset(assetId, { tags });
-                await persistWorkspaceAssetChanges(scope);
-                return true;
+            await runAssetViewAction(entryScope, async scope => {
+                updateAsset(asset.id, { title });
+                await persistWorkspaceAssetLink({ asset: { ...asset, title } as Asset, expectedScope: scope });
+                queryClient.setQueriesData<Awaited<ReturnType<typeof loadAssetLibraryPage>>>({ queryKey: assetLibraryQueryKey(scope) }, current => current && Array.isArray(current.assets) ? { ...current, assets: current.assets.map(item => item.id === asset.id ? { ...item, title } : item) } : current);
+                await invalidateAssetLibrary(scope);
             });
-            if (!saved) return;
-            message.success("标签已更新");
-            setTagEditingAsset(null);
         } catch (error) {
-            if (shouldSuppressAssetViewError(error, entryScope)) return;
-            message.warning(localSavedRemotePendingMessage("标签已在本地更新", error));
-            setTagEditingAsset(null);
+            if (!shouldSuppressAssetViewError(error, entryScope)) message.error(error instanceof Error ? error.message : "重命名失败");
+            throw error;
         }
     };
 
@@ -574,8 +569,8 @@ function AssetsPageSession() {
 
         const base = {
             title: values.title.trim(),
-            category: values.category,
-            folderId: values.folderId || undefined,
+            category: values.folderId?.startsWith("builtin:") ? values.folderId.slice(8) as AssetCategory : "other" as AssetCategory,
+            folderId: values.folderId?.startsWith("builtin:") ? undefined : values.folderId || undefined,
             status: editingAsset?.status || ("confirmed" as const),
             primaryVersionId: editingAsset?.primaryVersionId,
             coverUrl: values.coverUrl?.trim() || (values.kind === "image" && imageData ? imageData.dataUrl : ""),
@@ -615,19 +610,6 @@ function AssetsPageSession() {
         }
     };
 
-    const toggleFavorite = async (asset: LibraryAsset) => {
-        try {
-            const saved = await runAssetViewAction(entryScope, async (scope) => {
-                updateAsset(asset.id, { metadata: { ...(asset.metadata || {}), favorite: asset.metadata?.favorite !== true } });
-                await persistWorkspaceAssetChanges(scope);
-                return true;
-            });
-            if (!saved) return;
-        } catch (error) {
-            if (shouldSuppressAssetViewError(error, entryScope)) return;
-            message.warning(localSavedRemotePendingMessage("收藏状态已在本地更新", error));
-        }
-    };
 
     const readCoverFile = async (file?: File) => {
         if (!file) return;
@@ -797,25 +779,38 @@ function AssetsPageSession() {
         setDeletePending(true);
         const deleting = [...selectedAssets];
         const deletedIds: string[] = [];
+        const failures: string[] = [];
         try {
-            const deleted = await runAssetViewAction(entryScope, async (scope) => {
+            const completed = await runAssetViewAction(entryScope, async (scope) => {
                 for (const asset of deleting) {
-                    await deleteWorkspaceAsset(asset.id, scope);
-                    deletedIds.push(asset.id);
-                    reflectDeletedAssets([asset.id], scope);
+                    assertUserScope(scope);
+                    try {
+                        await deleteWorkspaceAsset(asset.id, scope);
+                        deletedIds.push(asset.id);
+                    } catch (error) {
+                        if (shouldSuppressAssetViewError(error, scope)) throw error;
+                        failures.push(`${asset.title || "未命名素材"}：${error instanceof Error ? error.message : "删除失败"}`);
+                    }
                 }
-                await refreshDeletedAssets(scope);
-                return deleting.length;
+                if (deletedIds.length) reflectDeletedAssets(deletedIds, scope);
+                return true;
             });
-            if (!deleted) return;
-            message.success(`已彻底删除 ${deleted} 个素材`);
-            setSelectedIds([]);
+            if (!completed) return;
             setBatchDeleteOpen(false);
+            if (failures.length) {
+                message.error(`已删除 ${deletedIds.length} 个，${failures.length} 个未删除。${failures.join("；")}`);
+            } else {
+                message.success(`已彻底删除 ${deletedIds.length} 个素材`);
+            }
+            // Refresh failure must not turn completed deletions into failed commands.
+            try { await refreshDeletedAssets(entryScope); }
+            catch (error) {
+                if (!shouldSuppressAssetViewError(error, entryScope)) message.warning("删除结果已保存，列表刷新失败，请重新打开素材库");
+            }
         } catch (error) {
             if (shouldSuppressAssetViewError(error, entryScope)) return;
-            if (deletedIds.length) await refreshDeletedAssets(entryScope);
-            const reason = error instanceof Error ? error.message : "批量删除失败";
-            message.error(deletedIds.length ? `已删除 ${deletedIds.length} 个素材，剩余素材删除失败：${reason}` : reason);
+            message.error(error instanceof Error ? error.message : "批量删除失败");
+
         } finally {
             deleteInFlight.current = false;
             setDeletePending(false);
@@ -953,31 +948,22 @@ function AssetsPageSession() {
 
                 <div className="collection-content assets-collection-content">
                     <div className={cn("assets-collection-layout", filtersOpen && "is-filters-open")}>
-                        <aside className="assets-collection-filters" aria-label="素材分类">
+                        <aside className="assets-collection-filters" aria-label="素材分类" aria-hidden={!filtersOpen} inert={!filtersOpen}>
                             <div className="assets-collection-filter-scroll">
-                            <AssetFilterGroup
-                                title="默认标签"
-                                className="assets-default-tags"
-                                options={categoryOptions}
-                                value={categoryFilter}
-                                counts={categoryCounts}
-                                onChange={(value) => {
-                                    setCategoryFilter(value as AssetCategory | "all");
-                                    setPage(1);
-                                }}
-                            />
                             <section className="collection-filter-group assets-folder-filter">
                                 <div className="collection-folder-heading">
-                                    <span className="collection-filter-label">我的分类</span>
+                                    <span className="collection-filter-label">分类</span>
                                     <button type="button" className="assets-folder-add" title="新建分类" aria-label="新建分类" onClick={() => { setFolderName(""); setFolderEditor("new"); }}><FolderPlus className="size-3.5" /></button>
                                 </div>
                                 <div className="collection-folder-list">
                                     <button type="button" aria-pressed={folderFilter === "all"} className={`assets-filter-item ${folderFilter === "all" ? "is-active" : ""}`} onClick={() => { setFolderFilter("all"); setPage(1); }}>
                                         <span className="assets-filter-item-label">全部</span><span className="assets-filter-count">{allFoldersCount}</span>
                                     </button>
-                                    <button type="button" aria-pressed={folderFilter === "uncategorized"} className={`assets-filter-item ${folderFilter === "uncategorized" ? "is-active" : ""}`} onClick={() => { setFolderFilter("uncategorized"); setPage(1); }}>
-                                        <span className="assets-filter-item-label">未分类</span><span className="assets-filter-count">{remoteReady ? folderCounts[""] ?? 0 : activeAssets.filter((asset) => !asset.folderId).length}</span>
-                                    </button>
+                                    {ASSET_CATEGORY_OPTIONS.filter(item => ["character", "environment", "prop"].includes(item.value)).map(item => (
+                                        <button key={item.value} type="button" aria-pressed={folderFilter === `builtin:${item.value}`} className={`assets-filter-item ${folderFilter === `builtin:${item.value}` ? "is-active" : ""}`} onClick={() => { setFolderFilter(`builtin:${item.value}`); setPage(1); }}>
+                                            <span className="assets-filter-item-label">{item.label}</span><span className="assets-filter-count">{builtinFolderCounts[item.value] ?? 0}</span>
+                                        </button>
+                                    ))}
                                     {folders.map((folder) => (
                                         <Dropdown
                                             key={folder.id}
@@ -1064,22 +1050,12 @@ function AssetsPageSession() {
                                         </button>
                                         {projectOptions.map((project) => {
                                             const count = remoteProjectCounts ? remoteProjectCounts[project] ?? 0 : activeAssets.filter((asset) => workspaceAssetProjectLabel(asset) === project).length;
-                                            return <button key={project} type="button" aria-pressed={projectFilter === project} className={`assets-filter-item ${projectFilter === project ? "is-active" : ""}`} onClick={() => { setProjectFilter(project); setRecentOnly(false); setPage(1); }}><span className="assets-filter-item-label truncate">{project}</span><span className="assets-filter-count">{count}</span></button>;
+                                            return <button key={project} type="button" aria-pressed={projectFilter === project} className={`assets-filter-item ${projectFilter === project ? "is-active" : ""}`} onClick={() => { setProjectFilter(project); setPage(1); }}><span className="assets-filter-item-label truncate">{project}</span><span className="assets-filter-count">{count}</span></button>;
                                         })}
                                     </div>
                                 </section>
                             ) : null}
-                            <section className="collection-filter-group assets-quick-filter" aria-label="快捷筛选">
-                                <span className="collection-filter-label">快捷筛选</span>
-                                <button type="button" aria-pressed={recentOnly} className={`assets-filter-item ${recentOnly ? "is-active" : ""}`} onClick={() => { setRecentOnly((value) => !value); setFavoriteOnly(false); setPage(1); }}>
-                                    <span className="assets-filter-item-label flex items-center gap-1.5"><RotateCcw className="size-3.5" />最近使用</span>
-                                    <span className="assets-filter-count">{recentCount}</span>
-                                </button>
-                                <button type="button" aria-pressed={favoriteOnly} className={`assets-filter-item ${favoriteOnly ? "is-active" : ""}`} onClick={() => { setFavoriteOnly((value) => !value); setRecentOnly(false); setPage(1); }}>
-                                    <span className="assets-filter-item-label flex items-center gap-1.5"><Star className="size-3.5" />我的收藏</span>
-                                    <span className="assets-filter-count">{favoriteCount}</span>
-                                </button>
-                            </section>
+
                             </div>
                         </aside>
                         <section className="min-w-0">
@@ -1116,9 +1092,7 @@ function AssetsPageSession() {
                                                     deletePending={deletePending}
                                                     onSelect={(selected) => setSelectedIds((current) => (selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id)))}
                                                     onOpen={() => setPreviewAsset(asset)}
-                                                    onToggleFavorite={() => void toggleFavorite(asset)}
-                                                    onEdit={() => openEdit(asset)}
-                                                    onEditTags={() => openTagEditor(asset)}
+                                                    onRename={(title) => renameAsset(asset, title)}
                                                     onCopy={copyAssetText}
                                                     onDownload={downloadImage}
                                                     onDelete={() => setDeletingAsset(asset)}
@@ -1187,8 +1161,8 @@ function AssetsPageSession() {
                                 onChange={(value) => setFormKind(value)}
                             />
                         </Form.Item>
-                        <Form.Item name="category" label="业务分类">
-                            <Select options={categoryOptions.slice(1)} />
+                        <Form.Item name="folderId" label="分类">
+                            <Select options={folderSelectOptions} />
                         </Form.Item>
                         <Form.Item name="title" label="标题" rules={[{ required: true, message: "请输入标题" }]}>
                             <Input placeholder="给素材起一个容易检索的名字" />
@@ -1201,9 +1175,7 @@ function AssetsPageSession() {
                                 </Button>
                             </Space.Compact>
                         </Form.Item>
-                        <Form.Item name="tags" label="标签">
-                            <Select mode="tags" tokenSeparators={[",", "，"]} placeholder="输入标签后回车" />
-                        </Form.Item>
+
                         <div className="grid gap-4 sm:grid-cols-2">
                             <Form.Item name="arkAssetId" label="方舟素材 ID" rules={[{ pattern: /^asset-[A-Za-z0-9-]+$/, message: "请输入 asset- 开头的方舟素材 ID" }]}>
                                 <Input autoComplete="off" allowClear placeholder="asset-…，需为本人或被授权可用的方舟素材" />
@@ -1273,17 +1245,7 @@ function AssetsPageSession() {
                                 <Typography.Text strong ellipsis className="block">
                                     {title || "未命名素材"}
                                 </Typography.Text>
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {tags.length ? (
-                                        tags.map((tag) => (
-                                            <Tag key={tag} className="m-0">
-                                                {tag}
-                                            </Tag>
-                                        ))
-                                    ) : (
-                                        <Tag className="m-0">未打标签</Tag>
-                                    )}
-                                </div>
+
                             </div>
                         </div>
                     </div>
@@ -1310,9 +1272,7 @@ function AssetsPageSession() {
                 />
             </Modal>
 
-            <Modal className="workspace-modal library-modal" title={`编辑标签${tagEditingAsset ? ` · ${tagEditingAsset.title}` : ""}`} open={Boolean(tagEditingAsset)} onCancel={() => setTagEditingAsset(null)} onOk={() => void saveTags()} okText="保存" cancelText="取消">
-                <Select mode="tags" className="w-full" value={tagDraft} tokenSeparators={[",", "，"]} placeholder="输入标签后回车" onChange={setTagDraft} autoFocus />
-            </Modal>
+
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadImage} />
 
@@ -1350,7 +1310,7 @@ function AssetsPageSession() {
                 onOk={() => void confirmBatchDelete()}
                 confirmLoading={deletePending}
                 okText="永久删除"
-                okButtonProps={{ danger: true }}
+                okButtonProps={{ danger: true, disabled: !selectedAssets.length }}
                 cancelButtonProps={{ disabled: deletePending }}
                 cancelText="取消"
             >
@@ -1367,9 +1327,7 @@ function AssetCard({
     deletePending,
     onSelect,
     onOpen,
-    onToggleFavorite,
-    onEdit,
-    onEditTags,
+    onRename,
     onCopy,
     onDownload,
     onDelete,
@@ -1384,9 +1342,7 @@ function AssetCard({
     deletePending: boolean;
     onSelect: (selected: boolean) => void;
     onOpen: () => void;
-    onToggleFavorite: () => void;
-    onEdit: () => void;
-    onEditTags: () => void;
+    onRename: (title: string) => Promise<void>;
     onCopy: (asset: LibraryAsset) => void;
     onDownload: (asset: LibraryAsset) => void;
     onDelete: () => void;
@@ -1396,6 +1352,17 @@ function AssetCard({
     onMoveToFolder: (folderId: string) => void;
 }) {
     const [menuOpen, setMenuOpen] = useState(false);
+    const [renaming, setRenaming] = useState(false);
+    const [renameDraft, setRenameDraft] = useState(asset.title);
+    const renameInFlight = useRef(false);
+    const finishRename = async () => {
+        if (renameInFlight.current) return;
+        if (!renameDraft.trim()) { setRenameDraft(asset.title); setRenaming(false); return; }
+        renameInFlight.current = true;
+        try { await onRename(renameDraft); setRenaming(false); }
+        catch { setRenameDraft(asset.title); }
+        finally { renameInFlight.current = false; }
+    };
     const deleteConfirmRequested = useRef(false);
     const openDeleteConfirm = () => {
         deleteConfirmRequested.current = true;
@@ -1408,11 +1375,9 @@ function AssetCard({
         onCancelDelete();
     };
     const menuItems: MenuProps["items"] = [
-        ...(asset.kind === "text" || asset.kind === "image" ? [{ key: "edit", icon: <PencilLine className="size-3.5" />, label: "编辑", onClick: onEdit }] : []),
-        { key: "tags", icon: <PencilLine className="size-3.5" />, label: "编辑标签", onClick: onEditTags },
+        { key: "rename", icon: <PencilLine className="size-3.5" />, label: "重命名", onClick: () => { setRenameDraft(asset.title); setRenaming(true); } },
         ...(asset.kind === "text" ? [{ key: "copy", icon: <Copy className="size-3.5" />, label: "复制文本", onClick: () => void onCopy(asset) }] : []),
         ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "model" ? [{ key: "download", icon: <Download className="size-3.5" />, label: "下载", onClick: () => onDownload(asset) }] : []),
-        { key: "favorite", icon: <Star className="size-3.5" />, label: asset.metadata?.favorite === true ? "取消收藏" : "收藏", onClick: onToggleFavorite },
         { key: "move", icon: <FolderOpen className="size-3.5" />, label: "移动到分类", children: folderOptions.map((folder) => ({ key: folder.value || "uncategorized", label: folder.label, onClick: () => onMoveToFolder(folder.value) })) },
         { type: "divider" as const },
         { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: (
@@ -1440,7 +1405,7 @@ function AssetCard({
     ];
     return (
         <AssetLibraryCard selected={selected}>
-            <AssetCover asset={asset} selected={selected} onSelect={onSelect} onOpen={onOpen} onToggleFavorite={onToggleFavorite} menuItems={menuItems} menuOpen={menuOpen} onMenuOpenChange={(open) => {
+            <AssetCover asset={asset} selected={selected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} menuOpen={menuOpen} onMenuOpenChange={(open) => {
                 if (!open && deleteConfirmRequested.current) return;
                 setMenuOpen(open);
             }} onMenuAction={(key) => {
@@ -1449,12 +1414,12 @@ function AssetCard({
                 setMenuOpen(false);
                 onCancelDelete();
             }} />
-            <button type="button" className="asset-collection-body is-compact block w-full px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--workspace-accent)]" onClick={onOpen}>
+            <div role="button" tabIndex={0} onKeyDown={event => { if (!renaming && (event.key === "Enter" || event.key === " ")) onOpen(); }} className="asset-collection-body is-compact block w-full px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--workspace-accent)]" onClick={() => { if (!renaming) onOpen(); }}>
                 <div className="asset-card-meta">
-                    <h2 className="truncate text-[var(--fs-body)] font-semibold text-foreground" title={asset.title}>{asset.title}</h2>
+                    {renaming ? <input autoFocus aria-label="素材名称" className="asset-inline-title" value={renameDraft} onFocus={event => event.target.select()} onClick={event => event.stopPropagation()} onChange={event => setRenameDraft(event.target.value)} onBlur={() => void finishRename()} onKeyDown={event => { event.stopPropagation(); if (event.key === "Enter") { event.preventDefault(); void finishRename(); } if (event.key === "Escape") { event.preventDefault(); setRenameDraft(asset.title); setRenaming(false); } }} /> : <h2 className="truncate text-[var(--fs-body)] font-semibold text-foreground" title={asset.title}>{asset.title}</h2>}
                     <span className="asset-collection-date tabular-nums">{formatAssetTime(asset.updatedAt)}</span>
                 </div>
-            </button>
+            </div>
         </AssetLibraryCard>
     );
 }
@@ -1463,7 +1428,7 @@ function isKnownAssetKind(kind: unknown): kind is AssetKind {
     return kind === "image" || kind === "video" || kind === "audio" || kind === "model" || kind === "text";
 }
 
-function AssetCover({ asset, selected, onSelect, onOpen, onToggleFavorite, menuItems, menuOpen, onMenuOpenChange, onMenuAction }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; onToggleFavorite: () => void; menuItems: MenuProps["items"]; menuOpen: boolean; onMenuOpenChange: (open: boolean) => void; onMenuAction: (key: string) => void }) {
+function AssetCover({ asset, selected, onSelect, onOpen, menuItems, menuOpen, onMenuOpenChange, onMenuAction }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"]; menuOpen: boolean; onMenuOpenChange: (open: boolean) => void; onMenuAction: (key: string) => void }) {
     const kind = isKnownAssetKind(asset.kind) ? asset.kind : undefined;
     const KindIcon = kind ? assetKindIcons[kind] : FileText;
     const clock = asset.kind === "video" || asset.kind === "audio" ? formatAssetClock(asset.data.durationMs) : null;
@@ -1471,7 +1436,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, onToggleFavorite, menuI
     const isLight = asset.kind === "audio" || asset.kind === "text" || asset.kind === "model";
     return (
         <AssetLibraryCardMedia className={isLight ? "assets-cover is-light" : "assets-cover"}>
-            <button type="button" className="assets-cover-link" onClick={onOpen} aria-label={`查看素材：${asset.title}`}>
+            <button type="button" data-onboarding-asset={asset.id} className="assets-cover-link" onClick={onOpen} aria-label={`查看素材：${asset.title}`}>
                 {asset.kind === "audio" ? (
                     <AudioWaveCover asset={asset} />
                 ) : asset.kind === "text" ? (
@@ -1499,8 +1464,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, onToggleFavorite, menuI
             </button>
             {clock ? <span className="assets-cover-clock">{clock}</span> : null}
             <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
-            <button type="button" className={`assets-cover-favorite ${asset.metadata?.favorite === true ? "is-active" : ""}`} aria-pressed={asset.metadata?.favorite === true} aria-label={asset.metadata?.favorite === true ? `取消收藏 ${asset.title}` : `收藏 ${asset.title}`} title={asset.metadata?.favorite === true ? "取消收藏" : "收藏"} onClick={(event) => { event.stopPropagation(); onToggleFavorite(); }}><Star className="size-3.5" /></button>
-            <Dropdown trigger={["click"]} open={menuOpen} onOpenChange={onMenuOpenChange} menu={{ items: menuItems, onClick: ({ key }) => onMenuAction(key) }}>
+            <Dropdown overlayClassName="asset-actions-menu" trigger={["click"]} open={menuOpen} onOpenChange={onMenuOpenChange} menu={{ items: menuItems, onClick: ({ key }) => onMenuAction(key) }}>
                 <button
                     type="button"
                     className="assets-cover-more"
@@ -1706,7 +1670,7 @@ function GenerationHistorySurface({
                         <h2>{date}</h2>
                         <div className="generation-history-grid">
                             {visibleHistoryAssets.filter((asset) => historyDay(asset.updatedAt) === date).map((asset) => (
-                                <article key={asset.id} className="generation-history-card" title={asset.title} aria-label={`查看生成结果：${asset.title}`} role="button" tabIndex={0} onClick={() => setPreviewAsset(asset)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPreviewAsset(asset); } }}>
+                                <article key={asset.id} data-onboarding-task-id={asset.metadata?.taskId} className="generation-history-card" title={asset.title} aria-label={`查看生成结果：${asset.title}`} role="button" tabIndex={0} onClick={() => setPreviewAsset(asset)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setPreviewAsset(asset); } }}>
                                     <div className="generation-history-thumb">
                                         <AssetMediaPreview asset={asset} alt={asset.title} className="size-full object-cover" hoverPlayDelayMs={100} fallback={<GenerationHistoryMissingPreview asset={asset} />} />
                                         <span className="generation-history-badge">AI生成</span>
@@ -1972,11 +1936,7 @@ function AssetDrawer({ asset, onClose, onCopy, onDownload }: { asset: LibraryAss
                         )}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
-                        {(asset.tags || []).map((tag) => (
-                            <Tag key={tag} className="m-0">
-                                {tag}
-                            </Tag>
-                        ))}
+
                         {asset.arkAssetId ? (
                             <Tag className="m-0" color="geekblue" title="火山方舟素材 ID，生成视频时可直接 asset:// 引用">
                                 方舟 {asset.arkAssetId}
@@ -2073,7 +2033,7 @@ function assetSizeLabel(width: number, height: number) {
 }
 
 function assetSearchText(asset: LibraryAsset) {
-    return [asset.title, asset.source || "", asset.note || "", assetCategoryLabel(asset.category), (asset.tags || []).join(" "), asset.kind === "text" ? asset.data.content : asset.data.mimeType].join(" ").toLowerCase();
+    return [asset.title, asset.source || "", asset.note || "", assetCategoryLabel(asset.category), asset.kind === "text" ? asset.data.content : asset.data.mimeType].join(" ").toLowerCase();
 }
 
 function assetKindLabel(kind: AssetKind) {

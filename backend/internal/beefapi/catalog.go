@@ -69,11 +69,23 @@ func applyCatalog(store *workspace.ProviderConfig, models []CatalogModel, previo
 			channel["models"] = nextModels
 			channel["modelProfiles"] = nextProfiles
 		} else {
-			// Paid portrait availability and prices belong to the current catalog.
-			// Retain other legacy/custom entries under the existing merge contract.
+			// Availability belongs to the current account's catalog. Preserve
+			// overrides only for models that are still present in that catalog.
 			channel["models"], channel["modelProfiles"] = withoutPortraitCatalogEntries(channel["models"], channel["modelProfiles"])
-			channel["models"] = mergeModelIDs(channel["models"], nextModels)
-			channel["modelProfiles"] = mergeProfiles(channel["modelProfiles"], nextProfiles)
+			channel["models"] = nextModels
+			available := make(map[string]bool, len(models))
+			for _, model := range models {
+				available[model.ID] = true
+			}
+			profiles := make([]any, 0, len(models))
+			for _, raw := range mergeProfiles(channel["modelProfiles"], nextProfiles) {
+				profile, _ := raw.(map[string]any)
+				id, _ := profile["model"].(string)
+				if available[id] {
+					profiles = append(profiles, raw)
+				}
+			}
+			channel["modelProfiles"] = profiles
 		}
 		channel["apiKey"] = ""
 		channel["credentialRef"] = CredentialRef
@@ -161,6 +173,9 @@ func catalogProtocol(model CatalogModel) string {
 }
 
 func catalogCapabilityAndProtocol(model CatalogModel) (capability, protocol string) {
+	if contract, ok := providerpreset.BeefAPIImageContract(model.ID); ok {
+		return "image", contract.Protocol
+	}
 	if contract, ok := providerpreset.BeefAPIVideoContract(model.ID); ok {
 		return "video", contract.Protocol
 	}

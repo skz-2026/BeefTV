@@ -35,7 +35,7 @@ test('official Durable provider receives complete parseable 23-node view and ori
   const server = createServer(async (req, res) => {
     try {
     let raw = ''; for await (const chunk of req) raw += chunk;
-    if (req.url === '/ops') { res.end(JSON.stringify({ code: 0, data: { ops: [{ id: 'canvas.get', readOnly: true,
+    if (req.url === '/ops') { res.end(JSON.stringify({ code: 0, data: { ops: [{ id: 'canvas.get', assistantModes: ['canvas', 'full-access', 'read-only'], readOnly: true,
       summary: 'Read canvas', params: { type: 'object', properties: { canvasId: { type: 'string' } } } }] } })); return; }
     if (req.url === '/ops/canvas.get') {
       const body = JSON.parse(raw); assert.deepEqual(body.params, { canvasId: 'canvas' });

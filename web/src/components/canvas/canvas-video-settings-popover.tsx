@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
@@ -8,10 +8,11 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue } from "@/lib/model-capabilities";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
-import type { SeedanceSettingsConstraints } from "@/lib/seedance-task-constraints";
+import type { VideoSettingsConstraints } from "@/lib/video-settings-constraints";
 
 type CanvasVideoSettingsPopoverProps = {
-    taskConstraints?: SeedanceSettingsConstraints;
+    children?: ReactNode;
+    taskConstraints?: VideoSettingsConstraints;
     config: AiConfig;
     onConfigChange: (key: keyof AiConfig, value: string) => void;
     buttonClassName?: string;
@@ -19,7 +20,7 @@ type CanvasVideoSettingsPopoverProps = {
     summaryOverride?: string;
 };
 
-export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft", summaryOverride, taskConstraints }: CanvasVideoSettingsPopoverProps) {
+export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft", summaryOverride, taskConstraints, children }: CanvasVideoSettingsPopoverProps) {
     const theme = canvasThemes[useActiveTheme()];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -33,7 +34,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
     const summary = [
         ...(resolutionSupported ? [videoResolutionLabel(resolution)] : []),
         ...(sizeSupported ? [taskConstraints?.ratioLabel || videoSizeLabel(size)] : []),
-        taskConstraints?.durationLocked ? "随原视频时长" : videoSecondsLabel(config.videoSeconds),
+        taskConstraints?.durationLocked ? "随原视频时长" : videoSecondsLabel(config.videoSeconds, videoProfile),
     ].join(" · ");
     const displaySummary = summaryOverride || summary;
 
@@ -44,6 +45,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
             const target = event.target;
             if (!(target instanceof Node)) return;
             if (buttonRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+            if (target instanceof Element && target.closest(".canvas-h3-option-popup")) return;
             setOpen(false);
         };
 
@@ -58,7 +60,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} taskConstraints={taskConstraints} /> : null;
+    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} taskConstraints={taskConstraints}>{children}</VideoSettingsPortal> : null;
 
     return (
         <>
@@ -80,8 +82,10 @@ function VideoSettingsPortal({
     config,
     onConfigChange,
     taskConstraints,
+    children,
 }: {
-    taskConstraints?: SeedanceSettingsConstraints;
+    children?: ReactNode;
+    taskConstraints?: VideoSettingsConstraints;
     buttonRect: DOMRect;
     panelRef: RefObject<HTMLDivElement | null>;
     placement: CanvasVideoSettingsPopoverProps["placement"];
@@ -125,6 +129,7 @@ function VideoSettingsPortal({
             onClick={(event) => event.stopPropagation()}
         >
             <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-3" taskConstraints={taskConstraints} />
+            {children ? <div className="mt-3">{children}</div> : null}
         </div>,
         document.body,
     );

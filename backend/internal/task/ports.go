@@ -168,22 +168,23 @@ type Activity interface {
 // local cancel has already been committed. Specialized local executors never
 // require Catalog, Secrets, Media, or TextReplay.
 type Dependencies struct {
-	Catalog    Catalog
-	Secrets    Secrets
-	Media      Media
-	Projects   Projects
-	Policy     Policy
-	Persist    Persistence
-	Runtime    Runtime
-	Images     Images
-	Failures   Failures
-	TextReplay TextReplay
-	Provider   ProviderControl
-	Present    Presenter
-	Logs       Logger
-	Activity   Activity
-	OwnedMedia OwnedMedia
-	Features   Features
-	NewID      func() string
-	Now        func() time.Time
+	BindTranscriptionModel func(string) (string, error)
+	Catalog                Catalog
+	Secrets                Secrets
+	Media                  Media
+	Projects               Projects
+	Policy                 Policy
+	Persist                Persistence
+	Runtime                Runtime
+	Images                 Images
+	Failures               Failures
+	TextReplay             TextReplay
+	Provider               ProviderControl
+	Present                Presenter
+	Logs                   Logger
+	Activity               Activity
+	OwnedMedia             OwnedMedia
+	Features               Features
+	NewID                  func() string
+	Now                    func() time.Time
 }

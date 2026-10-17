@@ -13,6 +13,8 @@ import { type AiConfig } from "@/stores/use-config-store";
 const qualityOptions = [
     { value: "auto", label: "自动" },
     { value: "high", label: "高" },
+    { value: "xhigh", label: "超高" },
+    { value: "max", label: "最高" },
     { value: "medium", label: "中" },
     { value: "low", label: "低" },
     { value: "1k", label: "1K" },
@@ -140,7 +142,7 @@ export function ImageSettingsTheme({ theme, children }: { theme: CanvasTheme; ch
 }
 
 export function imageQualityLabel(value: string) {
-    return ({ auto: "自动", high: "高", medium: "中", low: "低", "1k": "1K", "2k": "2K", "4k": "4K" } as Record<string, string>)[value.toLowerCase()] || value || "默认";
+    return ({ auto: "自动", high: "高", xhigh: "超高", max: "最高", medium: "中", low: "低", "1k": "1K", "2k": "2K", "4k": "4K" } as Record<string, string>)[value.toLowerCase()] || value || "默认";
 }
 
 function isGrokResolutionQuality(profile: ImageCapabilityConfig) {
@@ -156,6 +158,7 @@ export function imageSizeLabel(size: string) {
 function OptionPill({ selected, disabled = false, theme, onClick, children }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {
     return (
         <button
+            aria-pressed={selected}
             type="button"
 			className="h-8 cursor-pointer rounded-full px-2 text-xs transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-40"
 			style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}

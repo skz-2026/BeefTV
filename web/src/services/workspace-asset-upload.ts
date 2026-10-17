@@ -1,3 +1,4 @@
+import { normalizeAssetCategory } from "@/lib/asset-category";
 import { readImageMeta } from "@/lib/image-utils";
 import { assertUserScope, isUserScopeAbandonedError, userScopeMatches, type CapturedUserScope } from "@/lib/user-scope-guard";
 import { uploadImage } from "@/services/image-storage";
@@ -18,7 +19,7 @@ export async function uploadWorkspaceAssetFiles(files: File[], folderId: string,
             if (!userScopeMatches(expected)) return;
             const file = media[cursor++];
             try {
-                const common = { title: file.name.replace(/\.[^.]+$/, ""), category: "material" as const, folderId: folderId || undefined, tags: [], source: "批量上传", metadata: { source: "manual-batch" } };
+                const common = { title: file.name.replace(/\.[^.]+$/, ""), category: folderId.startsWith("builtin:") ? normalizeAssetCategory(folderId.slice(8)) : "material" as const, folderId: folderId.startsWith("builtin:") ? undefined : folderId || undefined, tags: [], source: "批量上传", metadata: { source: "manual-batch" } };
                 if (file.type.startsWith("video/")) {
                     const uploaded = await uploadMediaFile(file, "video", undefined, expected);
                     assertUserScope(expected);

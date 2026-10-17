@@ -20,6 +20,7 @@ import { apiClient, ApiError } from "@/services/api/request";
 import { createDepthCaptureTask } from "@/services/api/depth-capture";
 import { createTimelineRenderTask, createTimelineTranscriptionTask } from "@/services/api/timeline-tasks";
 import type { GenerationTask } from "@/services/api/task-center";
+import { waitForGenerationTask } from "@/services/api/task-center";
 import type { TimelineProject } from "@/types/timeline";
 
 function deferred<T = void>() {
@@ -55,6 +56,33 @@ function generationTask(partial: Partial<GenerationTask> & Pick<GenerationTask, 
 function envelope(data: unknown) {
     return { data: { code: 0, data, msg: "" }, status: 200, statusText: "OK", headers: {}, config: {} as never };
 }
+
+test("depth observation continues beyond ten minutes and returns the same task", async () => {
+    const originalNow = Date.now;
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { setTimeout: (callback: () => void) => { queueMicrotask(callback); return 0; }, clearTimeout: () => {} } });
+    let now = originalNow();
+    let queries = 0;
+    try {
+        Date.now = () => now;
+        await withAdapter(async config => {
+            expect(config.method).toBe("get");
+            expect(config.url).toBe("/tasks/depth-long");
+            queries++;
+            now += 11 * 60 * 1000;
+            return envelope(generationTask({ id: "depth-long", type: "depth_capture", status: queries === 1 ? "running" : "succeeded" }));
+        }, async () => {
+            const task = await waitForGenerationTask("depth-long", { initialTask: generationTask({ id: "depth-long", type: "depth_capture" }), intervalMs: 1 });
+            expect(task.id).toBe("depth-long");
+            expect(task.status).toBe("succeeded");
+            expect(queries).toBe(2);
+        });
+    } finally {
+        Date.now = originalNow;
+        if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+        else Reflect.deleteProperty(globalThis, "window");
+    }
+});
 
 async function withAdapter<T>(adapter: NonNullable<typeof apiClient.defaults.adapter>, run: () => Promise<T>) {
     const previous = apiClient.defaults.adapter;

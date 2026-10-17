@@ -105,7 +105,6 @@ try {
     BEEFTV_AGENT_PORT: String(port), BEEFTV_AGENT_HOST_TOKEN: config.hostToken, BEEFTV_OPS_URL: config.backend,
     BEEFTV_AGENT_API_KEY: 'fixture-only', BEEFTV_AGENT_API: 'openai-completions', BEEFTV_AGENT_MODEL: 'gemini-native-fixture',
     BEEFTV_AGENT_BASE_URL: `http://127.0.0.1:${modelPort}/v1`, BEEFTV_AGENT_TOTAL_REQUEST_BUDGET: '0' };
-  delete env.BEEFTV_AGENT_NEW_SESSION_RUNTIME; // Verify the shipped default, not an opt-in test override.
   delete env.BEEFTV_AGENT_CONTEXT_WINDOW; // Base64 must not force compaction at the shipped 200k limit.
   async function start() {
     child = spawn(process.execPath, [path.join(config.root, 'agent-host/server.mjs')], { cwd: config.root, env, stdio: ['ignore', 'pipe', 'pipe'] });

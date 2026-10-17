@@ -233,6 +233,11 @@ func recordProviderRequest(service *Service, req *http.Request, startedAt time.T
 		}
 	}
 	service.EnrichAPICallLog(&callLog, responseBody)
+	// Only creation can discover a new video task identity. Polling and result
+	// retrieval must not reassign an existing task before its response is checked.
+	if call.Capability == "video" && requestKind != "create" && strings.TrimSpace(call.ProviderRequestID) != "" {
+		callLog.ProviderRequestID = call.ProviderRequestID
+	}
 	_ = service.LogAPICall(callLog)
 }
 

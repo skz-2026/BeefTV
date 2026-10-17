@@ -890,7 +890,7 @@ function DirectorCameraGizmo({ target, transformMode, onFreeze, onTransforming, 
 
 /** 起点、终点、路径点、方向与当前进度共用一条 Transform 关键帧路径。 */
 function DirectorTransformPath({ keyframes, playhead, color, visibleKeyIds, maxVisiblePoints, selected = false, selectedKeyframeId, lineOnly = false, onSelectPath, onSelectKeyframe, onMoveKeyframe, onDragActive, onClaimPointer }: { keyframes: DirectorObject["keyframes"]; playhead: number; color: string; visibleKeyIds?: string[]; maxVisiblePoints?: number; selected?: boolean; selectedKeyframeId?: string; lineOnly?: boolean; onSelectPath?: () => void; onSelectKeyframe?: (keyframe: DirectorKeyframe) => void; onMoveKeyframe?: (keyframe: DirectorKeyframe, position: DirectorVec3) => void; onDragActive?: (active: boolean) => void; onClaimPointer?: (holdMs: number) => void }) {
-    const sorted = useMemo(() => finiteDirectorTransformKeyframes(keyframes).toSorted((left, right) => left.time - right.time), [keyframes]);
+    const sorted = useMemo(() => finiteDirectorTransformKeyframes(keyframes).sort((left, right) => left.time - right.time), [keyframes]);
     const points = useMemo(() => sorted.map((keyframe) => keyframe.transform.position), [sorted]);
     const visibleFrames = useMemo(() => {
         const candidates = visibleKeyIds ? sorted.filter((keyframe) => visibleKeyIds.includes(keyframe.id)) : sorted;

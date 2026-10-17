@@ -348,6 +348,39 @@ func TestSpecializedValidationFailures(t *testing.T) {
 	}
 }
 
+func TestCloudTranscriptionAdmissionBindsModelAndPreservesOwner(t *testing.T) {
+	calls := 0
+	svc, _, media, _ := newSpecializedMem(func(deps *Dependencies, _ *memOwnedMedia, _ *drainRuntime) {
+		deps.BindTranscriptionModel = func(model string) (string, error) {
+			calls++
+			if model != "hy-asr-3.0-preview" {
+				return "", kernel.BadAuthRequest("unsupported transcription model")
+			}
+			return "token-fixture", nil
+		}
+	})
+	media.put("owner", readyVideo("res-cloud"))
+	req := TimelineTranscriptionCreateRequest{ResourceID: "res-cloud", Model: "hy-asr-3.0-preview", ClientOperationID: "cloud-op"}
+	if _, err := svc.CreateTimelineTranscriptionTask("other", req); err == nil || calls != 0 {
+		t.Fatalf("foreign media accepted: %v calls=%d", err, calls)
+	}
+	task, err := svc.CreateTimelineTranscriptionTask("owner", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Model != req.Model || task.Provider != "beefapi" || !strings.Contains(task.InputJSON, `"managedTokenId":"token-fixture"`) {
+		t.Fatalf("bad task binding: %+v", task)
+	}
+	replay, err := svc.CreateTimelineTranscriptionTask("owner", req)
+	if err != nil || replay.ID != task.ID {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	req.Model = "speech-generation"
+	if _, err := svc.CreateTimelineTranscriptionTask("owner", req); err == nil {
+		t.Fatal("generation model accepted")
+	}
+}
+
 func TestTranscriptionRequiresFeatureAndOwnedMedia(t *testing.T) {
 	features := &captureFeatures{}
 	svc, store, media, _ := newSpecializedMem(func(deps *Dependencies, _ *memOwnedMedia, _ *drainRuntime) {

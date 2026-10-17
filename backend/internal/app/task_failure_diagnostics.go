@@ -25,6 +25,9 @@ func captureTaskFailureDiagnostics(task *model.Task, err error, source string) {
 	}
 	if source == "local_result" {
 		d.Stage = "本地结果处理"
+		if failure.Category == generation.CategoryLocalDiskFull {
+			d.Stage = "保存生成结果（磁盘空间不足）"
+		}
 	}
 	if len(d.Requests) > 0 && d.Requests[len(d.Requests)-1].Outcome == "response_limit" {
 		last := d.Requests[len(d.Requests)-1]

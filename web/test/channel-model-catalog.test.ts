@@ -21,9 +21,39 @@ import { createModelChannel, defaultConfig, modelDisplayName, normalizeConfigSna
 const originalAxiosRequest = axios.request;
 const originalApiRequest = apiClient.request;
 
+test("官方GPT图片旧默认配置升级质量和21:9尺寸，保留显式限制与第三方配置", () => {
+    const model = "gpt-image-2.5-flare";
+    const legacy = defaultModelCapabilityConfig("openai-image", "gpt-image-2");
+    legacy.image!.quality = { supported: true, values: ["auto", "low", "medium", "high"], default: "auto" };
+    legacy.image!.size.values = ["2048x878"];
+    legacy.image!.size.default = "2048x878";
+    legacy.image!.size.presets = [{ tier: "1k", ratio: "21:9", size: "2048x878", width: 2048, height: 878 }];
+    const configFor = (baseUrl: string, capabilityConfig = legacy) => normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [createModelChannel({ id: "beefapi", baseUrl, models: [model], modelProfiles: [{ model, capability: "image", protocol: "openai-image", capabilityConfig }] })] } }).config;
+    const upgraded = configFor("https://enterprise.beefapi.com/v1").channels[0]!.modelProfiles![0]!.capabilityConfig!.image!;
+    expect(upgraded.quality.values).toEqual(["auto", "low", "medium", "high", "xhigh", "max"]);
+    expect(upgraded.size.default).toBe("2048x880");
+    expect(upgraded.size.presets![0]!.height).toBe(880);
+    expect(legacy.image!.size.values).toEqual(["2048x878"]);
+    const restricted = structuredClone(legacy);
+    restricted.image!.quality = { supported: true, values: ["low"], default: "low" };
+    expect(configFor("https://enterprise.beefapi.com/v1", restricted).channels[0]!.modelProfiles![0]!.capabilityConfig!.image!.quality.values).toEqual(["low"]);
+    expect(configFor("https://custom.example.com/v1").channels[0]!.modelProfiles![0]!.capabilityConfig!.image!.quality.values).toEqual(["auto", "low", "medium", "high"]);
+});
+
 afterEach(() => {
     axios.request = originalAxiosRequest;
     apiClient.request = originalApiRequest;
+});
+
+test("backend discovery forwards cancellation and preserves AbortError", async () => {
+    const controller = new AbortController();
+    let received: AbortSignal | undefined;
+    apiClient.request = (async (config: { signal?: AbortSignal }) => {
+        received = config.signal;
+        throw new DOMException("cancelled", "AbortError");
+    }) as typeof apiClient.request;
+    await expect(fetchChannelModels(createModelChannel({ id: "custom", baseUrl: "https://example.test/v1", apiKey: "dummy" }), true, controller.signal)).rejects.toBeInstanceOf(DOMException);
+    expect(received).toBe(controller.signal);
 });
 
 const omniCatalog: ChannelModelCatalogItem = {
@@ -140,6 +170,15 @@ describe("public channel model catalog", () => {
         ]));
         expect(resolveModelRequestConfig(normalized, "beefapi::gpt-image-2").interfaceType).toBe("openai-image");
         expect(resolveModelRequestConfig(normalized, "beefapi::gpt-5.6-sol").interfaceType).toBe("chat-completion");
+    });
+
+    test("repairs stale chat protocols on known BeefAPI image models without changing custom routes", () => {
+        const make = (baseUrl: string) => createModelChannel({ id: "test", baseUrl, apiKey: "synthetic-key", models: ["gpt-image-2"], modelProfiles: [{ model: "gpt-image-2", capability: "text", protocol: "chat-completion" }] });
+        const official = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [make("https://enterprise.beefapi.com")] } }).config;
+        expect(selectableModelsByCapability(official, "image")).toEqual(["test::gpt-image-2"]);
+        expect(resolveModelRequestConfig(official, "test::gpt-image-2").interfaceType).toBe("openai-image");
+        const custom = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [make("https://studio.example")] } }).config;
+        expect(resolveModelRequestConfig(custom, "test::gpt-image-2").interfaceType).toBe("chat-completion");
     });
 
     test("maps BeefAPI speech and music to audio without treating ASR as chat or TTS", () => {

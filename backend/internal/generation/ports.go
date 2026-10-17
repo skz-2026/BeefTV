@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"infinite-canvas/backend/internal/outbound"
 )
 
 // ResourceInfo is the executor view of an owned workspace asset.
@@ -46,6 +48,12 @@ type ResourcePort interface {
 	LocalMode() bool
 }
 
+// ResourceMetadataPort repairs missing facts from authorized local bytes.
+// It is separate from reads because it can persist a completed probe.
+type ResourceMetadataPort interface {
+	EnsureMetadata(ctx context.Context, userID, resourceID string) (ResourceInfo, error)
+}
+
 type LimitsPort interface {
 	GeneratedFileBytes(ctx context.Context) (int64, error)
 	ResourceUploadBytes(ctx context.Context) (int64, error)
@@ -62,6 +70,8 @@ type TransportObservation struct {
 	Err                   error
 	ResponseLimitBytes    int64
 	Dispatched            bool
+	TransportPhase        string
+	TransportRoute        string
 	HTTPStatus            int
 	DeclaredResponseBytes int64
 	ReceivedBytes         int64
@@ -143,11 +153,21 @@ type CallMeta struct {
 	ConcurrencyLimit  int
 }
 
+// DeliveryProgressPort carries in-generation result download progress (for
+// example a video fetched from a gateway before the task succeeds). The adapter
+// is bound to the executing BeefTV task and owns identity; provider task ids
+// must never be used as the key. nil means nothing is reported.
+type DeliveryProgressPort interface {
+	ReportDelivery(progress outbound.ResumableProgress)
+	ClearDelivery()
+}
+
 type Runtime struct {
 	Resources ResourcePort
 	Limits    LimitsPort
 	Receipts  ReceiptPort
 	Stages    StagePort
+	Delivery  DeliveryProgressPort
 	Images    ImageSubmissionPort
 	Workflow  WorkflowPort
 	Prompt    PromptPort

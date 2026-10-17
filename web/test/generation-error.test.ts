@@ -426,6 +426,23 @@ describe("generation error classification", () => {
         expect(text).not.toContain("api-key");
     });
 
+    test("diagnostics use the failed task model and distinguish body size from transmission", () => {
+        const text = formatGenerationDiagnostics(explainGenerationError({ code: "request_not_sent" }), {
+            model: "beefapi::seedance-2.0-fast",
+            failureDiagnostics: {
+                source: "unknown",
+                input: { model: "minimax-h3", promptChars: 10, imageCount: 3, videoCount: 0, audioCount: 0 },
+                requests: [{ operation: "submit", method: "POST", dispatched: false, outcome: "not_dispatched", transportPhase: "tls", transportRoute: "direct", startedAt: "2026-10-15T03:25:27Z", durationMs: 15312, requestBytes: 7557896 }],
+            },
+        });
+        expect(text).toContain("模型：minimax-h3");
+        expect(text).not.toContain("seedance");
+        expect(text).toContain("请求体大小=7557896（不代表已发送）");
+        expect(text).toContain("直连；阶段=TLS 握手");
+        expect(text).toContain("请求未发送");
+        expect(text).not.toContain("上游任务可能仍在执行");
+    });
+
     test("persisted category is never advertised as an upstream code", () => {
         const explanation = explainGenerationError({ code: "invalid_params", message: "模型不接受当前参数" });
         const text = formatGenerationDiagnostics(explanation, { taskId: "local-task-123", createdAt: "2026-09-30T15:39:21+08:00" });

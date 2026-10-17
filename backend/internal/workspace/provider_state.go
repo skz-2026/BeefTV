@@ -93,14 +93,14 @@ func mergeBuiltinProviderPresets(config map[string]any) (map[string]any, error) 
 	mergedChannels := make([]any, 0, len(order))
 	for _, id := range order {
 		if channel := channels[id]; channel != nil {
-			mergedChannels = append(mergedChannels, overlayHostedBeefAPIVideoProfiles(channel))
+			mergedChannels = append(mergedChannels, overlayHostedBeefAPIMediaProfiles(channel))
 		}
 	}
 	result["channels"] = mergedChannels
 	return result, nil
 }
 
-func overlayHostedBeefAPIVideoProfiles(channel map[string]any) map[string]any {
+func overlayHostedBeefAPIMediaProfiles(channel map[string]any) map[string]any {
 	baseURL, _ := channel["baseUrl"].(string)
 	profiles, _ := channel["modelProfiles"].([]any)
 	seen := map[string]bool{}
@@ -116,7 +116,7 @@ func overlayHostedBeefAPIVideoProfiles(channel map[string]any) map[string]any {
 			continue
 		}
 		seen[model] = true
-		if capability, protocol, ok := providerpreset.HostedBeefAPIVideoProfile(baseURL, model); ok {
+		if capability, protocol, ok := hostedBeefAPIMediaProfile(baseURL, model); ok {
 			overlaid := cloneProfileMap(profile)
 			overlaid["capability"] = capability
 			overlaid["protocol"] = protocol
@@ -129,7 +129,7 @@ func overlayHostedBeefAPIVideoProfiles(channel map[string]any) map[string]any {
 		if seen[model] {
 			continue
 		}
-		capability, protocol, ok := providerpreset.HostedBeefAPIVideoProfile(baseURL, model)
+		capability, protocol, ok := hostedBeefAPIMediaProfile(baseURL, model)
 		if !ok {
 			continue
 		}
@@ -137,6 +137,15 @@ func overlayHostedBeefAPIVideoProfiles(channel map[string]any) map[string]any {
 	}
 	channel["modelProfiles"] = next
 	return channel
+}
+
+func hostedBeefAPIMediaProfile(baseURL, model string) (string, string, bool) {
+	if providerpreset.IsBeefAPIEndpoint(baseURL) {
+		if contract, ok := providerpreset.BeefAPIImageContract(model); ok {
+			return "image", contract.Protocol, true
+		}
+	}
+	return providerpreset.HostedBeefAPIVideoProfile(baseURL, model)
 }
 
 func cloneProfileMap(profile map[string]any) map[string]any {

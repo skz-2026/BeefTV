@@ -195,6 +195,10 @@ export function getAntThemeConfig(dark: boolean, skinID: unknown = "classic"): T
             motionDurationSlow: `${Math.max(skin.motionNormal ?? 180, 240)}ms`,
         },
         components: {
+            Tag: {
+                defaultBg: skin.subtleBackground || color.selectedBg,
+                defaultColor: skin.text || color.selectedFg,
+            },
             Button: {
                 primaryShadow: "none",
                 dangerShadow: "none",

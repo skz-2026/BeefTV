@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"infinite-canvas/backend/internal/generation"
 	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/provider/workflow"
 	"infinite-canvas/backend/internal/repository"
 )
 
@@ -92,8 +94,11 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 	}
 	ctx = ensureOfficialProtocolAdapter(ctx, config.InterfaceType)
 	adapter, declarative := declarativeProtocolAdapterForContext(ctx, config.InterfaceType)
-	beefVideo := isBeefAPIVideoConfig(ctx, config) && isSeedanceVideoConfig(config)
-	if !declarative && !beefVideo {
+	beefVideo := isBeefAPIVideoConfig(ctx, config)
+	workflowVideo := workflow.IsProviderInterface(config.InterfaceType)
+	_, officialVideo := generation.OfficialDeclarativeVideoInterface(config.InterfaceType)
+	legacyVideo := !officialVideo && (strings.TrimSpace(config.InterfaceType) == "" || isArkPlanVideoConfig(config))
+	if !declarative && !beefVideo && !workflowVideo && !legacyVideo {
 		return nil, BadAuthRequest("该任务的请求协议不支持安全查询上游状态")
 	}
 	input.Config = config
@@ -127,6 +132,10 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 	var providerStatus string
 	if beefVideo {
 		result, providerStatus, err = queryBeefAPIVideoResult(queryCtx, input, providerRequestID)
+	} else if workflowVideo {
+		result, providerStatus, err = s.workflowClient(nil).QueryVideo(queryCtx, workflowConfigFromProvider(config), workflow.RootURL(config.BaseURL), providerRequestID)
+	} else if !declarative && legacyVideo {
+		result, providerStatus, err = generation.QueryHandwrittenVideoTask(queryCtx, input, providerRequestID)
 	} else {
 		result, providerStatus, err = queryProtocolAdapterVideoTask(queryCtx, input, adapter, providerRequestID)
 	}
@@ -171,22 +180,22 @@ func queryBeefAPIVideoResult(ctx context.Context, input canvasGenerationInput, i
 	if err := getJSON(ctx, input.Config, "/videos/"+id, &state); err != nil {
 		return nil, "", err
 	}
-	if nested, ok := state["data"].(map[string]interface{}); ok {
-		state = nested
+	var err error
+	state, err = generation.ValidateVideoTaskState(id, state)
+	if err != nil {
+		return nil, "", err
 	}
 	status, videoURL := seedancePollStatusAndURL(state)
 	if status == "failed" || status == "cancelled" || status == "expired" {
 		return nil, status, errors.New(defaultString(seedanceErrorMessage(state), "视频生成失败"))
 	}
-	if status != "completed" && status != "succeeded" {
+	if !generation.VideoTaskSucceeded(status) {
 		return nil, status, nil
 	}
-	data, mimeType, err := runVideoDownload(ctx, id, defaultVideoPollPolicy(), func(ctx context.Context) ([]byte, string, error) {
-		if videoURL != "" {
-			return getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, videoURL)
-		}
-		return getBinary(withProviderRequestKind(ctx, "download"), input.Config, "/videos/"+id+"/content")
-	})
+	if videoURL == "" {
+		videoURL = generation.APIURL(input.Config.BaseURL, "/videos/"+id+"/content")
+	}
+	data, mimeType, err := generation.DownloadVideoResult(ctx, input.Config, videoURL, id)
 	if err != nil {
 		return nil, status, err
 	}

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -69,6 +70,10 @@ func (s *Service) Resources(userID string, limit int) ([]model.Resource, error) 
 
 func (s *Service) Resource(userID string, id string) (*model.Resource, error) {
 	return s.resourceDomain().Resource(userID, id)
+}
+
+func (s *Service) EnsureResourceMediaMetadata(ctx context.Context, userID, id string) (*model.Resource, error) {
+	return s.resourceDomain().EnsureMediaMetadata(ctx, userID, id)
 }
 
 // DirectResourceURL 仅为本地文件签发短时下载地址。

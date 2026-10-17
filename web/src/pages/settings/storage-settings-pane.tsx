@@ -14,6 +14,8 @@ export function StorageSettingsPane() {
     const [target, setTarget] = useState("");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
+    const [cleanupInterrupted, setCleanupInterrupted] = useState(false);
+    const [errorSummary, ...errorDetails] = error.split("\n\n");
     useEffect(() => {
         let active = true;
         void binding
@@ -67,34 +69,40 @@ export function StorageSettingsPane() {
                 setError("");
                 try {
                     setUsage(await binding.CleanupPreviousStorage!());
+                    setCleanupInterrupted(false);
                     message.success("原目录已清理");
                 } catch (error) {
+                    setCleanupInterrupted(true);
                     setError(error instanceof Error ? error.message : String(error));
-                    throw error;
+                    // Cleanup may have removed durable copies while leaving busy scratch.
+                    try {
+                        setUsage(await binding.StorageSettings!());
+                    } catch {
+                        /* Keep the last known usage. */
+                    }
                 } finally {
                     setBusy(false);
                 }
             },
         });
     return (
-        <section className="settings-section space-y-4" aria-label="本地存储">
+        <section className="settings-section storage-settings-block space-y-4" aria-label="本地存储">
             <div className="settings-pane-header">
                 <div className="min-w-0">
                     <h2>本地存储</h2>
-                    <p>项目、素材和模型配置存放在此处，可迁移到其他磁盘。</p>
                 </div>
             </div>
-            <div className="space-y-2 text-sm">
-                <div className="break-all">当前目录：{usage?.dataDir || "正在读取…"}</div>
+            <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 text-sm">
+                <div className="min-w-0 break-all">当前目录：{usage?.dataDir || "正在读取…"}</div>
                 {usage ? (
-                    <p className="text-foreground/60">
+                    <p className="shrink-0 text-foreground/60">
                         数据占用 {size(usage.usedBytes)} · 磁盘剩余 {size(usage.freeBytes)}
                     </p>
                 ) : null}
             </div>
-            <label className="block space-y-2">
-                <span className="text-sm">新存储目录</span>
-                <div className="flex min-w-0 flex-wrap gap-2">
+            <label className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="shrink-0 text-sm">新存储目录：</span>
+                <div className="flex min-w-0 flex-1 flex-wrap gap-2">
                     <Input className="min-w-0 flex-1" aria-label="新存储目录" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="例如 D:\BeefTV" disabled={busy} />
                     <Button icon={<FolderOpen className="size-4" />} onClick={choose} disabled={busy}>
                         选择文件夹
@@ -103,16 +111,23 @@ export function StorageSettingsPane() {
             </label>
             <p className="text-sm leading-6 text-foreground/60">请选择空文件夹。迁移期间请暂停操作；完成后会重新载入。原目录会保留，请确认项目和素材完整后再清理。</p>
             {error ? (
-                <p role="alert" className="text-sm text-destructive break-words">
-                    {error}
-                </p>
+                <div role="alert" className="text-sm text-destructive break-words">
+                    <p>{errorSummary}</p>
+                    {errorDetails.length > 0 ? (
+                        <details className="mt-2">
+                            <summary className="cursor-pointer">错误详情</summary>
+                            <p className="mt-2 break-all whitespace-pre-wrap">{errorDetails.join("\n\n")}</p>
+                        </details>
+                    ) : null}
+                </div>
             ) : null}
             <Button type="primary" onClick={migrate} loading={busy} disabled={!usage || !target.trim() || target.trim() === usage.dataDir}>
                 {busy ? "正在迁移并校验文件…" : "迁移旧数据并使用新目录"}
             </Button>
             {usage?.previousDir && binding.CleanupPreviousStorage ? (
                 <div className="space-y-2 border-t border-border pt-4">
-                    <p className="text-sm break-all">原数据仍保留在：{usage.previousDir}</p>
+                    <p className="text-sm break-all">待清理的原目录：{usage.previousDir}。</p>
+                    {cleanupInterrupted ? <p className="text-sm">清理未完成，原目录可能已部分清理。请保留当前存储目录。</p> : null}
                     <Button danger disabled={busy} onClick={cleanup}>
                         清理原目录，释放磁盘空间
                     </Button>

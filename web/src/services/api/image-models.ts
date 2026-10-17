@@ -65,7 +65,7 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 
 export type ChannelModelFetchResult = { models: string[]; catalog: ChannelModelCatalogItem[] };
 
-export async function fetchChannelModels(channel: ModelChannel, viaBackend = false): Promise<ChannelModelFetchResult> {
+export async function fetchChannelModels(channel: ModelChannel, viaBackend = false, signal?: AbortSignal): Promise<ChannelModelFetchResult> {
     const expectedScope = captureUserScope();
     const connectionEpoch = getBeefAPIConnectionEpoch();
     const managed = channel.id === "beefapi" && (channel.pinned || Boolean(channel.credentialRef));
@@ -89,7 +89,7 @@ export async function fetchChannelModels(channel: ModelChannel, viaBackend = fal
             headers: channel.headers,
             channelId: managed ? channel.id : undefined,
             credentialRef: managed ? "beefapi-enterprise" : undefined,
-        }, { timeout: 30_000, expectedScope });
+        }, { timeout: 30_000, expectedScope, signal });
         if (managed && connectionEpoch !== getBeefAPIConnectionEpoch()) throw new UserScopeAbandonedError();
         const catalog = new Map<string, ChannelModelCatalogItem>();
         for (const item of result.models || []) {
@@ -105,7 +105,7 @@ export async function fetchChannelModels(channel: ModelChannel, viaBackend = fal
         // The backend has already classified and sanitized catalogue errors.
         // Running generation-error classification again turns a precise 502
         // auth/unsupported-catalog message into a generic unavailable message.
-        if (error instanceof ApiError || isUserScopeAbandonedError(error)) throw error;
+        if (error instanceof ApiError || isUserScopeAbandonedError(error) || (error instanceof DOMException && error.name === "AbortError")) throw error;
         throw new Error(readAxiosError(error, "读取模型失败"));
     }
 }

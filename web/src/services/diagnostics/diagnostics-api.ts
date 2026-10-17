@@ -14,11 +14,13 @@ export type DiagnosticExportInput = {
         browser?: string;
         os?: string;
         timezone?: string;
+        capabilities?: { secureRandom: boolean; randomUUID: boolean; structuredClone: boolean; indexedDB: boolean; storageWritable?: boolean; storageTimedOut?: boolean; webGL: boolean; h264: boolean; hevc: boolean };
     };
     clientEvents: ClientDiagnosticEvent[];
 };
 
 export type DiagnosticPreview = {
+	updateLog?: { status: "available" | "missing" | "unreadable"; lines: number; truncated: boolean };
     clientEventLimit: number;
     taskCount: number;
     taskLogCount: number;

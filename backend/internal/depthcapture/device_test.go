@@ -2,7 +2,10 @@ package depthcapture
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -12,6 +15,50 @@ func TestWindowsWorkerUsesUTF8ForChineseProgress(t *testing.T) {
 	if !strings.Contains(strings.Join(env, "\n"), "PYTHONIOENCODING=utf-8") {
 		t.Fatal("Windows worker does not force UTF-8 for its progress output")
 	}
+}
+
+func TestWorkerCheckpointDownloadUsesResolvedDesktopProxy(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+	t.Setenv("https_proxy", "http://127.0.0.1:9999")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	env := WorkerEnvForPlatform("C:/depth/worker", "windows")
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "HTTPS_PROXY=http://127.0.0.1:7890\nhttps_proxy=http://127.0.0.1:7890\nNO_PROXY=") {
+		t.Fatal("worker curl does not share the component downloader's proxy selection")
+	}
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:8888")
+	t.Setenv("NO_PROXY", "cdn.example.com")
+	command := exec.Command(os.Args[0], "-test.run=^TestDepthProxyChildProcess$")
+	command.Env = append(WorkerEnvForPlatform("C:/depth/worker", "windows"), "BEEFTV_PROXY_TEST_HELPER=1")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actual map[string]string
+	if err := json.Unmarshal(output, &actual); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy"} {
+		if actual[key] != "http://127.0.0.1:7890" {
+			t.Fatalf("child %s = %q", key, actual[key])
+		}
+	}
+	if actual["NO_PROXY"] != "cdn.example.com" || actual["no_proxy"] != "cdn.example.com" || actual["ALL_PROXY"] != "" || actual["all_proxy"] != "" {
+		t.Fatalf("child proxy exclusions = %+v", actual)
+	}
+}
+
+func TestDepthProxyChildProcess(t *testing.T) {
+	if os.Getenv("BEEFTV_PROXY_TEST_HELPER") != "1" {
+		return
+	}
+	actual := map[string]string{}
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"} {
+		actual[key] = os.Getenv(key)
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(actual)
+	os.Exit(0)
 }
 
 func TestChooseDeviceKeepsMacMPSAndSkipsWindowsCUDAWithoutCandidate(t *testing.T) {

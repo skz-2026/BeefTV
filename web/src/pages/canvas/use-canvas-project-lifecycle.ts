@@ -18,7 +18,7 @@ import { createWorkspaceCanvasProject, deleteWorkspaceCanvasProjects } from "@/s
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { hasUnconfirmedCanvasEdits, holdExternalCanvasRevisionForEditor, scheduleLocalCanvasBackendSync, syncLocalCanvasProjectToBackend } from "@/services/local-workspace-repository";
 import { isCanvasSubmitControlError } from "@/services/canvas-revision-conflict";
-import { captureUserScope, userScopeMatches } from "@/lib/user-scope-guard";
+import { assertUserScope, captureUserScope, userScopeMatches } from "@/lib/user-scope-guard";
 import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { useCanvasThemeStore } from "@/stores/canvas/use-canvas-theme-store";
 import { projectSyncProgress, useSyncProgressStore } from "@/stores/use-sync-progress-store";
@@ -420,21 +420,19 @@ export function useCanvasProjectLifecycle({
     }, [currentProject, localMode, message, navigate]);
 
     const deleteCurrentProject = useCallback(async () => {
+        const scope = captureUserScope();
         const siblingCanvases = listCanvasWorkspaceProjectCanvases(useCanvasStore.getState().projects, projectId);
         const nextCanvas = siblingCanvases.find((canvas) => canvas.id !== projectId);
         let drawingIds = nodesRef.current.flatMap((node) => node.type === "drawing" && node.metadata?.drawingId ? [node.metadata.drawingId] : []);
-        try {
-            const drafts = await readCanvasSyncDrafts(projectId);
-            const preserved = new Set(drafts.flatMap((draft) => draft.project.nodes.flatMap((node) => node.metadata?.drawingId ? [node.metadata.drawingId] : [])));
-            drawingIds = drawingIds.filter((id) => !preserved.has(id));
-            await deleteWorkspaceCanvasProjects([projectId]);
-        } catch (error) {
-            message.error(error instanceof Error ? `删除画布失败：${error.message}` : "删除画布失败，请稍后重试");
-            return;
-        }
+        const drafts = await readCanvasSyncDrafts(projectId);
+        assertUserScope(scope);
+        const preserved = new Set(drafts.flatMap((draft) => draft.project.nodes.flatMap((node) => node.metadata?.drawingId ? [node.metadata.drawingId] : [])));
+        drawingIds = drawingIds.filter((id) => !preserved.has(id));
+        await deleteWorkspaceCanvasProjects([projectId]);
+        assertUserScope(scope);
         if (drawingIds.length) {
             void Promise.all(drawingIds.map((drawingId) => removeCanvasDrawing(projectId, drawingId)))
-                .catch(() => message.warning("项目已删除，但部分本地绘图缓存清理失败"));
+                .catch(() => { if (userScopeMatches(scope)) message.warning("画布已删除，但部分本地绘图缓存清理失败"); });
         }
         cleanupAssetImages();
         navigate(nextCanvas ? `/canvas/${nextCanvas.id}` : "/canvas");

@@ -4,10 +4,11 @@ import { captureUserScopeEpoch, subscribeUserScope, userScopeEpochMatches } from
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 
 type VideoPreview = NonNullable<CanvasNodeMetadata["videoPreview"]>;
+type VideoPreviewSource = Pick<CanvasNodeData, "metadata">;
 
 export const CANVAS_VIDEO_PREVIEW_VERSION = 2;
 
-export function canvasDerivedPreviewSourceKey(node: CanvasNodeData) {
+export function canvasDerivedPreviewSourceKey(node: VideoPreviewSource) {
     return JSON.stringify([node.metadata?.storageKey || "", node.metadata?.content || "", node.metadata?.importSource?.provider || ""]);
 }
 
@@ -26,7 +27,7 @@ subscribeUserScope(() => {
 });
 
 /** Display-only leases: never upload a poster or mutate the durable canvas. */
-export function acquireCanvasVideoPreview(node: CanvasNodeData) {
+export function acquireCanvasVideoPreview(node: VideoPreviewSource) {
     const epoch = captureUserScopeEpoch();
     const sourceKey = node.metadata?.storageKey || node.metadata?.content || "";
     const requestKey = JSON.stringify([epoch.scope, epoch.generation, canvasDerivedPreviewSourceKey(node)]);
@@ -57,14 +58,14 @@ export function acquireCanvasVideoPreview(node: CanvasNodeData) {
     } };
 }
 
-export function canvasVideoPreviewNeedsHydration(node: CanvasNodeData) {
+export function canvasVideoPreviewNeedsHydration(node: VideoPreviewSource) {
     const sourceKey = canvasVideoPreviewSourceKey(node);
     if (!sourceKey) return false;
     const preview = node.metadata?.videoPreview;
     return !preview?.content || preview.captureVersion !== CANVAS_VIDEO_PREVIEW_VERSION || preview.sourceKey !== sourceKey;
 }
 
-async function generateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSignal): Promise<VideoPreview | null> {
+async function generateCanvasVideoPreview(node: VideoPreviewSource, signal?: AbortSignal): Promise<VideoPreview | null> {
     await waitForBrowserIdle(signal);
     throwIfAborted(signal);
     const source = await acquireCanvasVideoSource(node.metadata?.storageKey, node.metadata?.content || "", signal);
@@ -89,7 +90,7 @@ async function generateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSi
     };
 }
 
-function canvasVideoPreviewSourceKey(node: CanvasNodeData) {
+function canvasVideoPreviewSourceKey(node: VideoPreviewSource) {
     return node.metadata?.storageKey || node.metadata?.content || "";
 }
 

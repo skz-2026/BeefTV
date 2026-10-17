@@ -43,8 +43,9 @@ describe("canvas media activation", () => {
 
 describe("canvas dimension header rendering", () => {
     test("tracks live viewport scale without React width commits", () => {
-        expect(canvasNodeSource).toContain("calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))");
-        expect(canvasNodeSource).toContain('"--canvas-node-width": `${node.width}px`');
+        expect(canvasNodeSource).toContain("var(--canvas-live-scale,");
+        expect(globalStylesSource).toContain("width: var(--canvas-node-header-width)");
+        expect(globalStylesSource).toContain("calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))");
     });
 });
 
@@ -298,10 +299,10 @@ function writeFourcc(bytes: Uint8Array, offset: number, value: string) {
 }
 
 describe("passive video previews", () => {
-    test("素材引用菜单使用被动视频首帧回退，而不是视频图标", () => {
-        expect(canvasMentionSource).toContain('muted playsInline preload="metadata"');
+    test("素材引用菜单共享可见首帧，点击预览仍可读取视频元数据", () => {
+        expect(canvasMentionSource).toContain("videoPreviewEnabled: visible");
+        expect(canvasMentionSource).not.toContain('<video src={reference.mediaUrl}');
         expect(canvasMentionSource).toContain("onloadedmetadata = () => primeVideoPreviewFrame(media)");
-        expect(canvasMentionSource).toContain("onLoadedMetadata={(event) => primeVideoPreviewFrame(event.currentTarget)}");
         expect(canvasMentionSource).toContain("video.currentTime = Math.min(0.001, video.duration)");
         expect(canvasMentionSource).toContain("reference.kind === \"video\" && reference.previewUrl");
     });

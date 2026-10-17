@@ -30,11 +30,14 @@ func (d *Deliverer) Deliver(task model.Task) error {
 	if d == nil || d.store == nil || strings.TrimSpace(task.ID) == "" || task.Status != model.TaskStatusSucceeded {
 		return nil
 	}
-	stored, loadErr := d.loadedOutputs(task.ID)
-	if loadErr == nil && localtask.DeliveryComplete(task.ResultJSON, stored) {
+	if task.Stage == "delivery_paused" || task.Stage == "delivery_timed_out" {
 		return nil
 	}
-	outputs, unusable := localtask.InspectResultJSON(task.ResultJSON)
+	stored, loadErr := d.loadedOutputs(task.ID)
+	if loadErr == nil && localtask.DeliveryComplete(task.ResultJSON, stored, task.Type) {
+		return nil
+	}
+	outputs, unusable := localtask.InspectResultJSON(task.ResultJSON, task.Type)
 	if len(outputs) == 0 {
 		if unusable == "" {
 			return nil
@@ -138,7 +141,7 @@ func (d *Deliverer) RecoverIncomplete(limit int) error {
 	var errs error
 	for _, task := range tasks {
 		stored, loadErr := d.loadedOutputs(task.ID)
-		if loadErr == nil && localtask.DeliveryComplete(task.ResultJSON, stored) {
+		if loadErr == nil && localtask.DeliveryComplete(task.ResultJSON, stored, task.Type) {
 			continue
 		}
 		if err := d.Deliver(task); err != nil {

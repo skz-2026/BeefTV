@@ -77,6 +77,8 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
         .filter((nodeId): nodeId is string => Boolean(nodeId));
     metadata.videoStartFrameNodeId = remapReferenceId(node.metadata?.videoStartFrameNodeId, idMap);
     metadata.videoEndFrameNodeId = remapReferenceId(node.metadata?.videoEndFrameNodeId, idMap);
+    metadata.videoMiddleFrameNodeId = remapReferenceId(node.metadata?.videoMiddleFrameNodeId, idMap);
+    metadata.videoReferenceOrder = remapReferenceIds(node.metadata?.videoReferenceOrder,idMap);
     metadata.directorPreviewNodeId = remapOwnedNodeId(node.metadata?.directorPreviewNodeId, idMap);
     metadata.directorDepthNodeId = remapOwnedNodeId(node.metadata?.directorDepthNodeId, idMap);
     metadata.directorNormalNodeId = remapOwnedNodeId(node.metadata?.directorNormalNodeId, idMap);

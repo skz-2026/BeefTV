@@ -20,10 +20,17 @@ type Usage struct {
 }
 
 func Inspect(path string) (Usage, error) {
+	return inspect(path, false)
+}
+
+func inspect(path string, migrating bool) (Usage, error) {
 	usage := Usage{DataDir: path}
-	err := filepath.WalkDir(path, func(_ string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(path, func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if migrating && skipScratch(path, name, entry) {
+			return filepath.SkipDir
 		}
 		if entry.Type().IsRegular() {
 			info, err := entry.Info()
@@ -73,7 +80,7 @@ func Validate(source, target string) (string, error) {
 	if closeErr != nil {
 		return "", closeErr
 	}
-	usage, err := Inspect(source)
+	usage, err := inspect(source, true)
 	if err != nil {
 		return "", err
 	}
@@ -102,6 +109,9 @@ func CopyClosedWorkspace(ctx context.Context, source, target string) error {
 	err = filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if skipScratch(source, path, entry) {
+			return filepath.SkipDir
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -144,7 +154,7 @@ func CopyClosedWorkspace(ctx context.Context, source, target string) error {
 }
 
 func copyVerified(ctx context.Context, source, dest string, mode fs.FileMode) error {
-	in, err := os.Open(source)
+	in, err := openMigrationFile(source)
 	if err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ import (
 
 	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/outbound"
+	"infinite-canvas/backend/internal/protocol"
 )
 
 const (
@@ -73,6 +74,7 @@ func GetJSON(ctx context.Context, config Config, path string, target interface{}
 	}
 	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 	outbound.ApplyOutboundHeaders(req, config.Headers)
+	applyBeefAPIVideoDeliveryHeader(ctx, config, req)
 	return DoJSON(req, target)
 }
 
@@ -122,7 +124,13 @@ func GetProviderExternalBinary(ctx context.Context, config Config, rawURL string
 		return nil, "", err
 	}
 	if SameProviderOrigin(config.BaseURL, downloadURL) {
-		ApplyAuth(req, config)
+		if auth, ok := ctx.Value(videoProtocolAuthContext{}).(protocol.ManifestAuth); ok {
+			if err := ApplyProtocolAuth(req, config, auth); err != nil {
+				return nil, "", err
+			}
+		} else {
+			ApplyAuth(req, config)
+		}
 		outbound.ApplyOutboundHeaders(req, config.Headers)
 	}
 	return DoBinary(req)
@@ -230,6 +238,11 @@ func DoJSON(req *http.Request, target interface{}) error {
 }
 
 func DoBinary(req *http.Request) ([]byte, string, error) {
+	var protocolErr error
+	req, protocolErr = NegotiateImageReplay(req)
+	if protocolErr != nil {
+		return nil, "", protocolErr
+	}
 	if RecoverableImageEndpoint(req) {
 		runtime, ok := RuntimeFromContext(req.Context())
 		if !ok || runtime.Images == nil {
@@ -250,7 +263,17 @@ func DoBinary(req *http.Request) ([]byte, string, error) {
 	return DoBinaryWithConsumer(req, nil)
 }
 
-func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) (responseData []byte, responseMime string, resultErr error) {
+func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]byte, string, error) {
+	return doBinaryWithAdmission(req, onChunk, nil)
+}
+
+// DoBinaryWithDispatchAdmission fences a paid send after local preflight and
+// channel admission, immediately before transport can make its outcome unknown.
+func DoBinaryWithDispatchAdmission(req *http.Request, admit func() error) ([]byte, string, error) {
+	return doBinaryWithAdmission(req, nil, admit)
+}
+
+func doBinaryWithAdmission(req *http.Request, onChunk func(string, []byte), admit func() error) (responseData []byte, responseMime string, resultErr error) {
 	startedAt := time.Now()
 	observation := TransportObservation{Request: req, StartedAt: startedAt, ResponseLimitBytes: MaxResponseBytes}
 	defer func() {
@@ -297,19 +320,81 @@ func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) (resp
 		}
 		defer release()
 	}
+	videoIdleTimeout, _ := req.Context().Value(videoDeliveryRequestContext{}).(time.Duration)
+	credentials, _ := req.Context().Value(videoCredentialContext{}).(videoProviderCredentials)
+	if videoIdleTimeout > 0 && !SameProviderOrigin(credentials.Origin, req.URL.String()) {
+		stripVideoCredentialQuery(req.URL, credentials.Values)
+	}
 	if _, err := outbound.ValidateOutboundURL(req.URL.String()); err != nil {
 		return nil, "", err
 	}
 	outbound.ApplyDefaultOutboundHeaders(req)
 	client := outbound.OutboundHTTPClient(requestTimeout)
+	if videoIdleTimeout > 0 {
+		checkRedirect := client.CheckRedirect
+		leftOrigin := false
+		client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+			if err := checkRedirect(next, via); err != nil {
+				return err
+			}
+			if !SameProviderOrigin(req.URL.String(), next.URL.String()) {
+				leftOrigin = true
+			}
+			if leftOrigin {
+				// Signed media URLs carry their own authorization. Even a
+				// same-host redirect to another port must not inherit gateway
+				// credentials or custom channel headers.
+				next.Header = make(http.Header)
+				outbound.ApplyDefaultOutboundHeaders(next)
+				stripVideoCredentialQuery(next.URL, credentials.Values)
+			}
+			return nil
+		}
+	}
 	if noRedirect, _ := req.Context().Value(binaryNoRedirectContext{}).(bool); noRedirect {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
-	observation.Dispatched = true
+	if err := req.Context().Err(); err != nil {
+		return nil, "", err
+	}
+	if admit != nil {
+		if err := admit(); err != nil {
+			return nil, "", err
+		}
+	}
+	var videoIdleTimer *time.Timer
+	if videoIdleTimeout > 0 {
+		// Start after slot admission: local queueing is not a stalled transfer.
+		parentCtx := req.Context()
+		downloadCtx, cancel := context.WithCancelCause(parentCtx)
+		videoIdleTimer = time.AfterFunc(videoIdleTimeout, func() { cancel(context.DeadlineExceeded) })
+		req = req.WithContext(downloadCtx)
+		defer func() {
+			videoIdleTimer.Stop()
+			if resultErr != nil && errors.Is(context.Cause(downloadCtx), context.DeadlineExceeded) && parentCtx.Err() == nil {
+				resultErr = context.DeadlineExceeded
+			}
+			cancel(nil)
+		}()
+	}
+	trace := &transportTrace{}
+	req = trace.attach(req)
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		observation.TransportRoute = "direct"
+		if transport.Proxy != nil {
+			if proxy, proxyErr := transport.Proxy(req); proxyErr == nil && proxy != nil {
+				observation.TransportRoute = "proxy"
+			}
+		}
+	}
 	resp, err := client.Do(req)
+	observation.Dispatched, observation.TransportPhase = trace.result()
 	if err != nil {
 		if usesGenerationCircuit {
 			_ = runtime.Limits.RecordChannelResult(req.Context(), channelID, !errors.Is(err, context.Canceled))
+		}
+		if !observation.Dispatched && resp == nil && (req.Method == http.MethodPost || req.Method == http.MethodPut || req.Method == http.MethodPatch) {
+			return nil, "", RequestNotSentError{Cause: err}
 		}
 		return nil, "", err
 	}
@@ -324,12 +409,21 @@ func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) (resp
 	}
 	mimeType := resp.Header.Get("Content-Type")
 	var buffered bytes.Buffer
-	reader := io.LimitReader(resp.Body, responseLimit+1)
+	body := io.Reader(resp.Body)
+	if observe := downloadObserverFrom(req.Context()); observe != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// Start transfer timing after headers arrive; an error response is not media.
+		observe(0, resp.ContentLength)
+		body = newProgressReader(resp.Body, resp.ContentLength, responseLimit, observe)
+	}
+	reader := io.LimitReader(body, responseLimit+1)
 	chunk := make([]byte, 32<<10)
 	for {
 		readCount, readErr := reader.Read(chunk)
 		observation.ReceivedBytes += int64(readCount)
 		if readCount > 0 {
+			if videoIdleTimer != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				videoIdleTimer.Reset(videoIdleTimeout)
+			}
 			if int64(buffered.Len()+readCount) > responseLimit {
 				observation.Outcome = "response_limit"
 				return nil, "", fmt.Errorf("上游响应超过 %s 限制", formatStorageLimit(responseLimit))
@@ -363,6 +457,9 @@ func DoBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) (resp
 			IdempotencyReplayed: strings.EqualFold(resp.Header.Get("Idempotency-Replayed"), "true"),
 		}
 		observation.StatusCode = resp.StatusCode
+		if videoIdleTimeout > 0 && !SameProviderOrigin(req.URL.String(), resp.Request.URL.String()) && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return nil, "", videoBackupLinkExpiredError{cause: httpErr}
+		}
 		return nil, "", httpErr
 	}
 	observation.StatusCode = resp.StatusCode

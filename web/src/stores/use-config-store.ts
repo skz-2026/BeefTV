@@ -5,9 +5,10 @@ import { nanoid } from "nanoid";
 
 import { scopedLocalStorage } from "@/lib/user-scope";
 import { beefAPIVideoContract, isBeefAPIEndpoint } from "@/lib/beefapi-video-contracts";
-import { defaultProtocolForCapability, defaultProtocolForModel, modelProtocolCapability, normalizeModelProtocol, usesOpenAICompatibleProtocolDefault, type ModelProtocol } from "@/lib/model-protocols";
+import { beefAPIImageContract } from "@/lib/beefapi-image-contracts";
+import { defaultProtocolForCapability, defaultProtocolForModel, inferProtocolCapabilityFromModel, modelProtocolCapability, normalizeModelProtocol, usesOpenAICompatibleProtocolDefault, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoBoolean, normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
-import { defaultModelCapabilityConfig, workflowFieldRole, workflowFieldSafeToOverride, workflowVideoFieldsFromJson, type ModelCapabilityConfig } from "@/lib/model-capabilities";
+import { defaultModelCapabilityConfig, upgradeGPTImageCapability, workflowFieldRole, workflowFieldSafeToOverride, workflowVideoFieldsFromJson, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CapabilitySpec } from "@/services/api/logical-models";
 import { seedancePortraitLabel, seedancePortraitModel, type VideoPriceQuote } from "@/lib/seedance-portrait";
@@ -375,6 +376,7 @@ export type ModelChannel = {
         icon?: string;
         capability: ModelCapability;
         protocol?: ModelProtocol;
+        authType?: string;
         capabilityConfig?: ModelCapabilityConfig;
         videoCapabilitiesVersion?: string;
         videoPricing?: VideoPriceQuote | null;
@@ -564,13 +566,46 @@ export function modelMatchesCapability(model: string, capability?: ModelCapabili
     return isTextModelName(model);
 }
 
+type ChannelModelProfile = NonNullable<ModelChannel["modelProfiles"]>[number];
+type ChannelLookup = { byId: Map<string, ModelChannel>; byModel: Map<string, ModelChannel> };
+
+// Model pickers resolve every option against the channel list. Scanning the
+// list per option is quadratic and freezes settings on large catalogs, so
+// lookups are indexed once per (immutable) channels array / channel object.
+const channelLookups = new WeakMap<ModelChannel[], ChannelLookup>();
+const profileLookups = new WeakMap<ModelChannel, Map<string, ChannelModelProfile>>();
+
+function channelLookup(channels: ModelChannel[]): ChannelLookup {
+    let lookup = channelLookups.get(channels);
+    if (lookup) return lookup;
+    lookup = { byId: new Map(), byModel: new Map() };
+    for (const channel of channels) {
+        if (!lookup.byId.has(channel.id)) lookup.byId.set(channel.id, channel);
+        for (const model of channel.models) if (!lookup.byModel.has(model)) lookup.byModel.set(model, channel);
+    }
+    channelLookups.set(channels, lookup);
+    return lookup;
+}
+
+export function channelModelProfile(channel: ModelChannel | undefined, model: string) {
+    if (!channel?.modelProfiles?.length) return undefined;
+    let lookup = profileLookups.get(channel);
+    if (!lookup) {
+        lookup = new Map();
+        for (const profile of channel.modelProfiles) if (!lookup.has(profile.model)) lookup.set(profile.model, profile);
+        profileLookups.set(channel, lookup);
+    }
+    return lookup.get(model);
+}
+
 export function filterModelsByCapability(models: string[], capability?: ModelCapability, channels?: ModelChannel[]) {
     if (!capability) return models;
+    const lookup = channels ? channelLookup(channels) : undefined;
     return models.filter((model) => {
         const decoded = decodeChannelModel(model);
-        const channel = decoded ? channels?.find((item) => item.id === decoded.channelId) : undefined;
+        const channel = decoded ? lookup?.byId.get(decoded.channelId) : undefined;
         const modelName = decoded?.model || modelOptionName(model);
-        const costEntry = channel?.modelProfiles?.find((item) => item.model === modelName);
+        const costEntry = channelModelProfile(channel, modelName);
         // 协议层优先级最高：协议决定 API 端点，明确属于其他能力时直接排除，
         // 防止用户将 video/image/audio 协议的模型误标为 text 后混入文本下拉。
         const protocolCapability = modelProtocolCapability(costEntry?.protocol);
@@ -611,7 +646,8 @@ export function channelHasManagedBeefAPICredential(channel: Pick<ModelChannel, "
     return channel.credentialRef === MANAGED_BEEFAPI_CREDENTIAL_REF || channel.hasApiKey === true;
 }
 
-export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey" | "baseUrl">) {
+export function channelHasGenerationCredential(channel: Pick<ModelChannel, "id" | "pinned" | "credentialRef" | "hasApiKey" | "apiKey" | "baseUrl" | "modelProfiles">, model = "") {
+    if (model && channel.modelProfiles?.some((item) => item.model === modelOptionName(model) && item.authType === "none")) return true;
     if (channelHasManagedBeefAPICredential(channel) || Boolean(channel.apiKey?.trim())) return true;
     // 本机服务渠道（声线工坊/ComfyUI 网关等）不使用密钥，免凭据校验。
     try {
@@ -629,7 +665,7 @@ function isAiConfigReady(config: AiConfig, model: string) {
         return Boolean(config.runningHub.enabled && config.runningHub.baseUrl.trim() && key.trim() && config.runningHub.workflowId.trim());
     }
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channelHasGenerationCredential(channel));
+    return Boolean(model.trim() && channel.baseUrl.trim() && channelHasGenerationCredential(channel, model));
 }
 
 export const useConfigStore = create<ConfigStore>()(
@@ -728,7 +764,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
     };
     const hasPersistedChannels = Array.isArray(persistedConfig.channels);
     if (!hasPersistedChannels) config.channels = [];
-    const channels = normalizeChannels(config, !hasPersistedChannels).map(enrichBeefApiMediaChannel);
+    const channels = normalizeChannels(config, !hasPersistedChannels).map(enrichBeefApiMediaChannel).map(reconcileChannelModelProfiles);
     const models = modelOptionsFromChannels(channels);
     const imageModels = filterModelsByCapability(models, "image", channels);
     const videoModels = filterModelsByCapability(models, "video", channels);
@@ -774,7 +810,35 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
 }
 
 function beefApiVideoProtocol(model: string, current?: ModelProtocol): ModelProtocol {
-    return (beefAPIVideoContract(model)?.protocol as ModelProtocol | undefined) || current || "newapi-channel-2";
+    const contract = beefAPIVideoContract(model)?.protocol as ModelProtocol | undefined;
+    if (contract) return contract;
+    // A video profile must not keep a protocol that runs a different
+    // capability. BeefAPI often tags video models with a chat/text endpoint;
+    // that stale protocol would make the backend reject the task outright
+    // ("接口类型 chat-completion 不支持video生成"). Unknown/custom protocols
+    // stay untouched.
+    return current && protocolAllowsCapability(current, "video") ? current : defaultProtocolForCapability("video");
+}
+
+function protocolAllowsCapability(protocol: ModelProtocol | undefined, capability: ModelCapability): boolean {
+    const resolved = modelProtocolCapability(protocol);
+    return !resolved || resolved === capability;
+}
+
+// Enforce capability ↔ protocol consistency for every channel. BeefAPI media
+// profiles are already repaired from the shared contracts above; for other
+// channels the request protocol is what the user configured, so the
+// capability follows it instead of inventing a different wire protocol.
+function reconcileChannelModelProfiles(channel: ModelChannel): ModelChannel {
+    if (!channel.modelProfiles?.length) return channel;
+    let changed = false;
+    const modelProfiles = channel.modelProfiles.map((profile) => {
+        const capability = modelProtocolCapability(profile.protocol);
+        if (!capability || capability === profile.capability) return profile;
+        changed = true;
+        return { ...profile, capability };
+    });
+    return changed ? { ...channel, modelProfiles } : channel;
 }
 
 function beefApiVideoCapabilityConfig(model: string, protocol: ModelProtocol, current?: ModelCapabilityConfig, sourced = false): ModelCapabilityConfig | undefined {
@@ -786,6 +850,12 @@ function beefApiVideoCapabilityConfig(model: string, protocol: ModelProtocol, cu
     const resolved = profile || defaultModelCapabilityConfig(protocol, model);
     if (!resolved.video) return resolved;
     return { ...resolved, video: { ...resolved.video,
+        resolutions: contract.resolutions || resolved.video.resolutions,
+        defaultResolution: contract.resolutions?.includes(resolved.video.defaultResolution) ? resolved.video.defaultResolution : contract.resolutions?.[0] || resolved.video.defaultResolution,
+        ratios: contract.ratios || resolved.video.ratios,
+        defaultRatio: contract.ratios?.includes(resolved.video.defaultRatio) ? resolved.video.defaultRatio : contract.ratios?.[0] || resolved.video.defaultRatio,
+        duration: contract.duration ? { ...resolved.video.duration, selection: "range", min: contract.duration.min, max: contract.duration.max, default: contract.duration.default } : resolved.video.duration,
+        generateAudio: contract.generateAudio ? { ...resolved.video.generateAudio, supported: true } : resolved.video.generateAudio,
         references: { ...resolved.video.references, maxImages: Math.min(resolved.video.references.maxImages, limits.image ?? Infinity), maxVideos: Math.min(resolved.video.references.maxVideos, limits.video ?? Infinity), maxAudios: Math.min(resolved.video.references.maxAudios, limits.audio ?? Infinity) },
         operations: contract.operations || resolved.video.operations,
         defaultOperation: contract.operations?.includes(resolved.video.defaultOperation) ? resolved.video.defaultOperation : contract.operations?.[0] || resolved.video.defaultOperation,
@@ -824,12 +894,18 @@ function enrichBeefApiMediaChannel(channel: ModelChannel): ModelChannel {
     const existing = new Map((channel.modelProfiles || []).map((item) => [item.model, item]));
     for (const model of models.filter(isImageModelName)) {
         const current = existing.get(model);
+        // These BeefAPI models use Images, even when an older generic catalog
+        // saved a text protocol. Do not rewrite arbitrary custom model routes.
+        const contract = beefAPIImageContract(model);
+        const staleTextProtocol = (/^(gpt-image(?:-|$)|dall-e(?:-|$))/i.test(model) || Boolean(contract)) && modelProtocolCapability(current?.protocol) === "text";
+        const protocol = contract?.protocol || (staleTextProtocol ? "openai-image" : current?.protocol || "openai-image");
+        const capabilityConfig = contract ? defaultModelCapabilityConfig(contract.protocol, model) : current?.capabilityConfig || defaultModelCapabilityConfig(protocol, model);
         existing.set(model, {
             ...(current || {}),
             model,
             capability: "image",
-            protocol: current?.protocol || "openai-image",
-            capabilityConfig: current?.capabilityConfig || defaultModelCapabilityConfig("openai-image", model),
+            protocol,
+            capabilityConfig: capabilityConfig.image ? { ...capabilityConfig, image: upgradeGPTImageCapability(capabilityConfig.image, protocol, model) } : capabilityConfig,
         });
     }
     for (const model of models.filter(isTextModelName)) {
@@ -859,7 +935,7 @@ function enrichBeefApiMediaChannel(channel: ModelChannel): ModelChannel {
         if (current.capability === "image" || current.capability === "video") continue;
         existing.delete(model);
     }
-    for (const model of models.filter(isVideoModelName)) {
+    for (const model of models.filter((model) => isVideoModelName(model) || Boolean(beefAPIVideoContract(model)))) {
         const current = existing.get(model);
         // Repair known routes using the shared contract; preserve catalog and
         // custom protocols for models whose wire contract is not declared here.
@@ -946,7 +1022,7 @@ export function modelDisplayName(config: AiConfig, value: string) {
 	if (portrait) return portrait;
     const model = modelOptionName(value);
     const channel = resolveModelChannel(config, value);
-    const displayName = channel.modelProfiles?.find((item) => item.model === model)?.displayName?.trim();
+    const displayName = channelModelProfile(channel, model)?.displayName?.trim();
     if (displayName) return displayName;
     return channel.scope === "system" ? "系统模型" : model;
 }
@@ -1000,7 +1076,8 @@ export function normalizeModelOptionValue(value: unknown, channels: ModelChannel
 export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
-    const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.includes(model));
+    const lookup = channelLookup(config.channels);
+    const matched = decoded ? lookup.byId.get(decoded.channelId) : lookup.byModel.get(model);
     return matched || config.channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
 }
 
@@ -1018,9 +1095,10 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     const model = modelOptionName(value || config.model);
     const modelProfile = channel.modelProfiles?.find((item) => item.model === model);
     const modelProtocol = normalizeModelProtocol(modelProfile?.protocol);
+    const capability = modelProfile?.capability || inferProtocolCapabilityFromModel(model);
     const interfaceType = modelProtocol
         || normalizeModelProtocol(channel.interfaceType)
-        || (channel.scope === "system" || !usesOpenAICompatibleProtocolDefault(channel.apiFormat)
+        || (capability === "video" || channel.scope === "system" || !usesOpenAICompatibleProtocolDefault(channel.apiFormat)
             ? undefined
             : (modelProfile?.capability ? defaultProtocolForCapability(modelProfile.capability) : defaultProtocolForModel(model)));
     return {

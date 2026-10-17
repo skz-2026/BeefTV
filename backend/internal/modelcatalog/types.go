@@ -121,12 +121,14 @@ type VideoReferenceConfig struct {
 const DefaultVideoPromptMaxChars = 8000
 
 type VideoDurationConfig struct {
-	Selection string `json:"selection"`
-	Min       int    `json:"min,omitempty"`
-	Max       int    `json:"max,omitempty"`
-	Step      int    `json:"step,omitempty"`
-	Values    []int  `json:"values,omitempty"`
-	Default   int    `json:"default"`
+	Selection     string  `json:"selection"`
+	Min           int     `json:"min,omitempty"`
+	Max           int     `json:"max,omitempty"`
+	Step          int     `json:"step,omitempty"`
+	FractionalMin float64 `json:"fractionalMin,omitempty"`
+	Continuous    bool    `json:"continuous,omitempty"`
+	Values        []int   `json:"values,omitempty"`
+	Default       int     `json:"default"`
 }
 
 type VideoBooleanConfig struct {

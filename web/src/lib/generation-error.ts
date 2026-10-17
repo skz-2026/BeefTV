@@ -1,5 +1,6 @@
 import { isLocalRuntimeMode } from "@/lib/runtime-mode";
 import { moderationErrorCopy, persistedModerationCopy } from "./moderation-error";
+import { vodImageErrorCopy } from "./vod-image-error";
 import { taskConstraintCopy, persistedTaskConstraintCopy } from "./task-constraint-error";
 
 export const CONTENT_MODERATION_ERROR_CODE = "sensitive_words_detected";
@@ -16,7 +17,10 @@ export const GENERATION_ERROR_CATEGORIES = [
     "moderation_output",
     "invalid_params",
     "local_storage",
+    "local_disk_full",
+    "local_credential",
     "canvas_conflict",
+    "result_apply_failed",
     "context_too_long",
     "input_inaccessible",
     "input_too_large",
@@ -25,6 +29,7 @@ export const GENERATION_ERROR_CATEGORIES = [
     "concurrency",
     "provider_unavailable",
     "network",
+    "request_not_sent",
     "timeout",
     "submission_uncertain",
     "async_failed",
@@ -40,6 +45,7 @@ export const GENERATION_ERROR_CATEGORIES = [
 export type GenerationErrorCategory = (typeof GENERATION_ERROR_CATEGORIES)[number];
 
 export type GenerationFailureExplanation = {
+    httpStatus?: number;
     summary?: string;
     category: GenerationErrorCategory;
     reason: string;
@@ -81,7 +87,7 @@ export type GenerationFailureDiagnostics = {
     platform?: string;
     executionResult?: string;
     omittedRequests?: number;
-    requests?: { operation: string; method: string; dispatched: boolean; outcome: string; httpStatus?: number; requestId?: string; providerCode?: string; summary?: string; startedAt: string; durationMs: number; requestBytes?: number; receivedBytes?: number; declaredResponseBytes?: number; responseLimitBytes?: number }[];
+    requests?: { operation: string; method: string; dispatched: boolean; transportPhase?: string; transportRoute?: string; outcome: string; httpStatus?: number; requestId?: string; providerCode?: string; summary?: string; startedAt: string; durationMs: number; requestBytes?: number; receivedBytes?: number; declaredResponseBytes?: number; responseLimitBytes?: number }[];
     input?: { protocol?: string; model?: string; size?: string; quality?: string; count?: string; promptChars: number; imageCount: number; videoCount: number; audioCount: number; images?: { bytes: number; width: number; height: number }[]; imageLimitsRecorded?: boolean; maxImages?: number; maxImageBytes?: number };
     summary?: string;
     providerCode?: string;
@@ -112,7 +118,10 @@ const CATEGORY_COPY: Record<GenerationErrorCategory, CategoryCopy> = {
     moderation_output: { reason: "生成结果未通过内容安全审核", action: "请调整提示词或参考素材后重新生成" },
     invalid_params: { reason: "模型不接受当前参数", action: "请检查模型、尺寸、时长、格式或数量后重试" },
     local_storage: { reason: "本地数据库无法读写", action: "请重启应用；若仍失败，请保留排查信息并联系支持，不要重复生成" },
-    canvas_conflict: { reason: "生成结果已保留，画布尚未更新", action: "请先使用画布最新版本，再重新加载资源，不要重新生成" },
+    local_disk_full: { reason: "本地磁盘空间不足，无法保存数据", action: "请清理 BeefTV 数据目录所在磁盘；已有生成结果请优先取回原任务，不要重复生成" },
+    local_credential: { reason: "本地算力凭据读取失败", action: "请检查工作区数据目录并重新连接算力账号；不要删除工作区密钥" },
+    canvas_conflict: { reason: "生成结果已保留，画布尚未更新", action: "请点击「继续取回」，不要重新生成" },
+    result_apply_failed: { reason: "生成结果已保留，还没放回画布", action: "请点击「继续取回」，不要重新生成" },
     context_too_long: { reason: "输入内容超出模型长度限制", action: "请缩短提示词或减少参考内容后重试" },
     input_inaccessible: { reason: "参考素材无法读取", action: "请检查素材后重试" },
     input_too_large: { reason: "参考素材过大", action: "请压缩或更换素材后重试" },
@@ -121,12 +130,13 @@ const CATEGORY_COPY: Record<GenerationErrorCategory, CategoryCopy> = {
     concurrency: { reason: "同时进行的生成过多", action: "请等待已有任务完成后再试" },
     provider_unavailable: { reason: "模型服务暂时不可用", action: "请稍后重试" },
     network: { reason: "网络连接失败", action: "请检查网络并核对原任务状态后，再决定是否重新生成" },
+    request_not_sent: { reason: "未能连接服务，本次请求尚未提交", action: "请检查网络或代理后重试" },
     timeout: { reason: "模型服务响应超时", action: "请稍后查询原任务，不要立即重新提交" },
     submission_uncertain: { reason: "提交结果尚未确认，上游任务可能仍在执行", action: "请先查询原任务状态，不要立即重新提交" },
     async_failed: { reason: "生成任务没有完成", action: "请查看详情后决定是否重试" },
     cancelled: { reason: "任务已取消", action: "可按原输入重新提交" },
     partial_success: { reason: "部分结果已生成，其余失败", action: "请查看已有结果后再决定是否补做" },
-    download_failed: { reason: "生成结果下载失败", action: "请稍后重新加载，不要立即重新提交" },
+    download_failed: { reason: "生成结果还没取回", action: "点击「继续取回」可继续下载原结果，不会重新生成" },
     delivery_failed: { reason: "视频已生成，但暂时无法取回", action: "请联系支持恢复成片，恢复后点击「取回结果」；无需重新付费生成" },
     results_missing: { reason: "任务结束但没有可用结果", action: "请查看详情后再决定是否重试" },
     malformed_response: { reason: "模型服务返回了无法解析的内容", action: "请查看详情并核对原任务状态后，再决定是否重新生成" },
@@ -135,6 +145,8 @@ const CATEGORY_COPY: Record<GenerationErrorCategory, CategoryCopy> = {
 
 const PROVIDER_CODE_CATEGORIES: Record<string, GenerationErrorCategory> = {
     local_storage_failed: "local_storage",
+    local_credential_failed: "local_credential",
+    local_disk_full: "local_disk_full",
     accountoverdueerror: "quota_upstream",
     "operationdenied.serviceoverdue": "quota_upstream",
     setlimitexceeded: "quota_limit",
@@ -200,6 +212,9 @@ const PROVIDER_CODE_CATEGORIES: Record<string, GenerationErrorCategory> = {
     sensitive_words_detected: "moderation_input",
     content_filter: "moderation_input",
     content_policy_violation: "moderation_input",
+    contentmoderationfailed: "moderation_input",
+    "invalidparameter.voilationcontent": "moderation_input",
+    "invalidparameter.violationcontent": "moderation_input",
     content_policy: "moderation_input",
     datainspectionfailed: "moderation_input",
     prohibited_content: "moderation_input",
@@ -277,17 +292,18 @@ export function explainGenerationError(error: unknown, context: GenerationFailur
     const uncertain = classified.uncertain || classified.category === "submission_uncertain" || classified.category === "download_failed" || (classified.category === "timeout" && classified.status === 524);
     return {
         category: classified.category,
-        summary: classified.category === "local_storage" ? copy.reason : sanitizeProviderText(error instanceof Error ? error.message : typeof error === "string" ? error : providerPayloadMessage(error)),
+        httpStatus: classified.status,
+        summary: ["local_storage", "local_disk_full"].includes(classified.category) ? copy.reason : sanitizeProviderText(error instanceof Error ? error.message : typeof error === "string" ? error : providerPayloadMessage(error)),
         reason: copy.reason,
         action: copy.action,
         message: message || DEFAULT_GENERATION_ERROR_MESSAGE,
         errorCode: classified.category,
         providerCode: classified.providerCode || undefined,
-        requestId: sanitizeDebugId(classified.requestId || context.providerRequestId) || undefined,
+        requestId: sanitizeDebugId(classified.requestId || (error && typeof error === "object" && "requestId" in error && typeof error.requestId === "string" ? error.requestId : "") || context.providerRequestId) || undefined,
         taskId: sanitizeDebugId(classified.taskId || context.taskId) || undefined,
         retryable: Boolean(classified.retryable) && !uncertain && !moderation,
         uncertain,
-        blockAutomaticRetry: uncertain || moderation || !["throttled", "concurrency", "provider_unavailable", "cancelled"].includes(classified.category),
+        blockAutomaticRetry: uncertain || moderation || !["throttled", "concurrency", "provider_unavailable", "cancelled", "request_not_sent"].includes(classified.category),
         moderation,
     };
 }
@@ -367,17 +383,19 @@ export function formatGenerationDiagnostics(explanation: GenerationFailureExplan
     const evidence = context.failureDiagnostics;
     const taskId = sanitizeDebugId(context.taskId) || sanitizeDebugId(explanation.taskId);
     const requestId = sanitizeDebugId(evidence?.requestId) || sanitizeDebugId(explanation.requestId);
-    const model = sanitizeProviderCode(context.model || "");
+    const model = sanitizeProviderCode(evidence?.input?.model || context.model || "");
     const createdAt = context.createdAt && /^\d{4}-\d{2}-\d{2}[T ][\d:.+Z-]{5,35}$/.test(context.createdAt) ? context.createdAt : "";
     const lines = [
         "排查信息版本：2",
         `原因：${sanitizeProviderText(explanation.reason)}`,
         explanation.action ? `下一步：${sanitizeProviderText(explanation.action)}` : "",
         `类别：${explanation.category}`,
-        `错误来源：${explanation.category === "local_storage" ? "本地任务存储" : ({ local_validation: "本地参数校验", upstream_http: "上游 HTTP 响应", upstream_response: "上游业务响应", local_result: "本地结果处理", local_response: "本地响应大小限制", client_result: "画布应用结果", unknown: "未记录" } as Record<string, string>)[evidence?.source || "unknown"] || "未记录"}`,
+        explanation.category === "local_credential" ? `失败阶段：读取本地算力凭据${explanation.summary?.includes("尚未提交生成") ? "（尚未提交生成）" : ""}` : "",
+        `错误来源：${explanation.category === "local_credential" ? "本地算力连接" : explanation.category === "local_disk_full" ? "本地磁盘写入" : explanation.category === "local_storage" ? "本地任务存储" : ({ local_validation: "本地参数校验", upstream_http: "上游 HTTP 响应", upstream_response: "上游业务响应", local_result: "本地结果处理", local_response: "本地响应大小限制", client_result: "画布应用结果", unknown: "未记录" } as Record<string, string>)[evidence?.source || "unknown"] || "未记录"}`,
         `错误摘要：${sanitizeProviderText(evidence?.summary || context.errorSummary || explanation.summary || "") || "未记录"}`,
         evidence && ["upstream_http", "upstream_response"].includes(evidence.source) && sanitizeProviderCode(evidence.providerCode || "") ? `上游代码：${sanitizeProviderCode(evidence.providerCode || "")}` : "",
         evidence?.httpStatus && Number.isInteger(evidence.httpStatus) && evidence.httpStatus >= 100 && evidence.httpStatus <= 599 ? `HTTP 状态：${evidence.httpStatus}` : "",
+        !evidence?.httpStatus && explanation.httpStatus ? `HTTP 状态：${explanation.httpStatus}` : "",
         sanitizeProviderCode(evidence?.param || "") ? `参数：${sanitizeProviderCode(evidence?.param || "")}` : "",
         sanitizeProviderText(evidence?.stage || context.stage || "") ? `失败阶段：${sanitizeProviderText(evidence?.stage || context.stage || "")}` : "",
         taskId ? `任务 ID：${taskId}` : "",
@@ -404,10 +422,13 @@ function formatExecutionEvidence(evidence?: GenerationFailureDiagnostics): strin
         if (input.imageLimitsRecorded) lines.push(`本地参考图限制：最多 ${number(input.maxImages)} 张，单图字节上限=${number(input.maxImageBytes)}（字节上限为 0 表示未设置大小限制）`);
         input.images?.slice(0, 16).forEach((media, i) => lines.push(`参考图 ${i + 1}：${number(media.width)}×${number(media.height)}，${number(media.bytes)} 字节`));
     }
-    const outcomes: Record<string, string> = { response_received: "收到响应（业务结果另判）", transport_error: "传输或读取失败", not_dispatched: "本地拦截，未发送", http_error: "HTTP 错误", cancelled: "取消", timeout: "超时", business_error: "业务错误", response_limit: "本地响应大小限制" };
+    const outcomes: Record<string, string> = { response_received: "收到响应（业务结果另判）", transport_error: "传输或读取失败", not_dispatched: "请求未发送", http_error: "HTTP 错误", cancelled: "取消", timeout: "超时", business_error: "业务错误", response_limit: "本地响应大小限制" };
+    const phases: Record<string, string> = { connect: "建立连接", tls: "TLS 握手", request: "发送请求", response_wait: "等待响应", response: "读取响应" };
+    const routes: Record<string, string> = { direct: "直连", proxy: "代理" };
     evidence?.requests?.slice(0, 8).forEach((request, i) => {
         lines.push(`请求 ${i + 1}：${sanitizeProviderCode(request.operation)}；${outcomes[request.outcome] || "未知"}；已发起=${request.dispatched === true ? "是" : "否"}；HTTP=${number(request.httpStatus)}；ID=${sanitizeDebugId(request.requestId) || "未记录"}；耗时=${number(request.durationMs)}ms`);
-        lines.push(`请求 ${i + 1} 字节：提交=${number(request.requestBytes)}；响应声明=${number(request.declaredResponseBytes)}；已读=${number(request.receivedBytes)}；响应上限=${number(request.responseLimitBytes)}`);
+        lines.push(`请求 ${i + 1} 字节：请求体大小=${number(request.requestBytes)}（不代表已发送）；响应声明=${number(request.declaredResponseBytes)}；已读=${number(request.receivedBytes)}；响应上限=${number(request.responseLimitBytes)}`);
+        if (phases[request.transportPhase || ""]) lines.push(`请求 ${i + 1} 连接：${routes[request.transportRoute || ""] || "未记录"}；阶段=${phases[request.transportPhase!]}`);
         if (/^\d{4}-\d{2}-\d{2}[T ][\d:.+Z-]{5,35}$/.test(request.startedAt)) lines.push(`请求 ${i + 1} 时间：${request.startedAt}`);
         if (sanitizeProviderCode(request.providerCode || "")) lines.push(`请求 ${i + 1} 上游代码：${sanitizeProviderCode(request.providerCode || "")}`);
         if (request.summary) lines.push(`请求 ${i + 1} 摘要：${sanitizeProviderText(request.summary)}`);
@@ -438,16 +459,29 @@ type Classified = {
 };
 
 function classifyUnknown(error: unknown, context: GenerationFailureContext): Classified {
-    if (context.stage === "submission_unknown") return { category: "submission_uncertain", uncertain: true, retryable: false };
+    if (context.stage === "submission_unknown") {
+        const classified = classifyUnknown(error, { ...context, stage: undefined });
+        if (classified.fromCode && classified.uncertain) return classified;
+        return { category: "submission_uncertain", uncertain: true, retryable: false };
+    }
     if (!error) return { category: "unknown", retryable: false };
     if (typeof error === "object" && error) {
     const record = error as Record<string, unknown>;
+        if (record.reason === "local_credential_failed") return { category: "local_credential", status: numericStatus(record.status), fromCode: true, retryable: false };
+        if (record.reason === "local_disk_full") return { category: "local_disk_full", status: numericStatus(record.status), fromCode: true, retryable: false };
         if (record.reason === "local_storage_failed") return { category: "local_storage", ...LOCAL_TASK_ADMISSION_FAILURE, fromCode: true, retryable: false };
         if (record.name === "ApiError" && record.reason === "quota_exceeded") {
             return { category: "quota_limit", reason: sanitizeProviderText(String(record.message || "工作区用量已达到上限")), action: "请清理不需要的任务记录或素材后重试", fromCode: true, retryable: false };
         }
         if (record.reason === "stale_revision" || record.code === "canvas_conflict") {
             return { category: "canvas_conflict", fromCode: true, retryable: false };
+        }
+        if (typeof record.code === "string" && typeof record.message === "string") {
+            const vodCopy = vodImageErrorCopy(record.code, record.message);
+            if (vodCopy) return vodCopy;
+        }
+        if (record.code === "download_failed" || record.code === "result_apply_failed") {
+            return { category: record.code, fromCode: true, retryable: false };
         }
         if (typeof record.message === "string" && isCanvasSaveConflictText(record.message) && (record.reason === "conflict" || record.status === 409 || record.status === 428)) {
             return { category: "canvas_conflict", fromCode: true, retryable: false };
@@ -480,6 +514,8 @@ function classifyHttp(status: number | undefined, body: unknown): Classified {
         if (fromObject.fromCode || (fromObject.category !== "unknown" && classified.category === "unknown")) classified = fromObject;
     }
     const fields = extractProviderFields(typeof body === "string" ? body : body && typeof body === "object" ? stringifyAllowlisted(body) : "");
+    // Local API reasons are handled before this provider-response fallback.
+    if (classified.category === "local_disk_full" || classified.category === "local_credential") classified = { category: "unknown", retryable: false };
     if (status === 402 && fields.code === "video_reservation_failed" && fields.message.startsWith("insufficient balance for this video request")) {
         classified = { ...classified, category: "quota_user", fromCode: true, reason: undefined, action: undefined };
     }
@@ -555,8 +591,11 @@ function classifyText(raw: string): Classified {
     const storage = resourceStorageFailureMessage(text);
     if (storage) return { category: "input_inaccessible", reason: storage.replace(/。$/, ""), action: "", retryable: false };
     const fields = extractProviderFields(text);
+    const vodCopy = vodImageErrorCopy(fields.code, /^[{[]/.test(text) ? fields.message : text);
+    if (vodCopy) return { ...vodCopy, requestId: sanitizeDebugId(fields.requestId), taskId: sanitizeDebugId(fields.taskId) };
     // Inspect only the error message, never JSON request echoes or debug fields.
     const databaseMessage = fields.code || fields.type || fields.message || fields.status || /^[{[]/.test(text) ? fields.message : text;
+    if (/(write local resource|生成内容写入资源存储失败|database or disk is full|本地磁盘空间不足)/i.test(databaseMessage) && /(no space left on device|not enough space on the disk|disk full|database or disk is full|本地磁盘空间不足)/i.test(databaseMessage)) return { category: "local_disk_full", fromCode: true, retryable: false };
     if (LOCAL_DATABASE_ERROR.test(databaseMessage)) return { category: "local_storage", fromCode: true, requestId: sanitizeDebugId(fields.requestId), taskId: sanitizeDebugId(fields.taskId), retryable: false };
     if (fields.code || fields.type || fields.message || fields.status) {
         const fromCode = categoryFromProviderCode(fields.code, fields.type, fields.status);
@@ -877,6 +916,11 @@ function categoryFromProviderMessage(raw: string): GenerationErrorCategory | "" 
 
 function containsContentSafety(normalized: string) {
     return (
+        /\brejected (?:by the|as a result of (?:our|the)) safety system\b/.test(normalized) ||
+        normalized.includes("contentmoderationfailed") ||
+        normalized.includes("invalidparameter.voilationcontent") ||
+        normalized.includes("invalidparameter.violationcontent") ||
+        normalized.includes("上游内容安全策略") ||
         normalized.includes("sensitive_words_detected") ||
         normalized.includes("content policy") ||
         normalized.includes("content safety") ||
@@ -1000,7 +1044,7 @@ function isModerationCategory(value: string) {
 }
 
 function retryableCategory(category: GenerationErrorCategory) {
-    return category === "throttled" || category === "provider_unavailable" || category === "network" || category === "timeout" || category === "concurrency";
+    return category === "throttled" || category === "provider_unavailable" || category === "network" || category === "timeout" || category === "concurrency" || category === "request_not_sent";
 }
 
 function isNetworkText(value: string) {

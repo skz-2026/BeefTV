@@ -72,7 +72,6 @@ func TestRegisterDesktopCanvasAPIExcludesHostedOnlyRoutes(t *testing.T) {
 		"POST /api/ai/models":                              false,
 		"GET /api/beefapi/connection":                      false,
 		"POST /api/beefapi/connection/start":               false,
-		"PUT /api/canvas-projects/:id/generated-assets":    false,
 		"GET /api/creation-conversations":                  false,
 		"PUT /api/creation-conversations/:id":              false,
 		"GET /api/canvas-folders":                          false,
@@ -158,20 +157,15 @@ func TestRegisterCanvasAPIOmitsLegacyNodeMutationRoutes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			router := gin.New()
 			register(router.Group("/api"), &app.Service{})
-			keptGeneratedAssets := false
 			for _, route := range router.Routes() {
 				key := route.Method + " " + route.Path
 				switch key {
 				case "DELETE /api/canvas-projects/:id/nodes/:nodeId",
 					"PATCH /api/canvas-projects/:id/nodes/:nodeId",
-					"POST /api/canvas-projects/:id/connections":
-					t.Fatalf("%s still registers retired node mutation route %s", name, key)
-				case "PUT /api/canvas-projects/:id/generated-assets":
-					keptGeneratedAssets = true
+					"POST /api/canvas-projects/:id/connections",
+					"PUT /api/canvas-projects/:id/generated-assets":
+					t.Fatalf("%s still registers retired canvas route %s", name, key)
 				}
-			}
-			if !keptGeneratedAssets {
-				t.Fatalf("%s dropped PUT /api/canvas-projects/:id/generated-assets", name)
 			}
 		})
 	}

@@ -69,6 +69,7 @@ type CanvasNodeContextMenuProps = {
     onDuplicate: () => void;
     onDelete: () => void;
     onSaveAsset: () => void;
+    onRegisterProduction?: () => void;
     onViewMedia: () => void;
     onEditText: () => void;
     onOpenDrawing: () => void;
@@ -109,6 +110,7 @@ export function CanvasNodeContextMenu({
     onDuplicate,
     onDelete,
     onSaveAsset,
+    onRegisterProduction,
     onViewMedia,
     onEditText,
     onOpenDrawing,
@@ -237,6 +239,7 @@ export function CanvasNodeContextMenu({
                                     <MenuSection label="节点" />
                                             <MenuButton icon={<Copy />} label="复制角色引用" shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
                                     <MenuButton icon={<Layers3 />} label="创建引用副本" shortcut="⌘D" onClick={() => runAction(onDuplicate)} />
+                                    {onRegisterProduction && node?.metadata?.taskId && <MenuButton icon={<Link2 />} label="关联制作记录" onClick={() => runAction(onRegisterProduction)} />}
                                     <MenuButton icon={<Trash2 />} label="删除节点" danger onClick={() => runAction(onDelete)} />
                                 </>
                             ) : isMedia ? (

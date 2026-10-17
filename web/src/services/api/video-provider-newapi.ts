@@ -1,5 +1,6 @@
 import { modelCapabilityConfigFor, videoResolutionRequest } from "@/lib/model-capabilities";
 import { boolConfig } from "@/lib/seedance-video";
+import { h3Duration, h3GenerationControls, h3MediaPayload, isH3Model } from "@/lib/h3-video";
 import { getResourceBlob, getResourceOSSUrl } from "@/services/api/resources";
 import { beefAPIVideoContract, isBeefAPIEndpoint } from "@/lib/beefapi-video-contracts";
 import { modelOptionName } from "@/stores/use-config-store";
@@ -30,17 +31,24 @@ export async function createVideoGenerationsTask(deps: VideoProviderDeps, config
         Promise.all(audioReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey, inline))),
     ]);
     const resolution = newAPIVideoResolutionRequest(profile, config.vquality, modelOptionName(model));
+    const h3 = contract !== undefined && isH3Model(model);
+    const h3Media = h3 ? h3MediaPayload(model,[...imageUrls.map((url,i)=>({id:references[i]!.id,type:"image" as const,url})),...videoUrls.map((url,i)=>({id:videoReferences[i]!.id,type:"video" as const,url})),...audioUrls.map((url,i)=>({id:audioReferences[i]!.id,type:"audio" as const,url}))],options,Number(h3Duration(model,config.videoSeconds)),resolution) : undefined;
+    const h3Ratio = config.size.trim() || (h3Media?.referenceMode ? "adaptive" : "16:9");
+    if (h3 && !h3Media?.referenceMode && !h3Media?.frameMode && h3Ratio==="adaptive") throw new Error("自适应比例仅支持参考生成，请选择固定比例");
     const payload = {
         model: modelOptionName(model),
         prompt: prompt.trim(),
+        ...(h3 ? h3GenerationControls(model, options?.videoH3Options) : {}),
         ...(isApiMartVideoConfig(config)
             ? { duration: normalizeVideoSeconds(config.videoSeconds), size: normalizeVideoSize(config.size) || "16:9" }
-            : { seconds: normalizeVideoSeconds(config.videoSeconds), aspect_ratio: normalizeVideoSize(config.size) || "16:9" }),
+            : { seconds: h3 ? h3Duration(model, config.videoSeconds) : normalizeVideoSeconds(config.videoSeconds), ...(h3 ? (h3Media?.frameMode ? {} : {aspect_ratio: h3Ratio}) : {aspect_ratio: normalizeVideoSize(config.size) || "16:9"}) }),
         ...(resolution ? { resolution } : {}),
-        ...(profile.generateAudio.supported ? { generate_audio: boolConfig(config.videoGenerateAudio, profile.generateAudio.default) } : {}),
-        ...(imageUrls.length ? { image_urls: imageUrls } : {}),
-        ...(videoUrls.length ? { video_urls: videoUrls } : {}),
-        ...(audioUrls.length ? { audio_urls: audioUrls } : {}),
+        ...(!h3 && profile.generateAudio.supported ? { generate_audio: boolConfig(config.videoGenerateAudio, profile.generateAudio.default) } : {}),
+        ...(h3 ? h3Media?.payload : {
+            ...(imageUrls.length ? {image_urls: imageUrls} : {}),
+            ...(videoUrls.length ? {video_urls: videoUrls} : {}),
+            ...(audioUrls.length ? {audio_urls: audioUrls} : {}),
+        }),
     };
     try {
         const raw = await deps.transport.post<ApiVideoResponse>(deps.transport.apiUrl(isApiMartVideoConfig(config) ? "/videos/generations" : "/video/generations"), payload, options);

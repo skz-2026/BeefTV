@@ -71,6 +71,8 @@ export type AssistantGenerationProposal = {
 export type AgentTurnEnd = {
     type: "turn_end";
     turnId?: string;
+    /** 宿主本回合实际使用的会话；旧 JSONL 会话首次发消息会交接给新的 Durable 会话，界面据此更新。 */
+    sessionId?: string;
     permissionMode?: AssistantPermissionMode;
     reply: string;
     toolCalls: AgentToolCall[];
@@ -141,6 +143,11 @@ let uiSessionGeneration = 0;
  */
 export function agentAssistantFailureText(reason: string | undefined, fallback = "创作助手暂时不可用，请稍后再试") {
     switch (reason) {
+        case "skill_instruction_too_large":
+            return "所选技能正文过大，请减少所选技能或将部分内容移到参考文件后重试。";
+        case "body_too_large":
+        case "http_413":
+            return "本次消息内容过大，请缩短消息或减少附件后重试。";
         case "turn_timeout":
             return "模型响应时间过长，这一轮尚未完成。已完成的改动会保留，可以继续处理。";
         case "turn_interrupted":
@@ -184,7 +191,7 @@ export async function getAgentHostStatus(): Promise<AgentHostStatus> {
 }
 
 /** UI 会话头由页面内存里的凭据提供；助手的每条路由都走同一套认证。 */
-async function uiSessionConfig() {
+export async function uiSessionConfig() {
     const token = await ensureAgentUiSession();
     return { headers: { "X-Beeftv-Ui-Session": token } };
 }
@@ -237,6 +244,25 @@ export async function undoAssistantTurn(turnId: string, canvasId: string): Promi
         return { ok: true, revision: data?.revision ?? 0 };
     } catch (error) {
         return { ok: false, failure: assistantUndoFailure(error) };
+    }
+}
+
+/** 已撤销的一轮不再开始生成；这是后端给出的唯一判定，界面隐藏按钮只是提示。 */
+export const ASSISTANT_PROPOSAL_UNDONE_TEXT = "这一轮已撤销，不会生成。";
+
+/**
+ * 开始生成前由后端确认生成建议所属的一轮仍然有效。
+ * 返回 null 表示可以继续；否则返回给用户看的一句话，不会提交任何生成。
+ */
+export async function confirmAssistantProposalRunnable(turnId: string, proposalId: string, canvasId: string): Promise<string | null> {
+    try {
+        await http.post<{ runnable: boolean }>(`/assistant/turns/${encodeURIComponent(turnId)}/proposals/${encodeURIComponent(proposalId)}/run`, { canvasId }, await uiSessionConfig());
+        return null;
+    } catch (error) {
+        const reason = error instanceof ApiError ? error.reason : undefined;
+        if (reason === "turn_undone") return ASSISTANT_PROPOSAL_UNDONE_TEXT;
+        if (reason === "turn_not_found") return "找不到这一轮对话，未提交生成。请让助手重新提出方案。";
+        return "无法确认这项生成是否还能进行，未提交生成。请检查连接后重试。";
     }
 }
 
@@ -307,6 +333,7 @@ export type AgentLifecycleEvent = {
 };
 
 export type StreamHandlers = {
+    onSession?: (sessionId: string) => void;
     onDelta?: (delta: string) => void;
     onTurnEnd?: (end: AgentTurnEnd) => void;
     onLifecycle?: (event: AgentLifecycleEvent) => void;
@@ -347,6 +374,7 @@ export type AssistantAttachment = {
 function attachmentRequestValue({ resourceId, kind, name, mimeType, bytes, purpose, start, end, durationMs, nodeId, assetId }: AssistantAttachment): AssistantAttachment {
     return { resourceId, kind, name, mimeType, bytes, purpose, start, end, durationMs, nodeId, assetId };
 }
+/** skillName/version 是后端在选定时记下的显示名；缺失表示技能已不可识别，界面不得退回显示标识。 */
 export type AssistantSkillSelection = { skillId: string; versionId: string; contentHash: string; skillName?: string; version?: string };
 export type AssistantSupplementInput = { message: string; attachments?: AssistantAttachment[]; skills?: AssistantSkillSelection[] };
 
@@ -454,6 +482,10 @@ async function readAgentTurnStream(
             payload = JSON.parse(trimmed) as Record<string, unknown>;
         } catch {
             malformedLine = trimmed.slice(0, 200);
+            return;
+        }
+        if (payload.type === "session" && typeof payload.sessionId === "string" && payload.sessionId) {
+            handlers.onSession?.(payload.sessionId);
             return;
         }
         if (payload.type === "text_delta" && typeof payload.delta === "string") {

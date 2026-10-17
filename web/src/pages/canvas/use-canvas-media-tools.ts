@@ -36,9 +36,10 @@ import { DEFAULT_PORTRAIT_TEXTURE_SETTINGS } from "@/lib/canvas/canvas-portrait-
 import { IMAGE_PROMPT_REVERSE } from "@/lib/prompts";
 import { createPortraitTextureNode } from "@/lib/canvas/canvas-image-source";
 import { mediaResultMetadata } from "@/lib/canvas/canvas-node-semantics";
-import { recoverOwnedDepthCaptureNodes } from "@/lib/canvas/canvas-depth-recover";
+import { attachOwnedDepthCaptureResult, recoverOwnedDepthCaptureNode, recoverOwnedDepthCaptureNodes } from "@/lib/canvas/canvas-depth-recover";
+import { depthCaptureTaskMetadata, depthCaptureWaitFailureMetadata } from "@/lib/canvas/canvas-depth-capture";
 import { persistOwnedCanvasMediaNodes } from "@/lib/canvas/canvas-media-persist";
-import { captureVideoFrames } from "@/lib/canvas/canvas-video-frame";
+import { captureVideoFrames, resolveVideoFramePresetTimeMs } from "@/lib/canvas/canvas-video-frame";
 import { resolveCanvasVideoDurationMs } from "@/lib/canvas/canvas-video-duration";
 import { buildVideoFrameNodes } from "@/lib/canvas/canvas-video-frame-nodes";
 import { mergeVideos, warmFFmpeg, type MergeVideoProgress } from "@/lib/canvas/canvas-video-merge";
@@ -49,18 +50,18 @@ import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { defaultImageParamsForModel } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { storeGeneratedVideo } from "@/services/api/video";
-import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
+import { getMediaBlob, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { syncLocalCanvasSnapshot } from "@/services/local-workspace-sync";
-import { openLocalCanvasProjectFromBackend } from "@/services/local-workspace-repository";
+import { openLocalCanvasProjectFromBackend, persistCanvasDocument } from "@/services/local-workspace-repository";
 import { http } from "@/services/api/request";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { type GenerationTask } from "@/services/api/task-center";
-import { ownedResourceIdFromMediaRef, resourceFileUrl, resourceStorageKey } from "@/services/api/resources";
+import { queryGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { getResourcePlaybackBlob, ownedResourceIdFromMediaRef, resourceStorageKey } from "@/services/api/resources";
 import {
-    attachLocalExecutorResult,
+    assertLocalExecutorSession,
     beginLocalExecutorSession,
     isLocalExecutorSessionStop,
     isUncertainLocalExecutorSubmit,
@@ -129,7 +130,7 @@ export function useCanvasMediaTools({
     finishGenerationRequest,
     bindGenerationTask,
 }: UseCanvasMediaToolsOptions) {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const extractingVideoFramesNodeIdRef = useRef<string | null>(null);
@@ -352,7 +353,6 @@ export function useCanvasMediaTools({
         }
         const expectedScope = captureUserScope();
         const originalProjectId = projectId;
-        const persistOriginal = persistMediaNodes;
         const observer = new AbortController();
         depthObserversRef.current.add(observer);
         const frozenInputKey = localExecutorFrozenInputKey(["depth_capture", originalProjectId, resourceId]);
@@ -377,60 +377,43 @@ export function useCanvasMediaTools({
                 taskClientOperationInput: frozenInputKey,
             }),
         };
-        setNodes((current) => [...current, pendingChild]);
+        nodesRef.current = [...nodesRef.current, pendingChild];
+        connectionsRef.current = [...connectionsRef.current, connection];
+        setNodes(nodesRef.current);
         setConnections((current) => [...current, connection]);
         setSelectedNodeIds(new Set([childId]));
         setSelectedConnectionId(null);
         let submittedTaskId: string | undefined;
+        let latestDepthTask: GenerationTask | undefined;
         try {
             const session = beginLocalExecutorSession(originalProjectId, {
                 controller: observer,
                 getLiveProjectId: () => projectIdRef.current,
                 expectedScope,
             });
-            const { task, resource, capture } = await runOwnedDepthCapture({
+            await persistCanvasDocument(originalProjectId, { nodes: nodesRef.current, connections: connectionsRef.current }, expectedScope);
+            assertLocalExecutorSession(session);
+            if (!nodesRef.current.some(item => item.id === childId)) return;
+            const { task } = await runOwnedDepthCapture({
                 session,
                 projectId: originalProjectId,
                 resourceId,
+                nodeId: childId,
                 clientOperationId,
-                onCreated: (created) => {
+                onCreated: async (created) => {
+                    latestDepthTask = created;
                     submittedTaskId = created.id;
-                    setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, taskId: created.id, taskStatus: created.status, taskClientOperationId: created.clientOperationId || clientOperationId } } : item));
+                    nodesRef.current = nodesRef.current.map(item => item.id === childId && item.metadata?.taskClientOperationId === clientOperationId ? { ...item, metadata: { ...item.metadata, taskId: created.id, taskStatus: created.status, taskClientOperationId: created.clientOperationId || clientOperationId } } : item);
+                    setNodes(nodesRef.current);
+                    await persistCanvasDocument(originalProjectId, { nodes: nodesRef.current, connections: connectionsRef.current }, expectedScope);
                 },
-                onTaskUpdate: (next) => setNodes((current) => current.map((item) => item.id === childId ? {
-                    ...item,
-                    metadata: { ...item.metadata, taskStatus: next.status, taskStage: next.stage, processingLabel: next.stage || "正在生成深度视频", taskProgress: next.progress },
-                } : item)),
+                onTaskUpdate: (next) => {
+                    latestDepthTask = next;
+                    setNodes((current) => current.map((item) => item.id === childId && item.metadata?.taskId === next.id ? { ...item, metadata: { ...item.metadata, ...depthCaptureTaskMetadata(next) } } : item));
+                },
             });
-            const size = fitNodeSize(resource.width || capture.width || 1920, resource.height || capture.height || 1080, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
-            const completedChild: CanvasNodeData = {
-                ...pendingChild,
-                width: size.width,
-                height: size.height,
-                metadata: mediaResultMetadata("derived", {
-                    content: resourceFileUrl(capture.resourceId),
-                    storageKey: resourceStorageKey(capture.resourceId),
-                    mimeType: resource.mimeType || "video/mp4",
-                    bytes: resource.size || capture.size,
-                    naturalWidth: resource.width || capture.width || 1920,
-                    naturalHeight: resource.height || capture.height || 1080,
-                    durationMs: resource.durationMs || capture.durationMs,
-                    status: NODE_STATUS_SUCCESS,
-                    videoPreview: undefined,
-                    taskId: task.id,
-                    taskClientOperationId: task.clientOperationId || clientOperationId,
-                    taskClientOperationInput: frozenInputKey,
-                    taskStatus: task.status,
-                    taskStage: task.stage,
-                    taskProgress: 100,
-                    prompt: pendingChild.metadata?.prompt,
-                    depthSourceNodeId: node.id,
-                }),
-            };
-            await attachLocalExecutorResult(session, async () => {
-                setNodes((current) => current.map((item) => item.id === childId ? completedChild : item));
-                await persistOriginal([completedChild], [connection], { expectedScope, signal: observer.signal });
-            });
+            const target = nodesRef.current.find(item => item.id === childId);
+            if (target?.metadata?.taskId === task.id) await attachOwnedDepthCaptureResult({ node: target, task, session, nodesRef, setNodes });
         } catch (error) {
             if (isLocalExecutorSessionStop(error)) return;
             const details = error instanceof Error ? error.message : "深度动作捕捉失败";
@@ -440,27 +423,47 @@ export function useCanvasMediaTools({
                 frozenInputKey,
             }, error);
             const uncertain = isUncertainLocalExecutorSubmit(error, submittedTaskId);
-            setNodes((current) => current.map((item) => item.id === childId ? {
+            setNodes((current) => current.map((item) => item.id === childId && item.metadata?.taskClientOperationId === clientOperationId ? {
                 ...item,
                 metadata: {
                     ...item.metadata,
                     status: NODE_STATUS_ERROR,
-                    taskStatus: "failed",
                     taskId: submittedTaskId,
                     taskClientOperationId: intent.clientOperationId,
                     taskClientOperationInput: frozenInputKey,
                     taskClientOperationTerminal: intent.terminal,
                     taskStage: uncertain ? "submission_unknown" : item.metadata?.taskStage,
                     errorDetails: details,
+                    ...(!uncertain ? depthCaptureWaitFailureMetadata(error, latestDepthTask || submittedTaskId) : {}),
                 },
             } : item));
             message.error(details);
         } finally {
             depthObserversRef.current.delete(observer);
         }
-    }, [message, persistMediaNodes, projectId, setConnections, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+    }, [message, nodesRef, connectionsRef, projectId, setConnections, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
 
     const retryDepthCaptureNode = useCallback(async (node: CanvasNodeData) => {
+        // A known task is recovered before considering a new execution.
+        if (node.metadata?.taskId) {
+            const observer = new AbortController();
+            depthObserversRef.current.add(observer);
+            try {
+                const session = beginLocalExecutorSession(projectId, {
+                    controller: observer, getLiveProjectId: () => projectIdRef.current,
+                });
+                const existing = await queryGenerationTask(node.metadata.taskId, { signal: observer.signal, expectedScope: session.expectedScope });
+                assertLocalExecutorSession(session);
+                if (!nodesRef.current.some(item => item.id === node.id && item.metadata?.taskId === existing.id)) return;
+                if (existing.status !== "failed" && existing.status !== "cancelled") {
+                    await recoverOwnedDepthCaptureNode({ node, nodesRef, setNodes, session });
+                    return;
+                }
+            } catch (error) {
+                if (!isLocalExecutorSessionStop(error)) message.error(generationErrorMessage(error));
+                return;
+            } finally { depthObserversRef.current.delete(observer); }
+        }
         const sourceNodeId = node.metadata?.depthSourceNodeId;
         const sourceNode = sourceNodeId ? nodesRef.current.find((item) => item.id === sourceNodeId) : undefined;
         const resourceId = sourceNode ? ownedResourceIdFromMediaRef(sourceNode.metadata?.storageKey, sourceNode.metadata?.content) : undefined;
@@ -472,7 +475,6 @@ export function useCanvasMediaTools({
         }
         const expectedScope = captureUserScope();
         const originalProjectId = projectId;
-        const persistOriginal = persistMediaNodes;
         const observer = new AbortController();
         depthObserversRef.current.add(observer);
         const frozenInputKey = localExecutorFrozenInputKey(["depth_capture", originalProjectId, resourceId]);
@@ -482,7 +484,7 @@ export function useCanvasMediaTools({
             frozenInputKey: node.metadata?.taskClientOperationInput,
             terminal: node.metadata?.taskClientOperationTerminal,
         }, frozenInputKey);
-        setNodes((current) => current.map((item) => item.id === node.id ? {
+        nodesRef.current = nodesRef.current.map((item) => item.id === node.id ? {
             ...item,
             metadata: {
                 ...item.metadata,
@@ -491,62 +493,45 @@ export function useCanvasMediaTools({
                 taskStage: "检查深度处理组件",
                 taskProgress: 0,
                 taskStatus: "queued",
+                taskId: undefined,
                 taskClientOperationId: clientOperationId,
                 taskClientOperationInput: frozenInputKey,
                 taskClientOperationTerminal: undefined,
                 errorDetails: undefined,
             },
-        } : item));
+        } : item);
+        setNodes(nodesRef.current);
         let submittedTaskId: string | undefined;
+        let latestDepthTask: GenerationTask | undefined;
         try {
             const session = beginLocalExecutorSession(originalProjectId, {
                 controller: observer,
                 getLiveProjectId: () => projectIdRef.current,
                 expectedScope,
             });
-            const { task, resource, capture } = await runOwnedDepthCapture({
+            await persistCanvasDocument(originalProjectId, { nodes: nodesRef.current, connections: connectionsRef.current }, expectedScope);
+            assertLocalExecutorSession(session);
+            if (!nodesRef.current.some(item => item.id === node.id && item.metadata?.taskClientOperationId === clientOperationId)) return;
+            const { task } = await runOwnedDepthCapture({
                 session,
                 projectId: originalProjectId,
                 resourceId,
+                nodeId: node.id,
                 clientOperationId,
-                onCreated: (created) => {
+                onCreated: async (created) => {
+                    latestDepthTask = created;
                     submittedTaskId = created.id;
-                    setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, taskId: created.id, taskStatus: created.status, taskClientOperationId: created.clientOperationId || clientOperationId } } : item));
+                    nodesRef.current = nodesRef.current.map(item => item.id === node.id && item.metadata?.taskClientOperationId === clientOperationId ? { ...item, metadata: { ...item.metadata, taskId: created.id, taskStatus: created.status, taskClientOperationId: created.clientOperationId || clientOperationId } } : item);
+                    setNodes(nodesRef.current);
+                    await persistCanvasDocument(originalProjectId, { nodes: nodesRef.current, connections: connectionsRef.current }, expectedScope);
                 },
-                onTaskUpdate: (next) => setNodes((current) => current.map((item) => item.id === node.id ? {
-                    ...item,
-                    metadata: { ...item.metadata, taskStatus: next.status, taskStage: next.stage, processingLabel: next.stage || "正在生成深度视频", taskProgress: next.progress },
-                } : item)),
+                onTaskUpdate: (next) => {
+                    latestDepthTask = next;
+                    setNodes((current) => current.map((item) => item.id === node.id && item.metadata?.taskId === next.id ? { ...item, metadata: { ...item.metadata, ...depthCaptureTaskMetadata(next) } } : item));
+                },
             });
-            const size = fitNodeSize(resource.width || capture.width || 1920, resource.height || capture.height || 1080, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
-            const completedNode: CanvasNodeData = {
-                ...node,
-                width: size.width,
-                height: size.height,
-                metadata: mediaResultMetadata("derived", {
-                    content: resourceFileUrl(capture.resourceId),
-                    storageKey: resourceStorageKey(capture.resourceId),
-                    mimeType: resource.mimeType || "video/mp4",
-                    bytes: resource.size || capture.size,
-                    naturalWidth: resource.width || capture.width || 1920,
-                    naturalHeight: resource.height || capture.height || 1080,
-                    durationMs: resource.durationMs || capture.durationMs,
-                    status: NODE_STATUS_SUCCESS,
-                    videoPreview: undefined,
-                    taskId: task.id,
-                    taskClientOperationId: task.clientOperationId || clientOperationId,
-                    taskClientOperationInput: frozenInputKey,
-                    taskStatus: task.status,
-                    taskStage: task.stage,
-                    taskProgress: 100,
-                    prompt: node.metadata?.prompt,
-                    depthSourceNodeId: sourceNode.id,
-                }),
-            };
-            await attachLocalExecutorResult(session, async () => {
-                setNodes((current) => current.map((item) => item.id === node.id ? completedNode : item));
-                await persistOriginal([completedNode], [], { expectedScope, signal: observer.signal });
-            });
+            const target = nodesRef.current.find(item => item.id === node.id);
+            if (target?.metadata?.taskId === task.id) await attachOwnedDepthCaptureResult({ node: target, task, session, nodesRef, setNodes });
         } catch (error) {
             if (isLocalExecutorSessionStop(error)) return;
             const details = error instanceof Error ? error.message : "深度动作捕捉失败";
@@ -556,39 +541,37 @@ export function useCanvasMediaTools({
                 frozenInputKey,
             }, error);
             const uncertain = isUncertainLocalExecutorSubmit(error, submittedTaskId);
-            setNodes((current) => current.map((item) => item.id === node.id ? {
+            setNodes((current) => current.map((item) => item.id === node.id && item.metadata?.taskClientOperationId === clientOperationId ? {
                 ...item,
                 metadata: {
                     ...item.metadata,
                     status: NODE_STATUS_ERROR,
-                    taskStatus: "failed",
                     taskId: submittedTaskId,
                     taskClientOperationId: intent.clientOperationId,
                     taskClientOperationInput: frozenInputKey,
                     taskClientOperationTerminal: intent.terminal,
                     taskStage: uncertain ? "submission_unknown" : item.metadata?.taskStage,
                     errorDetails: details,
+                    ...(!uncertain ? depthCaptureWaitFailureMetadata(error, latestDepthTask || submittedTaskId) : {}),
                 },
             } : item));
             message.error(details);
         } finally {
             depthObserversRef.current.delete(observer);
         }
-    }, [message, nodesRef, persistMediaNodes, projectId, setNodes]);
+    }, [message, nodesRef, connectionsRef, projectId, setNodes]);
 
     const recoverDepthCaptureNodes = useCallback((signal: AbortSignal) => {
         recoverOwnedDepthCaptureNodes({
-            nodes: nodesRef.current,
+            nodesRef,
             signal,
             expectedScope: captureUserScope(),
             projectId,
             getLiveProjectId: () => projectIdRef.current,
             observers: depthObserversRef.current,
-            persist: persistMediaNodes,
             setNodes,
-            nodeStillMounted: (nodeId) => nodesRef.current.some((item) => item.id === nodeId),
         });
-    }, [nodesRef, persistMediaNodes, projectId, setNodes]);
+    }, [nodesRef, projectId, setNodes]);
 
     const saveAnnotatedImageNode = useCallback(async (node: CanvasNodeData, dataUrl: string) => {
         const image = await uploadImage(dataUrl);
@@ -613,15 +596,25 @@ export function useCanvasMediaTools({
 
     const extractVideoFrames = useCallback(async (node: CanvasNodeData, params: CanvasVideoFrameParams) => {
         const content = node.metadata?.content;
-        if (!content || extractingVideoFramesNodeIdRef.current || !params.timesMs.length) return;
+        const resourceId = ownedResourceIdFromMediaRef(node.metadata?.storageKey, content);
+        const effectiveStorageKey = node.metadata?.storageKey || (resourceId ? resourceStorageKey(resourceId) : "");
+        if ((!content && !effectiveStorageKey) || extractingVideoFramesNodeIdRef.current || !params.timesMs.length) return;
         const progress = startUploadStatus("关键帧截取", "读取视频资源", params.timesMs.length + 2);
         extractingVideoFramesNodeIdRef.current = node.id;
         setExtractingVideoFramesNodeId(node.id);
         setFrameDialogNodeId(null);
         try {
-            const storedBlob = node.metadata?.storageKey ? await getMediaBlob(node.metadata.storageKey).catch(() => null) : null;
+            const storedBlob = effectiveStorageKey ? await getMediaBlob(effectiveStorageKey).catch(() => null) : null;
+            const resolvedUrl = storedBlob ? "" : await resolveMediaUrl(effectiveStorageKey, content || "").catch(() => content || "");
             progress.update("定位并绘制所选画面", 2);
-            const captured = await captureVideoFrames(storedBlob || content, params.timesMs);
+            let captured: Awaited<ReturnType<typeof captureVideoFrames>>;
+            try {
+                captured = await captureVideoFrames(storedBlob || resolvedUrl, params.timesMs);
+            } catch (captureError) {
+                const playbackBlob = resourceId ? await getResourcePlaybackBlob(resourceStorageKey(resourceId)).catch(() => null) : null;
+                if (!playbackBlob) throw captureError;
+                captured = await captureVideoFrames(playbackBlob, params.timesMs);
+            }
             const uploadedFrames = [];
             const uploadFailures: string[] = [];
             for (let index = 0; index < captured.frames.length; index += 1) {
@@ -650,6 +643,7 @@ export function useCanvasMediaTools({
             const failedCount = captured.failures.length + uploadFailures.length;
             progress.done(failedCount ? `已截取 ${frameNodes.length} 个关键帧，${failedCount} 个失败` : `已截取 ${frameNodes.length} 个关键帧并创建独立图片节点`);
             if (failedCount) message.warning(`${failedCount} 个时间点提取失败，其余画面已创建`);
+            else message.success(`已截取 ${frameNodes.length} 个关键帧，新图片节点已生成在视频右侧`);
         } catch (error) {
             const details = error instanceof Error ? error.message : "视频画面提取失败";
             progress.fail(details);
@@ -662,14 +656,14 @@ export function useCanvasMediaTools({
 
     // 视频节点工具栏的三个快捷取帧动作直接执行，不再打开批量选帧弹窗。
     const extractVideoFrameAt = useCallback((node: CanvasNodeData, preset: "current" | "first" | "last" = "current") => {
-        if (!node.metadata?.content) {
+        if (!node.metadata?.content && !node.metadata?.storageKey) {
             message.warning("视频节点为空，无法进行关键帧截取");
             return;
         }
         const video = document.querySelector<HTMLVideoElement>(`[data-node-id="${CSS.escape(node.id)}"] video`);
-        const durationMs = Math.max(0, Math.round((node.metadata.durationMs || (video?.duration || 0) * 1000)));
+        const durationMs = resolveCanvasVideoDurationMs(node.metadata?.durationMs, video?.duration);
         const currentMs = video && Number.isFinite(video.currentTime) ? Math.round(video.currentTime * 1000) : 0;
-        const timeMs = preset === "first" ? 0 : preset === "last" ? Math.max(0, durationMs - 1) : currentMs;
+        const timeMs = resolveVideoFramePresetTimeMs(preset, durationMs, currentMs);
         setHoveredNodeId(null);
         setToolbarNodeId(null);
         void extractVideoFrames(node, { timesMs: [timeMs] });
@@ -772,12 +766,12 @@ export function useCanvasMediaTools({
         try {
             const source = { url: node.metadata?.content, storageKey: node.metadata?.storageKey };
             const range = { startMs: params.startMs, endMs: params.endMs };
-            const mutedVideo = await removeAudioFromVideo(source, range, node.metadata?.durationMs, (status) => {
-                progress.update(status.phase === "loading" ? "加载 FFmpeg" : status.phase === "reading" ? "读取视频资源" : "正在生成无声视频", status.phase === "encoding" ? 2 : 1);
-            });
-            progress.update("正在提取音轨", 3);
             const audio = await extractVideoAudio(source, range, node.metadata?.durationMs, (status) => {
-                progress.update(status.phase === "loading" ? "加载 FFmpeg" : status.phase === "reading" ? "读取视频资源" : "正在提取音轨", status.phase === "encoding" ? 4 : 3);
+                progress.update(status.phase === "loading" ? "加载 FFmpeg" : status.phase === "reading" ? "检查视频音轨" : "正在提取音轨", status.phase === "encoding" ? 2 : 1);
+            });
+            progress.update("正在生成无声视频", 3);
+            const mutedVideo = await removeAudioFromVideo(source, range, node.metadata?.durationMs, (status) => {
+                progress.update(status.phase === "reading" ? "读取视频资源" : "正在生成无声视频", status.phase === "encoding" ? 4 : 3);
             });
             progress.update("保存两个独立结果", 5);
             const [uploadedVideo, uploadedAudio] = await Promise.all([uploadMediaFile(mutedVideo, "video"), uploadMediaFile(audio, "audio")]);
@@ -796,27 +790,24 @@ export function useCanvasMediaTools({
             audioNode.title = `${node.title || "视频"} · 音轨`;
             const outputs = [silentVideo, audioNode];
             const outputIds = new Set(outputs.map((item) => item.id));
-            setNodes((current) => [...current, ...outputs]);
-            setConnections((current) => [...current, ...outputs.map((item) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: item.id }))]);
+            const links = outputs.map((item) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: item.id }));
+            nodesRef.current = [...nodesRef.current, ...outputs];
+            connectionsRef.current = [...connectionsRef.current, ...links];
+            setNodes(nodesRef.current);
+            setConnections(connectionsRef.current);
             setSelectedNodeIds(outputIds);
             setSelectedConnectionId(null);
-            try {
-                const results = await Promise.all(outputs.map((item) => ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node: item, source: "canvas-manual" })));
-                setNodes((current) => current.map((item) => {
-                    const index = outputs.findIndex((output) => output.id === item.id);
-                    return index >= 0 ? { ...item, metadata: { ...item.metadata, assetId: results[index].assetId } } : item;
-                }));
-                progress.done("已生成无声视频和独立音轨");
-            } catch (assetError) {
-                progress.done(`已生成无声视频和独立音轨，素材库写入失败：${assetError instanceof Error ? assetError.message : "未知错误"}`);
-            }
+            const savedAssets = await persistMediaNodes(outputs, links);
+            if (outputs.some((output) => !savedAssets.get(output.id))) throw new Error("分离结果尚未确认保存，请重试；不要将当前节点视为已保存的成品");
+            progress.done("已生成并保存无声视频和独立音轨");
+            message.success("已生成并保存无声视频和独立音轨，原视频已保留");
         } catch (error) {
             const details = error instanceof Error ? error.message : "音频提取失败";
             setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, mediaOperationError: details } } : item));
             progress.fail(details);
-            message.error(details);
+            modal.error({ title: "音视频分离未完成", content: details, okText: "知道了" });
         }
-    }, [domainProjectId, message, projectId, setConnections, setSelectedConnectionId, setSelectedNodeIds, setNodes, startUploadStatus]);
+    }, [connectionsRef, message, modal, nodesRef, persistMediaNodes, setConnections, setSelectedConnectionId, setSelectedNodeIds, setNodes, startUploadStatus]);
 
     // 音视频分离始终处理整段视频，直接生成独立音轨节点，不再打开范围选择弹窗。
     const extractAudioFromVideo = useCallback((node: CanvasNodeData) => {

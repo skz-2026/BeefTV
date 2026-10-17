@@ -40,7 +40,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     const isolateDevRepro = import.meta.env.DEV && typeof window !== "undefined" && ["/dev/director-repro", "/dev/assistant-panel"].includes(appPathname());
 
     return (
-        <ConfigProvider locale={zhCN} theme={getAntThemeConfig(dark, appearance.activeSkin)}>
+        <ConfigProvider locale={zhCN} theme={getAntThemeConfig(dark, appearance.activeSkin)} modal={{ centered: true }}>
             <App message={{ duration: 3, maxCount: 3 }} notification={{ duration: 4.5, maxCount: 3, placement: "topRight" }}>
                 <QueryClientProvider client={appQueryClient}>
                     {isolateDevRepro ? (

@@ -1,18 +1,21 @@
-// SDK 会话所有者：SessionManager 是唯一 transcript；createAgentSession 装配官方会话。
-// 替换走官方 abort()+dispose()（与 AgentSessionRuntime.teardownCurrent 相同）。
-// 每张画布一条预约队列：ensure / replace / chat 占 busy 互斥；不同画布不互相等待。
+// 旧 JSONL 会话的只读历史。
+//
+// 旧执行运行时（createAgentSession 的 create / prompt / replace / abort）已退役：
+// 新回合一律走 durable-session-owner.mjs 的官方 Durable 运行时。这里只保留读取、
+// 展示，以及「旧会话 → 新 Durable 会话」交接所需的只读能力；历史数据文件不删除。
+//
+// 交接说明由旧 JSONL 的最后若干条 user/assistant 文本拼成，不调用模型生成摘要。
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
-import { sessionActionIdentity } from './session-identity.mjs';
-import { newTurnAccumulator, projectTurnHistory, sessionTitle } from './canvas-turn.mjs';
-import { createFullControlLoader } from './full-control-loader.mjs';
-import { createHostSettingsManager } from './session-settings.mjs';
-import { createTurnObserver } from './lifecycle-events.mjs';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { projectTurnHistory, sessionTitle } from './canvas-turn.mjs';
 
 export const TURN_ENTRY_TYPE = 'beeftv.canvas.turn';
+export const HANDOFF_MESSAGE_LIMIT = 20;
+export const HANDOFF_CHAR_LIMIT = 8000;
+export const HANDOFF_HEADER = '以下是同一画布此前对话的交接记录，请在此基础上继续，不要提及本说明。';
 
 export function canvasKey(canvasId) {
   return crypto.createHash('sha256').update(canvasId).digest('hex').slice(0, 24);
@@ -25,51 +28,42 @@ function pointerFailed(message, cause) {
   return error;
 }
 
-function storeClosedError() {
-  const error = new Error('session_store_closed');
-  error.reason = 'session_store_closed';
+function sessionNotFound() {
+  const error = new Error('session_not_found');
+  error.reason = 'session_not_found';
   return error;
 }
 
-export function createSessionStore({ sessionRoot, workspaceRoot, agentDir, runId, getModelRuntime, getModel,
-  createResourceLoader = ({ cwd, agentDir }) => createFullControlLoader({ cwd, agentDir }) }) {
-  const sessions = new Map();
-  const canvasLocks = new Map();
-  let closed = false;
-  let inFlightLocks = 0;
-  let idleResolvers = [];
+function messageText(message) {
+  if (!message || (message.role !== 'user' && message.role !== 'assistant')) return '';
+  const content = message.content;
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  return content.filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text).join('').trim();
+}
 
-  function notifyLocksIdle() {
-    if (inFlightLocks !== 0) return;
-    const waiting = idleResolvers;
-    idleResolvers = [];
-    for (const resolve of waiting) resolve();
+// 纯文本交接说明：取最近 messageLimit 条 user/assistant 文本，总长不超过 charLimit。
+// 超长时保留最新的内容；单条本身就超限时截断该条，绝不调用模型生成摘要。
+export function handoffNote(messages, { messageLimit = HANDOFF_MESSAGE_LIMIT, charLimit = HANDOFF_CHAR_LIMIT } = {}) {
+  const recent = (messages || []).filter((message) => message && message.text).slice(-messageLimit);
+  const lines = [];
+  let total = 0;
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index];
+    let line = `${message.role === 'user' ? '用户' : '助手'}：${message.text}`;
+    if (lines.length === 0) {
+      if (line.length > charLimit) line = line.slice(0, charLimit);
+    } else if (total + line.length > charLimit) break;
+    lines.push(line);
+    total += line.length;
   }
+  if (lines.length === 0) return '';
+  lines.reverse();
+  return [HANDOFF_HEADER, ...lines].join('\n');
+}
 
-  function waitForCanvasLocks() {
-    if (inFlightLocks === 0) return Promise.resolve();
-    return new Promise((resolve) => { idleResolvers.push(resolve); });
-  }
-
-  function withCanvasLock(canvasId, fn) {
-    inFlightLocks += 1;
-    const previous = canvasLocks.get(canvasId) || Promise.resolve();
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    canvasLocks.set(canvasId, previous.then(() => held, () => held));
-    return previous.then(() => {
-      if (closed) throw storeClosedError();
-      return fn();
-    }, () => {
-      if (closed) throw storeClosedError();
-      return fn();
-    }).finally(() => {
-      release();
-      inFlightLocks -= 1;
-      notifyLocksIdle();
-    });
-  }
-
+export function createLegacyHistory({ sessionRoot, workspaceRoot }) {
   function canvasWorkspace(canvasId) {
     return path.join(workspaceRoot, canvasKey(canvasId));
   }
@@ -118,8 +112,16 @@ export function createSessionStore({ sessionRoot, workspaceRoot, agentDir, runId
   }
 
   function turnEntries(manager) {
-    const active = [...sessions.values()].find((entry) => entry.busy && entry.sessionId === manager.getSessionId());
-    return projectTurnHistory(manager.getEntries(), TURN_ENTRY_TYPE, active?.turn.turnId || '');
+    return projectTurnHistory(manager.getEntries(), TURN_ENTRY_TYPE, '');
+  }
+
+  function openLegacySession(canvasId, sessionId) {
+    const cwd = canvasWorkspace(canvasId);
+    fs.mkdirSync(cwd, { recursive: true });
+    const sessionDir = canvasSessionDir(canvasId);
+    const file = SessionManager.findById(cwd, sessionId, sessionDir);
+    if (!file) throw sessionNotFound();
+    return { manager: SessionManager.open(file, sessionDir, cwd), cwd, sessionDir, file };
   }
 
   async function listCanvasSessions(canvasId) {
@@ -142,218 +144,29 @@ export function createSessionStore({ sessionRoot, workspaceRoot, agentDir, runId
     return out;
   }
 
-  function openSessionManager(canvasId, sessionId) {
-    const cwd = canvasWorkspace(canvasId);
-    fs.mkdirSync(cwd, { recursive: true });
-    const sessionDir = canvasSessionDir(canvasId);
-    if (sessionId) {
-      const file = SessionManager.findById(cwd, sessionId, sessionDir);
-      if (!file) { const error = new Error('session_not_found'); error.reason = 'session_not_found'; throw error; }
-      return { manager: SessionManager.open(file, sessionDir, cwd), persistence: `restored:${sessionId}` };
-    }
-    const manager = SessionManager.create(cwd, sessionDir);
-    // SDK defers its first write until an assistant message. Persist its own header
-    // before publishing current.json so an empty new chat survives a host restart.
-    const file = manager.getSessionFile();
-    fs.writeFileSync(file, `${JSON.stringify(manager.getHeader())}\n`, { flag: 'wx', mode: 0o600 });
-    // Reopening lets the SDK own all subsequent appends, including pre-reply entries.
-    return { manager: SessionManager.open(file, sessionDir, cwd), persistence: 'created' };
-  }
-
-  async function createLiveSession({ canvasId, sessionId, buildTools }) {
-    const cwd = canvasWorkspace(canvasId);
-    const log = [];
-    const generation = { aborted: false, permissionMode:'full-access' };
-    const turn = newTurnAccumulator();
+  // 找不到旧会话文件时返回空说明：调用方仍会新建 Durable 会话，只是没有交接正文。
+  function readHandoffNote(canvasId, sessionId) {
+    if (!sessionId) return '';
     let opened;
-    try {
-      opened = openSessionManager(canvasId, sessionId);
-    } catch (error) {
-      if (error?.reason === 'session_not_found') throw error;
-      throw new Error(`会话持久化不可用（SessionManager 恢复失败）：${error.message}`);
+    try { opened = openLegacySession(canvasId, sessionId); } catch { return ''; }
+    const messages = [];
+    for (const entry of opened.manager.getEntries()) {
+      if (entry.type !== 'message') continue;
+      const text = messageText(entry.message);
+      if (text) messages.push({ role: entry.message.role, text });
     }
-    const { manager, persistence } = opened;
-    const persistedId = (typeof manager.getSessionId === 'function' && manager.getSessionId()) ||
-      (typeof manager.getSessionFile === 'function' && manager.getSessionFile() ? path.basename(String(manager.getSessionFile())) : '') || '';
-    const identity = sessionActionIdentity({ persistedId, runId });
-    console.error(`agent-host: 会话 ${canvasId} 的动作身份来源 = ${identity.source}（persistence=${persistence}）`);
-    const tools = buildTools(canvasId, log, generation, turn, identity.prefix);
-    generation.permissionMode='canvas';
-    const resourceLoader = await createResourceLoader({ canvasId, cwd, agentDir });
-    await resourceLoader.reload();
-    const { session } = await createAgentSession({
-      cwd,
-      agentDir,
-      modelRuntime: getModelRuntime() || undefined,
-      model: getModel() || undefined,
-      thinkingLevel: 'off',
-      noTools: 'builtin',
-      customTools: tools,
-      resourceLoader,
-      settingsManager: createHostSettingsManager(),
-      sessionManager: manager,
-    });
-    return {
-      sessionId: manager.getSessionId(),
-      session,
-      manager,
-      log,
-      busy: false,
-      disposed: false,
-      generation,
-      turn,
-      identity,
-      persistence,
-    };
-  }
-
-  async function disposeOwnedSession(entry) {
-    if (!entry || entry.disposed) return;
-    entry.disposed = true;
-    if (!entry.session) return;
-    try {
-      if (typeof entry.session.abort === 'function') await entry.session.abort();
-    } catch { /* 释放必须继续 */ }
-    try {
-      if (typeof entry.session.dispose === 'function') entry.session.dispose();
-    } catch { /* 释放必须继续 */ }
-  }
-
-  function sessionBusyError() {
-    const error = new Error('session_busy');
-    error.reason = 'session_busy';
-    return error;
-  }
-
-  function sessionNotCurrentError() {
-    const error = new Error('session_not_current');
-    error.reason = 'session_not_current';
-    return error;
-  }
-
-  async function replaceSessionUnlocked(canvasId, factory) {
-    const previous = sessions.get(canvasId);
-    if (previous?.busy) throw sessionBusyError();
-    const next = await factory();
-    try {
-      writeCurrentSessionId(canvasId, next.sessionId);
-    } catch (error) {
-      if (next && next !== previous) await disposeOwnedSession(next);
-      throw error;
-    }
-    sessions.set(canvasId, next);
-    if (previous && previous !== next) await disposeOwnedSession(previous);
-    return next;
-  }
-
-  async function restoreOrCreateUnlocked(canvasId, buildTools) {
-    const pointed = readCurrentSessionId(canvasId);
-    if (pointed) {
-      try {
-        return await replaceSessionUnlocked(canvasId, () => createLiveSession({ canvasId, sessionId: pointed, buildTools }));
-      } catch (error) {
-        if (error?.reason !== 'session_not_found') throw error;
-      }
-    }
-    const known = await listCanvasSessions(canvasId);
-    if (known.length > 0) {
-      return replaceSessionUnlocked(canvasId, () => createLiveSession({ canvasId, sessionId: known[0].sessionId, buildTools }));
-    }
-    return replaceSessionUnlocked(canvasId, () => createLiveSession({ canvasId, sessionId: '', buildTools }));
-  }
-
-  async function ensureSessionUnlocked(canvasId, buildTools) {
-    const existing = sessions.get(canvasId);
-    if (existing) return existing;
-    return restoreOrCreateUnlocked(canvasId, buildTools);
-  }
-
-  function replaceSession(canvasId, factory) {
-    return withCanvasLock(canvasId, () => replaceSessionUnlocked(canvasId, factory));
-  }
-
-  function ensureSession(canvasId, buildTools) {
-    return withCanvasLock(canvasId, () => ensureSessionUnlocked(canvasId, buildTools));
-  }
-
-  function acquireChatSession(canvasId, buildTools, requestedSessionId = '') {
-    return withCanvasLock(canvasId, async () => {
-      const entry = await ensureSessionUnlocked(canvasId, buildTools);
-      if (requestedSessionId && requestedSessionId !== entry.sessionId) throw sessionNotCurrentError();
-      if (entry.busy) throw sessionBusyError();
-      entry.busy = true;
-      entry.generation.aborted = false;
-      return entry;
-    });
-  }
-
-  function releaseChatSession(entry) {
-    if (entry) entry.busy = false;
-  }
-
-  async function runOwnedPrompt(entry, message, { onEvent, runWithBudget, timeoutMs }) {
-    const observer = createTurnObserver();
-    const unsubscribe = entry.session.subscribe((event) => {
-      const payload = observer.handle(event);
-      if (payload) onEvent(payload);
-    });
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      entry.generation.aborted = true;
-      entry.session.abort().catch(() => {});
-    }, timeoutMs);
-    let error = null;
-    try {
-      await runWithBudget(async () => {
-        await entry.session.prompt(message, { expandPromptTemplates: false, source: 'rpc' });
-      });
-      if (!observer.settled) {
-        try { await entry.session.waitForIdle(); } catch { /* 仍按未 settle 处理 */ }
-      }
-    } catch (promptError) {
-      error = `${promptError?.name || 'Error'}: ${promptError?.message || promptError}`;
-    } finally {
-      clearTimeout(timer);
-      unsubscribe();
-    }
-    if (!observer.settled && !error) {
-      error = 'Error: agent run did not settle';
-    }
-    // Official prompt() may resolve normally while the final assistant is an error.
-    const finalMessage = observer.lastAssistantMessage;
-    if (!error && (finalMessage?.stopReason === 'error' || finalMessage?.stopReason === 'aborted')) {
-      error = `Error: ${finalMessage.errorMessage || (finalMessage.stopReason === 'aborted' ? 'agent run aborted' : 'provider request failed')}`;
-    }
-    return { observer, error, timedOut };
-  }
-
-  async function disposeAll() {
-    closed = true;
-    await waitForCanvasLocks();
-    const entries = [...sessions.values()];
-    sessions.clear();
-    for (const entry of entries) await disposeOwnedSession(entry);
-    return entries.length;
+    return handoffNote(messages);
   }
 
   return {
-    sessions,
     canvasWorkspace,
     canvasSessionDir,
     currentSessionPointerPath,
     readCurrentSessionId,
     writeCurrentSessionId,
     turnEntries,
+    openLegacySession,
     listCanvasSessions,
-    openSessionManager,
-    createLiveSession,
-    disposeOwnedSession,
-    replaceSession,
-    ensureSession,
-    acquireChatSession,
-    releaseChatSession,
-    runOwnedPrompt,
-    disposeAll,
+    readHandoffNote,
   };
 }

@@ -26,6 +26,9 @@ func TestParseChannelModelCatalogOpenAIAndGemini(t *testing.T) {
 }
 
 func TestParseChannelModelCatalogRejectsInvalidJSONAndUpstreamError(t *testing.T) {
+	if _, err := ParseChannelModelCatalog([]byte(`{"message":"ok"}`), "openai"); err == nil {
+		t.Fatal("unexpected JSON schema accepted as an empty model list")
+	}
 	if _, err := ParseChannelModelCatalog([]byte("not-json"), "openai"); err == nil {
 		t.Fatal("invalid json accepted")
 	}

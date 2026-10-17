@@ -1,4 +1,4 @@
-import { AudioLines, Clapperboard, Image, Layers3, Scissors, Video } from "lucide-react";
+import { AudioLines, Bot, Box, Clapperboard, Image, Layers3, Video } from "lucide-react";
 
 export const beefTVCapabilityItems = [
     { id: "canvas", label: "自由画布", detail: "组织镜头与素材", to: "/canvas?mode=new", icon: Layers3, disabled: false },
@@ -7,6 +7,7 @@ export const beefTVCapabilityItems = [
     // Audio generation is a creation entry, not an asset filter. Start a
     // local canvas and let the canvas insert the correctly configured node.
     { id: "audio", label: "音频生成", detail: "配音与声音素材", to: "/canvas?mode=new&add=audio", icon: AudioLines, disabled: false },
-    { id: "edit", label: "智能剪辑", detail: "即将开放", to: "/canvas?mode=recent", icon: Scissors, disabled: true },
-    { id: "projects", label: "项目制作", detail: "即将开放", to: "/project", icon: Clapperboard, disabled: true },
+    { id: "director", label: "3D 导演台", detail: "新建画布并打开 3D 导演台", to: "/canvas?mode=new&start=director", icon: Box, disabled: false },
+    { id: "agent", label: "Beef Agent", detail: "新建画布并打开 Beef Agent", to: "/canvas?mode=new&start=agent", icon: Bot, disabled: false },
+    { id: "projects", label: "项目库", detail: "查看已有项目，继续创作", to: "/project", icon: Clapperboard, disabled: false },
 ] as const;

@@ -21,7 +21,7 @@ const inFlight = new Map<string, Promise<string>>();
 const scheduled = new Set<string>();
 const cacheMetaTouchWarnings = new Set<string>();
 const metaTouchedAt = new Map<string, number>();
-const downloadQueue: Array<() => void> = [];
+const downloadQueue: Array<{ key?: string; run: () => void }> = [];
 let activeDownloads = 0;
 let persistQueue: Promise<void> = Promise.resolve();
 const MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -30,8 +30,9 @@ const MIN_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 500;
 const TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const BUDGET_REFRESH_MS = 5 * 60 * 1000;
-// 现代浏览器对同源 HTTP/2 连接多路复用；上限给到 16 让大画布冷启动在 1~2 轮内完成并发拉取。
-const MAX_CONCURRENT_DOWNLOADS = 16;
+// The local HTTP/1 server shares the browser's connection pool with task APIs.
+// Leave connections available for submitting, cancelling and querying tasks.
+const MAX_CONCURRENT_DOWNLOADS = 4;
 
 export async function getCachedResourceObjectUrl(storageKey: string) {
     const expected = captureUserScope();
@@ -48,7 +49,7 @@ export function peekCachedResourceObjectUrl(storageKey: string) {
     return objectUrls.get(`${userScope}:${resourceId}:file`) || "";
 }
 
-export async function cacheResourceObjectUrl(storageKey: string, reload = false) {
+export async function cacheResourceObjectUrl(storageKey: string, reload = false, priority = false) {
     const expected = captureUserScope();
     const target = cacheTarget(storageKey, expected.userScope);
     if (!target) return "";
@@ -57,7 +58,7 @@ export async function cacheResourceObjectUrl(storageKey: string, reload = false)
         // Explicit image decode recovery must bypass both memory and IndexedDB.
         await inFlight.get(requestKey)?.catch(() => undefined);
         assertUserScope(expected);
-        const blob = await withDownloadSlot(() => downloadResourceBlob(storageKey, target, expected));
+        const blob = await withDownloadSlot(() => downloadResourceBlob(storageKey, target, expected), priority);
         assertUserScope(expected);
         if (!blob) return "";
         const oldUrl = objectUrls.get(target.key);
@@ -70,9 +71,15 @@ export async function cacheResourceObjectUrl(storageKey: string, reload = false)
     assertUserScope(expected);
     if (cached) return cached;
     const pending = inFlight.get(requestKey);
-    if (pending) return pending;
+    if (pending) {
+        if (priority) {
+            const index = downloadQueue.findIndex((job) => job.key === requestKey);
+            if (index > 0) downloadQueue.unshift(...downloadQueue.splice(index, 1));
+        }
+        return pending;
+    }
 
-    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, expected)).finally(() => inFlight.delete(requestKey));
+    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, expected), priority, requestKey).finally(() => inFlight.delete(requestKey));
     inFlight.set(requestKey, task);
     return task;
 }
@@ -105,21 +112,23 @@ export function scheduleResourceBlobCache(storageKey: string, delayMs = 4_000) {
     window.setTimeout(run, Math.max(0, delayMs));
 }
 
-function withDownloadSlot<T>(task: () => Promise<T>) {
+function withDownloadSlot<T>(task: () => Promise<T>, priority = false, key?: string) {
     return new Promise<T>((resolve, reject) => {
-        downloadQueue.push(() => {
+        const job = () => {
             activeDownloads += 1;
             task().then(resolve, reject).finally(() => {
                 activeDownloads -= 1;
                 runDownloadQueue();
             });
-        });
+        };
+        if (priority) downloadQueue.unshift({ key, run: job });
+        else downloadQueue.push({ key, run: job });
         runDownloadQueue();
     });
 }
 
 function runDownloadQueue() {
-    while (activeDownloads < MAX_CONCURRENT_DOWNLOADS && downloadQueue.length) downloadQueue.shift()?.();
+    while (activeDownloads < MAX_CONCURRENT_DOWNLOADS && downloadQueue.length) downloadQueue.shift()?.run();
 }
 
 export async function primeResourceBlobCache(storageKey: string, blob: Blob, expectedScope?: CapturedUserScope) {
@@ -145,12 +154,7 @@ export async function getCachedResourceBlob(storageKey: string) {
         touchCacheMetaSafely(target);
         return cached;
     }
-    const pending = inFlight.get(`${target.key}:${expected.epoch}`);
-    if (pending) {
-        await pending;
-    } else {
-        await cacheResourceObjectUrl(storageKey);
-    }
+    await cacheResourceObjectUrl(storageKey, false, true);
     assertUserScope(expected);
     const result = sessionBlobs.get(target.key) || await readPersistedBlob(target);
     assertUserScope(expected);
@@ -169,7 +173,7 @@ async function downloadResourceBlob(storageKey: string, target: ResourceCacheMet
     assertUserScope(expected);
     if (!blob) return null;
     sessionBlobs.set(target.key, blob);
-    if (blob.size <= MAX_CACHE_BYTES) await enqueuePersist(target, blob);
+    if (blob.size <= MAX_CACHE_BYTES) void enqueuePersist(target, blob);
     return blob;
 }
 

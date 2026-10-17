@@ -24,7 +24,8 @@ await useCanvasStore.persist.rehydrate();
 if (scenario !== "missing-cache-and-journal") await recordConfirmedCanvasCommit(cached as never);
 const local = structuredClone(cached);
 if (scenario === "dirty-cache") local.nodes[0]!.title = "Unsaved manual title";
-if (scenario === "startup-stamp") local.nodes[0]!.metadata = applyGenerationConsumerEffect(local.nodes[0]!.metadata || {}, attachNodeEffectKey("completed-task-receipt", "n0", 0), metadata => metadata).value;
+if (scenario === "startup-stamp" || scenario === "missing-chat-sessions") local.nodes[0]!.metadata = applyGenerationConsumerEffect(local.nodes[0]!.metadata || {}, attachNodeEffectKey("completed-task-receipt", "n0", 0), metadata => metadata).value;
+if (scenario === "missing-chat-sessions") delete (local as any).chatSessions;
 useCanvasStore.setState({ projects: scenario?.startsWith("missing-cache") ? [] : [local as never], hydrated: true });
 await flushCanvasStorePersistence();
 useUserStore.getState().setHydrated(true);
@@ -75,7 +76,10 @@ function Harness() {
     (harness as any).title = () => nodesRef.current.find(node => node.id === "n0")?.title;
     (harness as any).refresh = () => refreshLocalCanvasProjectIfChanged(projectId);
     harness.save = async () => { await flushCanvasStorePersistence(); await syncLocalCanvasProjectToBackend("c1"); };
-    return <div data-testid="graph">{`${projectLoaded}:${nodes.length}:${connections.length}`}</div>;
+    return <>
+        <button onClick={() => setNodes(current => current.map(node => node.id === "n0" ? { ...node, metadata: { ...node.metadata, model: "beefapi::seedance-2.0-mini" } } : node))}>Switch video model</button>
+        <div data-testid="graph">{`${projectLoaded}:${nodes.length}:${connections.length}`}</div>
+    </>;
 }
 function MountController() {
     const [mounted, setMounted] = useState(true);

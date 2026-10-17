@@ -64,6 +64,8 @@ export const qualityOptions = [
     { value: "low", label: "低", description: "更快生成" },
     { value: "medium", label: "中", description: "均衡模式" },
     { value: "high", label: "高", description: "优先细节" },
+    { value: "xhigh", label: "超高", description: "更多细节，生成更慢" },
+    { value: "max", label: "最高", description: "最高质量，生成更慢" },
     // grok2api / xAI Imagine：quality 映射 resolution
     { value: "1k", label: "1K", description: "标准清晰度" },
     { value: "2k", label: "2K", description: "更高清晰度" },

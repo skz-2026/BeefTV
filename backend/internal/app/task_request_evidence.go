@@ -91,9 +91,6 @@ func recordTaskRequestEvidence(req *http.Request, evidence model.TaskRequestEvid
 	evidence.Outcome = "response_received"
 	if err != nil {
 		evidence.Outcome = "transport_error"
-		if !evidence.Dispatched {
-			evidence.Outcome = "not_dispatched"
-		}
 		if evidence.HTTPStatus >= 400 {
 			evidence.Outcome = "http_error"
 		}
@@ -102,6 +99,9 @@ func recordTaskRequestEvidence(req *http.Request, evidence model.TaskRequestEvid
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			evidence.Outcome = "timeout"
+		}
+		if !evidence.Dispatched && !errors.Is(err, context.Canceled) {
+			evidence.Outcome = "not_dispatched"
 		}
 		failure := classifyTaskFailure(err)
 		evidence.Summary = firstNonEmpty(failure.ProviderMessage, err.Error())

@@ -6,7 +6,6 @@ open-storyboard-canvas/
 !.env.example
 data/
 .local/
-/.local/docker-compose.postgres.yml
 coverage/
 dist/
 artifacts/

@@ -1,13 +1,13 @@
 import { type ReactNode } from "react";
-import type { SeedanceSettingsConstraints } from "@/lib/seedance-task-constraints";
+import type { VideoSettingsConstraints } from "@/lib/video-settings-constraints";
 import { Switch } from "@/components/ui/base/switch";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceRatioOptions } from "@/lib/seedance-video";
 import { isVolcengineArkVideoProtocol } from "@/lib/model-protocols";
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import { formatVideoResolutionLabel, isVideoResolutionMatch, normalizeVideoDuration, videoDimensionsForRatioAndResolution, VIDEO_DURATION_MIN } from "@/lib/video-generation-options";
-import { isSeedance25Model, modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue, videoDurationOptions, type VideoCapabilityConfig } from "@/lib/model-capabilities";
+import { formatVideoResolutionLabel, isVideoResolutionMatch, normalizeVideoDuration, sortVideoResolutionOptions, videoDimensionsForRatioAndResolution, VIDEO_DURATION_MIN } from "@/lib/video-generation-options";
+import { isSeedance25Model, modelCapabilityConfigFor, normalizeVideoValue, resolveVideoRatioValue, resolveVideoResolutionValue, videoDurationOptions, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 
 const sizeOptions = [
@@ -20,7 +20,7 @@ const sizeOptions = [
 ];
 
 type VideoSettingsPanelProps = {
-    taskConstraints?: SeedanceSettingsConstraints;
+    taskConstraints?: VideoSettingsConstraints;
     config: AiConfig;
     onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoArkPrivateAssetUpload", value: string) => void;
     theme: CanvasTheme;
@@ -37,12 +37,12 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
         return <SeedanceVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} taskConstraints={taskConstraints} />;
     }
 
-    const seconds = normalizeVideoDuration(config.videoSeconds);
+    const seconds = normalizeVideoValue(profile, { seconds: config.videoSeconds }).seconds;
     const resolution = resolveVideoResolutionValue(profile, config.vquality);
     const ratio = resolveVideoRatioValue(profile, config.size);
     const dimensions = videoDimensionsForRatioAndResolution(ratio, resolution);
     const sizeSupported = profile.ratios.length > 0;
-    const configuredResolutions = profile.resolutions.map((value) => ({ value, label: formatVideoResolutionLabel(value) }));
+    const configuredResolutions = sortVideoResolutionOptions(profile.resolutions).map((value) => ({ value, label: formatVideoResolutionLabel(value) }));
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
     const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
 
@@ -62,7 +62,14 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </SettingGroup>
                 ) : null}
                 {sizeSupported ? (
-                    <SettingGroup title="尺寸" color={theme.node.muted}>
+                    <SettingGroup title={taskConstraints?.ratioLabel ? "比例" : "尺寸"} color={theme.node.muted}>
+                        {taskConstraints?.ratioLabel ? (
+                            <div className="rounded-md px-2.5 py-2" style={{ background: theme.toolbar.itemHover }}>
+                                <p className="text-[length:var(--fs-body)] font-medium">{taskConstraints.ratioLabel}</p>
+                                {taskConstraints.ratioHelp ? <p className="mt-1 text-[length:var(--fs-caption)] leading-relaxed" style={{ color: theme.node.muted }}>{taskConstraints.ratioHelp}</p> : null}
+                            </div>
+                        ) : <>
+                        {taskConstraints?.ratioHelp ? <p className="text-[length:var(--fs-caption)] leading-relaxed" style={{ color: theme.node.muted }}>{taskConstraints.ratioHelp}</p> : null}
                         {dimensions ? (
                             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
                                 <DimensionValue prefix="W" value={dimensions.width} theme={theme} />
@@ -85,6 +92,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 </button>
                             ))}
                         </div>
+                        </>}
                     </SettingGroup>
                 ) : null}
                 <SettingGroup title="秒数" color={theme.node.muted}>
@@ -147,7 +155,7 @@ function SeedanceVideoSettingsPanel({ config, profile, onConfigChange, theme, sh
                 ) : null}
                 <SettingGroup title="分辨率" color={theme.node.muted}>
                     <div className="grid grid-cols-3 gap-1.5">
-                        {profile.resolutions.map((value) => {
+                        {sortVideoResolutionOptions(profile.resolutions).map((value) => {
                             const item = { value, label: value.toUpperCase() };
                             return (
                                 <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
@@ -215,8 +223,8 @@ export function videoSizeLabel(value: string) {
     return sizeOptions.find((item) => item.value === size)?.label || size;
 }
 
-export function videoSecondsLabel(value: string) {
-    const normalized = normalizeVideoDuration(value);
+export function videoSecondsLabel(value: string, profile?: VideoCapabilityConfig) {
+    const normalized = profile ? normalizeVideoValue(profile, { seconds: value }).seconds : normalizeVideoDuration(value);
     return normalized === "-1" ? "自动" : `${normalized}s`;
 }
 
@@ -264,9 +272,11 @@ function DimensionValue({ prefix, value, theme }: { prefix: string; value: numbe
     );
 }
 
-function DurationInput({ value, min, max, theme, onChange }: { value: number; min: number; max?: number; theme: CanvasTheme; onChange: (value: number) => void }) {
+function DurationInput({ value, min, max, theme, onChange, continuous = false }: { value: number; min: number; max?: number; theme: CanvasTheme; onChange: (value: number) => void; continuous?: boolean }) {
     const commit = (input: HTMLInputElement) => {
-        const next = Math.min(max || Number.POSITIVE_INFINITY, Math.max(min, Math.floor(Number(input.value) || value || min)));
+        const parsed = Number(input.value);
+        const candidate = continuous ? (input.value.trim() && Number.isFinite(parsed) ? parsed : value || min) : parsed || value || min;
+        const next = Math.min(max || Number.POSITIVE_INFINITY, Math.max(min, continuous ? candidate : Math.floor(candidate)));
         input.value = String(next);
         onChange(next);
     };
@@ -276,7 +286,8 @@ function DurationInput({ value, min, max, theme, onChange }: { value: number; mi
             <input
                 key={`${min}-${value}`}
                 type="number"
-                inputMode="numeric"
+                inputMode={continuous ? "decimal" : "numeric"}
+                step={continuous ? "any" : 1}
                 min={min}
                 max={max}
                 defaultValue={value}
@@ -297,16 +308,19 @@ function DurationInput({ value, min, max, theme, onChange }: { value: number; mi
 
 function VideoDurationControl({ profile, value, theme, disabled, onChange }: { profile: VideoCapabilityConfig; value: number; theme: CanvasTheme; disabled?: (value: number) => boolean; onChange: (value: number) => void }) {
     if (profile.duration.selection === "range") {
-        const min = profile.duration.min || VIDEO_DURATION_MIN;
+        const min = profile.duration.fractionalMin ?? (profile.duration.min || VIDEO_DURATION_MIN);
         const max = Math.max(min, profile.duration.max || min);
         const step = Math.max(1, profile.duration.step || 1);
-        const normalized = normalizeDurationValue(value, profile.duration.default, min, max, step);
+        const normalized = profile.duration.continuous
+            ? Math.max(min, Math.min(max, Number.isFinite(value) ? value : profile.duration.default))
+            : normalizeDurationValue(value, profile.duration.default, min, max, step);
         return (
             <DurationRangeControl
                 value={normalized}
                 min={min}
                 max={max}
-                step={step}
+                step={profile.duration.continuous ? "any" : step}
+                continuous={profile.duration.continuous}
                 theme={theme}
                 onChange={(next) => {
                     if (!disabled?.(next)) onChange(next);
@@ -327,7 +341,7 @@ function VideoDurationControl({ profile, value, theme, disabled, onChange }: { p
     );
 }
 
-function DurationRangeControl({ value, min, max, step, theme, onChange }: { value: number; min: number; max: number; step: number; theme: CanvasTheme; onChange: (value: number) => void }) {
+function DurationRangeControl({ value, min, max, step, theme, onChange, continuous }: { value: number; min: number; max: number; step: number | "any"; theme: CanvasTheme; onChange: (value: number) => void; continuous?: boolean }) {
     return (
         <div className="space-y-1.5">
             <div className="flex min-w-0 items-center gap-2">
@@ -343,7 +357,7 @@ function DurationRangeControl({ value, min, max, step, theme, onChange }: { valu
                     onChange={(event) => onChange(Number(event.target.value))}
                     onMouseDown={(event) => event.stopPropagation()}
                 />
-                <DurationInput value={value} min={min} max={max} theme={theme} onChange={onChange} />
+                <DurationInput value={value} min={min} max={max} theme={theme} onChange={onChange} continuous={continuous} />
             </div>
             <div className="flex justify-between px-0.5 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
                 <span>{min}s</span>

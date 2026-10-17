@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { isSpatialWorkbenchPath } from "@/lib/workspace-routes";
 import { useUserStore } from "@/stores/use-user-store";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
+import { useSkillInstallLinkBootstrap } from "@/pages/skills/skill-link-bootstrap";
 
 const WorkspaceCommandPalette = lazy(() => import("@/components/layout/workspace-command-palette").then((module) => ({ default: module.WorkspaceCommandPalette })));
 
@@ -24,6 +25,7 @@ export function AppWorkspaceShell({ children }: { children: ReactNode }) {
     const user = useUserStore((state) => state.user);
     const localMode = isLocalWorkspaceMode() || storageMode === "local" || user?.username === "local";
     useDesktopUpdateBootstrap();
+    useSkillInstallLinkBootstrap();
 
     const hideChrome = pathname.startsWith("/admin") || /^\/canvas\/[^/]+/.test(pathname);
     const spatialWorkbench = isSpatialWorkbenchPath(pathname);

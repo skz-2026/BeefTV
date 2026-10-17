@@ -52,7 +52,6 @@ try {
     BEEFTV_AGENT_PORT: String(port), BEEFTV_AGENT_HOST_TOKEN: config.hostToken, BEEFTV_OPS_URL: config.backend,
     BEEFTV_AGENT_API_KEY: 'fixture-only', BEEFTV_AGENT_API: 'openai-completions', BEEFTV_AGENT_MODEL: 'synthetic',
     BEEFTV_AGENT_BASE_URL: `http://127.0.0.1:${modelPort}/v1`, BEEFTV_AGENT_TOTAL_REQUEST_BUDGET: '0' };
-  delete env.BEEFTV_AGENT_NEW_SESSION_RUNTIME; // Verify the shipped default, not an opt-in test override.
   async function start() {
     child = spawn(process.execPath, [path.join(config.root, 'agent-host/server.mjs')], { cwd: config.root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', (chunk) => { log += chunk; }); child.stderr.on('data', (chunk) => { log += chunk; });
@@ -77,18 +76,19 @@ try {
   await api('/history?canvasId=' + config.canvasId); assert.equal(modelCalls, before);
   const durableId = history.sessionId;
   await kill('SIGTERM');
-  env.BEEFTV_AGENT_NEW_SESSION_RUNTIME = 'sdk';
   await start();
   const retained = await (await api('/history?canvasId=' + config.canvasId)).json();
   assert.equal(retained.sessionId, durableId); assert.equal(retained.turns.length, 1);
-  const legacy = await (await api('/sessions', { canvasId: config.canvasId })).json();
-  assert(!legacy.sessionId.startsWith('durable:'));
+  // 新建对话同样是 Durable；旧 JSONL 执行运行时已退役，不再有 sdk 回退。
+  const fresh = await (await api('/sessions', { canvasId: config.canvasId })).json();
+  assert(fresh.sessionId.startsWith('durable:'));
+  assert.notEqual(fresh.sessionId, durableId);
   const empty = await (await api('/history?canvasId=' + config.canvasId)).json();
-  assert.equal(empty.sessionId, legacy.sessionId); assert.deepEqual(empty.turns, []);
+  assert.equal(empty.sessionId, fresh.sessionId); assert.deepEqual(empty.turns, []);
   const activated = await (await api('/sessions/activate', { canvasId: config.canvasId, sessionId: durableId })).json();
   assert.equal(activated.sessionId, durableId);
   const restored = await (await api('/history?canvasId=' + config.canvasId)).json();
   assert.equal(restored.sessionId, durableId); assert.equal(restored.turns.length, 1);
-  assert.equal(modelCalls, before, 'runtime rollback/activation must never run completed work again');
+  assert.equal(modelCalls, before, 'activation must never run completed work again');
   fs.writeFileSync(path.join(config.directory, 'host-result.json'), JSON.stringify({ modelCalls, history, passed: true }));
 } finally { await kill('SIGTERM'); provider.closeAllConnections(); await new Promise((resolve) => provider.close(resolve)); }

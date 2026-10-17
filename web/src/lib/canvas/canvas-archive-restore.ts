@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { confinedArchivePath } from "@/lib/zip";
 import { canonicalize } from "json-canonicalize";
 import { isLocalRuntimeMode } from "@/lib/runtime-mode";
@@ -178,7 +179,7 @@ export function createCanvasArchiveRestoreHost(overrides: Partial<CanvasArchiveR
         discardProjects: (ids) => store().deleteProjects([...ids]),
         uploadMedia: async (blob, kind, meta) => {
             if (!usesCanonicalBackend) {
-                const storageKey = `${kind}:${scope.userScope}:${crypto.randomUUID()}`;
+                const storageKey = `${kind}:${scope.userScope}:${createClientId()}`;
                 const url = await (kind === "image" ? setImageBlob(storageKey, blob) : setMediaBlob(storageKey, blob));
                 assertUserScope(scope);
                 return { storageKey, url: url || "" };
@@ -251,6 +252,12 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
     const folderIds: string[] = [];
     const projectIds: string[] = [];
     const resourceIds: string[] = [];
+    const progressProjectIds = new Set<string>();
+    const reportProgress = (id: string, progress: CanvasArchiveProjectProgress | null) => {
+        if (progress) progressProjectIds.add(id);
+        else progressProjectIds.delete(id);
+        restoreHost.onProjectProgress?.(id, progress);
+    };
     const folderIdMap = new Map<string, string>();
     const importedWorkspaceProjectIds = new Map<string, string>();
     try {
@@ -270,7 +277,7 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
         }
         for (const item of archive.data.projects) {
             const archiveProjectId = item.project.id;
-            restoreHost.onProjectProgress?.(archiveProjectId, {
+            reportProgress(archiveProjectId, {
                 projectId: archiveProjectId,
                 total: item.files.length,
                 completed: 0,
@@ -278,7 +285,7 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
                 message: localPersistence ? "正在保存本地媒体" : "正在上传媒体",
             });
             const storageKeyMap = await restoreArchiveMedia(item.files, archive.files, restoreHost, resourceIds, (completed) => {
-                restoreHost.onProjectProgress?.(archiveProjectId, {
+                reportProgress(archiveProjectId, {
                     projectId: archiveProjectId,
                     total: item.files.length,
                     completed,
@@ -301,8 +308,8 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
             }, importedWorkspaceProjectIds.get(sourceWorkspaceProjectId));
             projectIds.push(importedProjectId);
             if (!importedWorkspaceProjectIds.has(sourceWorkspaceProjectId)) importedWorkspaceProjectIds.set(sourceWorkspaceProjectId, importedProjectId);
-            restoreHost.onProjectProgress?.(archiveProjectId, null);
-            restoreHost.onProjectProgress?.(importedProjectId, {
+            reportProgress(archiveProjectId, null);
+            reportProgress(importedProjectId, {
                 projectId: importedProjectId,
                 total: item.files.length,
                 completed: item.files.length,
@@ -316,7 +323,7 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
                 await restoreArchiveDrawings(importedProjectId, item.drawingDocuments || [], archive.files, restoreHost);
                 await verifyRestoredDrawings(importedProjectId, item.drawingDocuments || [], restoreHost);
             } catch (error) {
-                restoreHost.onProjectProgress?.(importedProjectId, {
+                reportProgress(importedProjectId, {
                     projectId: importedProjectId,
                     total: item.files.length,
                     completed: item.files.length,
@@ -325,7 +332,7 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
                 });
                 throw error;
             } finally {
-                restoreHost.onProjectProgress?.(importedProjectId, null);
+                reportProgress(importedProjectId, null);
             }
         }
         return {
@@ -343,6 +350,12 @@ export async function restoreCanvasArchive(input: Blob | OpenCanvasArchive, host
             throw new AggregateError([error, cleanupError], `${error instanceof Error ? error.message : "导入未完成"}；部分导入内容未能清理，请检查工作区后重试`);
         }
         throw error;
+    } finally {
+        // Media upload and asset binding can fail before persistProject's
+        // finally block. Their progress must not keep blocking exit/update.
+        if (userScopeMatches(scope)) {
+            for (const id of progressProjectIds) restoreHost.onProjectProgress?.(id, null);
+        }
     }
 }
 

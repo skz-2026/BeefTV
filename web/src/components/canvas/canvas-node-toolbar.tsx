@@ -348,6 +348,7 @@ export function CanvasNodeToolbar({
         ...(narrow ? inGroup("workspace") : []),
     ];
     const videoAudioTool = registryToolbarTools.find((tool) => tool.id === "extractAudio");
+    const videoSubtitleTool = registryToolbarTools.find((tool) => tool.id === "subtitles");
     const videoKeyframeTool = registryToolbarTools.find((tool) => tool.id === "extractFrames");
     const videoKeyframeTools: ToolbarTool[] = videoKeyframeTool
         ? [
@@ -400,6 +401,7 @@ export function CanvasNodeToolbar({
                     <>
                         {videoProcessingTools.length ? <NodeDockMenuButton menuId="video-processing" label="视频处理" icon={null} tools={videoProcessingTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="bottomLeft" /> : null}
                         {videoAudioTool ? <NodeDockToolButton tool={videoAudioTool} showTooltip={false} /> : null}
+                        {videoSubtitleTool ? <NodeDockToolButton tool={videoSubtitleTool} showTooltip={false} /> : null}
                         {videoKeyframeTools.length ? (
                             <NodeDockMenuButton menuId="video-keyframes" label="关键帧截取" icon={<Images className="size-3.5" />} tools={videoKeyframeTools} openMenuId={openMenuId} onOpenChange={handleMenuOpenChange} placement="bottomLeft" />
                         ) : null}

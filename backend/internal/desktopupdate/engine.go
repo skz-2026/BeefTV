@@ -30,7 +30,6 @@ type verifiedUpdate struct {
 type stagedUpdate struct {
 	version  string
 	notes    string
-	root     string
 	archive  string
 	platform string
 	artifact PlatformArtifact
@@ -271,6 +270,7 @@ func (e *Engine) DownloadUpdate(ctx context.Context) (UpdateState, error) {
 		return e.snapshot(), ErrNotAvailable
 	}
 	e.set(func(state *UpdateState) {
+		state.InstallPrepared = false
 		state.Status = StatusDownloading
 		state.LatestVersion = verified.payload.Version
 		state.ReleaseNotes = verified.payload.Notes
@@ -286,9 +286,7 @@ func (e *Engine) DownloadUpdate(ctx context.Context) (UpdateState, error) {
 	archivePath := filepath.Join(stageRoot, "update.zip")
 	stagingAccepted := false
 	defer func() {
-		// This invocation exclusively created stageRoot. Failed extraction or
-		// layout verification must not leave a whole installer after each retry.
-		// Installation recovery copies are created later and remain protected.
+		// Only remove this invocation's incomplete download, never recovery data.
 		if !stagingAccepted {
 			_ = os.RemoveAll(stageRoot)
 		}
@@ -301,22 +299,12 @@ func (e *Engine) DownloadUpdate(ctx context.Context) (UpdateState, error) {
 		e.fail(publicError(err))
 		return e.snapshot(), wrapPublic(err)
 	}
-	extracted := filepath.Join(stageRoot, "extracted")
-	if err := extractSecureZip(archivePath, extracted, defaultExtractLimits()); err != nil {
-		e.logf("extract failed: %v", err)
-		e.fail(publicError(ErrInvalidArchive))
-		return e.snapshot(), ErrInvalidArchive
-	}
-	if err := validateExtractedLayout(extracted, verified.platform); err != nil {
-		e.logf("layout invalid: %v", err)
-		e.fail(publicError(ErrInvalidArchive))
-		return e.snapshot(), ErrInvalidArchive
-	}
+	// Keep the signed archive only. Extract once on the installation volume,
+	// and validate the entire layout before the running application can exit.
 	e.mu.Lock()
 	e.staged = &stagedUpdate{
 		version:  verified.payload.Version,
 		notes:    verified.payload.Notes,
-		root:     extracted,
 		archive:  archivePath,
 		platform: verified.platform,
 		artifact: verified.artifact,
@@ -336,6 +324,8 @@ func (e *Engine) DownloadUpdate(ctx context.Context) (UpdateState, error) {
 }
 
 func (e *Engine) InstallUpdate(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
 	if err := e.begin(actionInstall); err != nil {
 		return err
 	}
@@ -351,16 +341,29 @@ func (e *Engine) InstallUpdate(ctx context.Context) error {
 		return ErrNotReady
 	}
 	e.set(func(state *UpdateState) {
+		state.InstallPrepared = false
 		state.Status = StatusInstalling
 		state.Error = ""
 	})
 	if err := e.prepareAndStartHelper(ctx, staged); err != nil {
-		e.fail(publicError(err))
-		return wrapPublic(err)
+		state := e.snapshot()
+		e.logf("install failure phase=%s completedFiles=%d totalFiles=%d timeout=%t", state.Phase, state.CompletedFiles, state.TotalFiles, errors.Is(err, ErrPreparationTimeout))
+		e.logf("install preparation failed: %v", err)
+		message := publicInstallError(err)
+		if errors.Is(err, ErrPreparationTimeout) {
+			message = preparationTimeoutMessage(state.Phase)
+		}
+		e.fail(message)
+		return fmt.Errorf("%s", message)
 	}
+	e.set(func(state *UpdateState) { state.InstallPrepared = true })
+	e.setPhase("restarting")
+	e.logf("install prepared version=%s; requesting exit", staged.version)
 	if e.quit != nil {
 		if err := e.quit(); err != nil {
 			e.killHelper()
+			e.logf("install quit failed: %v", err)
+			e.set(func(state *UpdateState) { state.InstallPrepared = false })
 			e.fail("应用无法退出，已取消安装。")
 			return err
 		}
@@ -390,7 +393,8 @@ func (e *Engine) monitorHelper() {
 	e.mu.Unlock()
 	if done != nil {
 		go func() {
-			<-done
+			helperErr := <-done
+			e.logf("install helper stopped: %v", helperErr)
 			// Normally this UI process has exited before the helper completes.
 			// If still alive, quit was vetoed or the helper failed: permit retry.
 			e.mu.Lock()
@@ -400,6 +404,7 @@ func (e *Engine) monitorHelper() {
 				e.helperDone = nil
 				if e.state.Status == StatusInstalling {
 					e.state.Status = StatusError
+					e.state.InstallPrepared = false
 					e.state.Error = "应用未能退出或安装程序已停止，请重试更新。"
 				}
 			}
@@ -436,8 +441,23 @@ func (e *Engine) snapshot() UpdateState {
 func (e *Engine) set(fn func(*UpdateState)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	previous := e.state.Status
 	fn(&e.state)
+	if previous != e.state.Status && e.state.Status != StatusError {
+		e.state.Phase = ""
+		e.state.CompletedFiles = 0
+		e.state.TotalFiles = 0
+	}
 	e.state.CurrentVersion = e.currentVersion
+}
+
+func (e *Engine) setPhase(phase string) {
+	e.set(func(state *UpdateState) {
+		state.Phase = phase
+		state.CompletedFiles = 0
+		state.TotalFiles = 0
+	})
+	e.logf("update phase=%s", phase)
 }
 
 func (e *Engine) fail(message string) {

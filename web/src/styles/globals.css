@@ -8343,6 +8343,11 @@ html:not(.dark) .creation-studio-control:hover,
         border-color: #78716c !important;
     }
 
+    /* H3 选项会 portal 到 body，必须高于承载控件的设置面板。 */
+    .canvas-h3-option-popup {
+        z-index: calc(var(--z-dialog-popover) + 1) !important;
+    }
+
     .canvas-image-settings-popover .ant-popover-inner {
         border-radius: 18px;
         box-shadow: 0 18px 54px rgba(28, 25, 23, 0.16);
@@ -9454,17 +9459,37 @@ html:not(.dark) .creation-studio-control:hover,
         display: none;
     }
 
-    @media (min-width: 1024px) {
-        /* LibTV 的节点标题只保留类型图标和名称；名称仍可点击重命名，
-           桌面端不额外显示铅笔，避免标题行比原版变宽。 */
-        .canvas-node-title-edit-icon {
-            display: none;
-        }
+    /* 名称是远景定位资产的依据；保持屏幕字号，短名称宽度不超出节点。
+       宽度跟随实时缩放变量，避免滚轮缩放时等待 React 提交才改变截断位置。 */
+    .canvas-node-external-header {
+        width: var(--canvas-node-header-width);
+        box-sizing: border-box;
+        padding-inline: 0;
+        background: transparent;
+    }
 
-        /* LibTV aligns the external node title with the card edge. */
-        .canvas-node-external-header {
-            padding-inline: 0 !important;
-        }
+    .canvas-node-title-edit-icon {
+        display: none;
+    }
+
+    .canvas-node-external-header:is([data-expanded="true"], :hover, :focus-within) {
+        width: max(160px, min(320px, calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))));
+    }
+
+    .canvas-node-external-header:is([data-expanded="true"], :hover, :focus-within) .canvas-node-title-text {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .canvas-node-external-header:is([data-expanded="true"], :hover, :focus-within) .canvas-node-title-edit-icon {
+        display: block;
+    }
+
+    .canvas-node-external-header[data-editing="true"] {
+        width: 240px;
+    }
+
+    @media (min-width: 1024px) {
 
         /* 原版文本节点把装饰线放在卡片上半区，底部信息区域保留空间但不显文案。 */
         .canvas-node-empty-text-mark {
@@ -10678,6 +10703,14 @@ html:not(.dark) .creation-studio-control:hover,
         min-height: 28px;
     }
 
+    .canvas-node-composer-prompt-tools { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-1); margin-bottom: var(--space-1); }
+    .canvas-prompt-font-control { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; color: inherit; font-size: var(--fs-tiny); }
+    .canvas-prompt-font-control button { display: grid; place-items: center; width: 24px; height: 24px; border: 0; padding: 0; border-radius: var(--r-sm); background: transparent; color: inherit; }
+    .canvas-prompt-font-control button:hover:not(:disabled) { background: color-mix(in srgb, currentColor 8%, transparent); }
+    .canvas-prompt-font-control button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+    .canvas-prompt-font-control button:disabled { opacity: .35; cursor: default; }
+    .canvas-prompt-font-control output { min-width: 20px; text-align: center; font-size: var(--fs-tiny); line-height: 1; font-variant-numeric: tabular-nums; }
+
     .canvas-node-composer-mode {
         display: flex;
         min-width: 0;
@@ -11466,11 +11499,13 @@ html:not(.dark) .creation-studio-control:hover,
         transition: none !important;
     }
 
-    /* 平移时优先保证世界层合成，暂时关闭每个媒体卡片的滤镜和阴影绘制。 */
-    [data-canvas-viewport-interacting="true"] :where(.canvas-node-shell, .canvas-frame-shell, .canvas-folder-preview, .canvas-folder-front, .aceternity-comet-card) {
+    /* 平移时优先保证世界层合成，暂时关闭每个媒体卡片及其内部浮层的滤镜和阴影绘制。 */
+    [data-canvas-viewport-interacting="true"] :where(.canvas-node-shell, .canvas-frame-shell, .canvas-folder-preview, .canvas-folder-front, .aceternity-comet-card),
+    [data-canvas-viewport-interacting="true"] :where(.canvas-node-shell, .canvas-frame-shell) :where([class*="backdrop-blur"], [class*="shadow-"]) {
         box-shadow: none !important;
         filter: none !important;
         backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
     }
 
     /* LibTV 式默认选择光标：短促圆润的黑色箭头配细白描边，不使用发光或阴影。 */

@@ -449,7 +449,7 @@ func TestDeclarativeProtocolPollRecoversFromTransientGatewayFailure(t *testing.T
 	}
 }
 
-func TestDeclarativeProtocolRetriesResultDownloadWithoutRepolling(t *testing.T) {
+func TestDeclarativeProtocolRetriesResultDownloadByQueryingOriginalTask(t *testing.T) {
 	allowLoopbackProviderTest(t)
 	adapter, err := protocol.LoadManifest([]byte(`{
 		"apiVersion":"beeftv.plugin/v1",
@@ -461,13 +461,21 @@ func TestDeclarativeProtocolRetriesResultDownloadWithoutRepolling(t *testing.T) 
 	}
 	pollCalls := 0
 	downloadCalls := 0
+	createCalls := 0
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/tasks":
+			if r.Method != http.MethodPost {
+				t.Errorf("generation method = %s", r.Method)
+			}
+			createCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"provider-task-1","status":"pending"}`))
 		case "/v1/tasks/provider-task-1":
+			if r.Method != http.MethodGet {
+				t.Errorf("original task query method = %s", r.Method)
+			}
 			pollCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"provider-task-1","status":"succeeded","video_url":"` + server.URL + `/media.mp4"}`))
@@ -491,8 +499,8 @@ func TestDeclarativeProtocolRetriesResultDownloadWithoutRepolling(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["mode"] != "video" || pollCalls != 1 || downloadCalls != 2 {
-		t.Fatalf("result = %#v, poll calls = %d, download calls = %d", result, pollCalls, downloadCalls)
+	if result["mode"] != "video" || createCalls != 1 || pollCalls != 2 || downloadCalls != 2 {
+		t.Fatalf("result = %#v, create calls = %d, poll calls = %d, download calls = %d", result, createCalls, pollCalls, downloadCalls)
 	}
 }
 

@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronRight, FileText, Folder, Image as ImageIcon, Music2, Pencil, Search, UserRound, Video, Workflow } from "lucide-react";
@@ -6,7 +6,7 @@ import { ArrowLeft, ChevronRight, FileText, Folder, Image as ImageIcon, Music2, 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { usePersonalAssetLibrary } from "@/hooks/use-personal-asset-library";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
-import { buildAssetMentionReferences, canvasResourceMentionToken, findCanvasResourceAutoLinkMatch, type CanvasResourceAutoLinkMatch, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { buildAssetMentionReferences, canvasResourceDisplayName, canvasResourceMentionToken, findCanvasResourceAutoLinkMatch, type CanvasResourceAutoLinkMatch, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { AssetCategory } from "@/stores/use-asset-store";
 import { CanvasNodeType } from "@/types/canvas";
 import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
@@ -112,7 +112,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         };
     }, []);
     const canvasReferences = useResolvedCanvasResourceReferences(references);
-    const rawAssetReferences = useMemo(() => includeAssetLibrary ? buildAssetMentionReferences(assets) : [], [assets, includeAssetLibrary]);
+    const rawAssetReferences = useMemo(() => includeAssetLibrary ? buildAssetMentionReferences(assets).map((item) => ({ ...item, active: highlightLabels && value.includes(canvasResourceMentionToken(item)) })) : [], [assets, includeAssetLibrary, highlightLabels, value]);
     const assetReferences = useResolvedCanvasResourceReferences(rawAssetReferences);
     const activeCanvasReferences = useMemo(() => canvasReferences.filter((item) => item.active), [canvasReferences]);
     const availableReferences = useMemo(() => [...(onSelectReference ? canvasReferences : activeCanvasReferences), ...assetReferences], [onSelectReference, canvasReferences, activeCanvasReferences, assetReferences]);
@@ -222,7 +222,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         });
         observer.observe(container);
         return () => observer.disconnect();
-    }, [onContentSizeChange, reportContentSize, useRichEditor, value]);
+    }, [onContentSizeChange, reportContentSize, style?.fontSize, style?.lineHeight, useRichEditor, value]);
 
     const focusEditor = (selectionStart?: number) => {
         requestAnimationFrame(() => {
@@ -312,9 +312,9 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
             onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
             onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
             onClick={(event) => { event.stopPropagation(); insertAutoLink(autoLinkMatch); }}
-            aria-label={`引用${autoLinkMatch.reference.label}`}
+            aria-label={`引用${canvasResourceDisplayName(autoLinkMatch.reference)}`}
         >
-            <span className="truncate">引用「{autoLinkMatch.query}」→ @{autoLinkMatch.reference.label}</span>
+            <span className="truncate">引用「{autoLinkMatch.query}」→ @{canvasResourceDisplayName(autoLinkMatch.reference)}</span>
             <kbd className="shrink-0 rounded border border-current/20 px-1 font-mono text-[var(--fs-micro)]">Tab</kbd>
         </button>,
         document.body,
@@ -529,7 +529,7 @@ if (event.key === "Enter" && (event.nativeEvent.isComposing || composingRef.curr
                         onKeyDown?.(event as unknown as React.KeyboardEvent<HTMLTextAreaElement>);
                     }}
                     onKeyUp={(event) => {
-                        syncEditableMentionFromSelection();
+                        if (event.key !== "Escape") syncEditableMentionFromSelection();
                         props.onKeyUp?.(event as unknown as React.KeyboardEvent<HTMLTextAreaElement>);
                     }}
                     onMouseDown={(event) => props.onMouseDown?.(event as unknown as React.MouseEvent<HTMLTextAreaElement>)}
@@ -682,7 +682,7 @@ function createInlineMentionChip(reference: CanvasResourceReference, token: stri
     chip.dataset.mentionToken = token;
     chip.dataset.mentionReferenceId = reference.id;
     chip.className = `canvas-resource-inline-mention ${reference.kind === "skill" ? "is-skill" : reference.kind === "text" ? "is-node" : ""}`;
-    chip.title = "双击放大预览";
+    chip.title = `${canvasResourceDisplayName(reference)} · 双击放大预览`;
     if (reference.kind === "skill") chip.style.setProperty("--canvas-skill-mention-color", skillMentionColor(reference));
 
     const prefix = document.createElement("span");
@@ -698,7 +698,7 @@ function createInlineMentionChip(reference: CanvasResourceReference, token: stri
 
     const label = document.createElement("span");
     label.className = "canvas-resource-inline-label";
-    label.textContent = reference.label;
+    label.textContent = canvasResourceDisplayName(reference);
     chip.appendChild(label);
 
     return chip;
@@ -772,7 +772,9 @@ function syncInlineMentionPreviews(editor: HTMLElement, references: CanvasResour
             preview.replaceWith(createInlinePreview(reference));
         }
         const label = chip.querySelector(".canvas-resource-inline-label");
-        if (label && label.textContent !== reference.label) label.textContent = reference.label;
+        const displayName = canvasResourceDisplayName(reference);
+        if (label && label.textContent !== displayName) label.textContent = displayName;
+        chip.title = `${displayName} · 双击放大预览`;
     });
 }
 
@@ -992,7 +994,7 @@ function MentionReferenceList({ references, activeReferenceId, onSelect }: { ref
         >
             <ReferencePreview reference={reference} />
             <span className="canvas-resource-mention-copy">
-                <span className="canvas-resource-mention-title-row"><strong title={reference.label}>{reference.label}</strong>{reference.kind === "skill" ? <em>技能</em> : null}</span>
+                <span className="canvas-resource-mention-title-row"><strong title={canvasResourceDisplayName(reference)}>{canvasResourceDisplayName(reference)}</strong>{reference.kind === "skill" ? <em>技能</em> : null}</span>
                 {reference.kind === "skill" ? (
                     <span className="canvas-resource-mention-meta"><span>{reference.skill?.description || reference.text || "工作流技能"}</span><small>{reference.skill?.version ? `v${reference.skill.version}` : ""}{reference.skill?.fileCount ? ` · ${reference.skill.fileCount} 文件` : ""}</small></span>
                 ) : reference.text && reference.text !== reference.title ? <span className="canvas-resource-mention-meta"><span>{reference.text}</span></span> : null}
@@ -1002,11 +1004,23 @@ function MentionReferenceList({ references, activeReferenceId, onSelect }: { ref
 }
 
 function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
+    const [visible, setVisible] = useState(false);
+    const previewRef = useRef<HTMLSpanElement>(null);
+    const references = useMemo(() => [reference], [reference]);
+    const [resolved] = useResolvedCanvasResourceReferences(references, { videoPreviewEnabled: visible });
+    useEffect(() => {
+        const element = previewRef.current;
+        if (!element || reference.kind !== "video") return;
+        const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [reference.kind]);
+    return <span ref={previewRef} className="inline-flex shrink-0"><ResolvedReferencePreview reference={resolved} /></span>;
+}
+
+function ResolvedReferencePreview({ reference }: { reference: CanvasResourceReference }) {
     if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="canvas-resource-mention-preview is-image" />;
     if (reference.kind === "video" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="canvas-resource-mention-preview is-video" loading="lazy" decoding="async" />;
-    if (reference.kind === "video" && reference.mediaUrl) {
-        return <video src={reference.mediaUrl} aria-hidden="true" muted playsInline preload="metadata" className="canvas-resource-mention-preview is-video" onLoadedMetadata={(event) => primeVideoPreviewFrame(event.currentTarget)} />;
-    }
     if (reference.kind === "character" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="canvas-resource-mention-preview is-character" />;
     if (reference.kind === "skill") {
         return (

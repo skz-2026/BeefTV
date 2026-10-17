@@ -18,10 +18,11 @@ function protocolSupported(protocol: ModelProtocol | undefined) {
 
 function channelAssistantModels(channel: ModelChannel, defaultTextModel: string) {
     if (channel.enabled === false) return [];
+    const channelModels = new Set(channel.models);
     const available = (channel.modelProfiles || [])
         .filter((profile) => profile.capability === "text" && protocolSupported(profile.protocol))
         .map((profile) => profile.model.trim())
-        .filter((model) => model && channel.models.includes(model));
+        .filter((model) => model && channelModels.has(model));
     const textSelection = decodeChannelModel(defaultTextModel);
     if (channel.scope !== "system" && !channel.pinned && !channel.credentialRef &&
         textSelection?.channelId === channel.id && channel.models.includes(textSelection.model) &&

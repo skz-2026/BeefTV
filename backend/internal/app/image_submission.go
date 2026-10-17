@@ -27,9 +27,10 @@ type imageAttemptContext struct{}
 type imageTaskContext struct{}
 
 type imageWireRequest struct {
-	URL    string
-	Header http.Header
-	Body   []byte
+	URL            string
+	Header         http.Header
+	Body           []byte
+	ReplayProtocol string
 }
 
 func (s *Service) validateImageTaskRetry(task *model.Task) error {
@@ -160,6 +161,15 @@ func (s *Service) deferImageRecovery(task model.Task) error {
 
 type imageRecoveryError struct{ cause error }
 
+// This wrapper is only used before the first transport call; it cannot imply
+// that a supplier accepted the request or started a paid generation.
+type imagePreparationError struct{ cause error }
+
+func (e imagePreparationError) Error() string {
+	return "图片请求在本地准备时失败，尚未提交到模型服务"
+}
+func (e imagePreparationError) Unwrap() error { return e.cause }
+
 func (e imageRecoveryError) Error() string {
 	return "图片结果尚未确认，已停止自动重发；请保留任务记录并联系支持查询结果"
 }
@@ -269,7 +279,7 @@ func prepareImageSubmission(s *Service, req *http.Request) (*model.ImageSubmissi
 	header := req.Header.Clone()
 	header.Del("X-Idempotency-Key")
 	header.Set("Idempotency-Key", key)
-	raw, err := json.Marshal(imageWireRequest{URL: req.URL.String(), Header: header, Body: body})
+	raw, err := json.Marshal(imageWireRequest{URL: req.URL.String(), Header: header, Body: body, ReplayProtocol: generation.ImageReplayProtocol})
 	if err != nil {
 		return nil, true, err
 	}
@@ -287,10 +297,12 @@ func prepareImageSubmission(s *Service, req *http.Request) (*model.ImageSubmissi
 }
 
 func (s *Service) sendImageSubmission(ctx context.Context, task model.Task, row *model.ImageSubmission) ([]byte, string, error) {
-	return s.sendImageSubmissionWith(ctx, task, row, func(req *http.Request) ([]byte, string, error) { return doBinaryWithConsumer(req, nil) }, sleepContext)
+	return s.sendImageSubmissionWith(ctx, task, row, func(req *http.Request, admit func() error) ([]byte, string, error) {
+		return generation.DoBinaryWithDispatchAdmission(withHTTPRequestRuntime(req), admit)
+	}, sleepContext)
 }
 
-func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, row *model.ImageSubmission, send func(*http.Request) ([]byte, string, error), wait func(context.Context, time.Duration) error) ([]byte, string, error) {
+func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, row *model.ImageSubmission, send func(*http.Request, func() error) ([]byte, string, error), wait func(context.Context, time.Duration) error) ([]byte, string, error) {
 	if row.TaskID != task.ID || row.UserID != task.UserID {
 		return nil, "", imageRecoveryError{errors.New("图片任务归属不一致")}
 	}
@@ -311,7 +323,8 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	for roundSends := 0; ; roundSends++ {
+	initialSendCount := row.SendCount
+	for {
 		if err := ctx.Err(); err != nil {
 			return nil, "", imageRecoveryError{err}
 		}
@@ -320,13 +333,26 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 			return nil, "", imageRecoveryError{err}
 		}
 		req.Header = wire.Header.Clone()
+		if wire.ReplayProtocol == generation.ImageReplayProtocol {
+			req = req.WithContext(generation.WithImageReplayProtocol(req.Context(), wire.ReplayProtocol))
+		} else {
+			req, err = generation.NegotiateImageReplay(req)
+			if err != nil {
+				return nil, "", imageRecoveryError{err}
+			}
+		}
 		if !recoverableImageEndpoint(req) || req.Header.Get("Idempotency-Key") == "" {
 			return nil, "", imageRecoveryError{errors.New("图片恢复记录无效")}
 		}
-		if err := s.repo.ClaimImageSubmissionSend(row, task.LeaseOwner, imageRecoveryMaxSends); err != nil {
-			return nil, "", imageRecoveryError{err}
-		}
-		data, mime, sendErr := send(req)
+		data, mime, sendErr := send(req, func() error {
+			if err := ctx.Err(); err != nil {
+				return imageRecoveryError{err}
+			}
+			if err := s.repo.ClaimImageSubmissionSend(row, task.LeaseOwner, imageRecoveryMaxSends); err != nil {
+				return imageRecoveryError{err}
+			}
+			return nil
+		})
 		if sendErr == nil {
 			if err := s.repo.MarkImageSubmissionAccepted(row); err != nil {
 				return nil, "", imageRecoveryError{err}
@@ -347,7 +373,7 @@ func (s *Service) sendImageSubmissionWith(ctx context.Context, task model.Task, 
 			}
 			return nil, "", sendErr
 		}
-		if (!row.ResponseAccepted && row.SendCount >= imageRecoveryMaxSends) || (row.ResponseAccepted && roundSends >= 2) {
+		if (!row.ResponseAccepted && row.SendCount >= imageRecoveryMaxSends) || (row.ResponseAccepted && row.SendCount-initialSendCount >= 3) {
 			return nil, "", imageRecoveryError{sendErr}
 		}
 		delay := time.Second * time.Duration(1<<min(row.SendCount, 5))

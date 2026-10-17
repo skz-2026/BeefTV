@@ -67,6 +67,28 @@ test("new models preserve their catalog protocol without inheriting unverified i
     expect(beefAPIVideoContract("wan3.0-video-prime")).toBeUndefined();
 });
 
+test("saved BeefAPI grok video profile never keeps a text protocol", () => {
+    const model = "grok-imagine-video-1.5";
+    for (const savedCapability of ["text", "video"] as const) {
+        const channel = createModelChannel({id: "beefapi", baseUrl: "https://enterprise.beefapi.com", models: [model], modelProfiles: [{model, capability: savedCapability, protocol: "chat-completion"}]});
+        const config = normalizeConfigSnapshot({config: {...defaultConfig, channels: [channel]}}).config;
+        const profile = config.channels[0]!.modelProfiles!.find((item) => item.model === model)!;
+        expect(profile.capability).toBe("video");
+        expect(profile.protocol).toBe("newapi");
+        expect(resolveModelRequestConfig(config, `beefapi::${model}`).interfaceType).toBe("newapi");
+    }
+});
+
+test("saved BeefAPI Seedance profiles still follow the shared video contract", () => {
+    const model = "seedance-2.0-fast";
+    const channel = createModelChannel({id: "beefapi", baseUrl: "https://enterprise.beefapi.com", models: [model], modelProfiles: [{model, capability: "text", protocol: "chat-completion"}]});
+    const config = normalizeConfigSnapshot({config: {...defaultConfig, channels: [channel]}}).config;
+    const profile = config.channels[0]!.modelProfiles!.find((item) => item.model === model)!;
+    expect(profile.capability).toBe("video");
+    expect(profile.protocol).toBe("newapi");
+    expect(resolveModelRequestConfig(config, `beefapi::${model}`).interfaceType).toBe("newapi");
+});
+
 test("media contract overrides require the exact enterprise HTTPS endpoint", () => {
     for (const base of ["https://enterprise.beefapi.com.evil.test", "https://evil.test/enterprise.beefapi.com", "http://enterprise.beefapi.com", "https://user@enterprise.beefapi.com", "https://enterprise.beefapi.com:444"]) expect(isBeefAPIEndpoint(base)).toBe(false);
     expect(isBeefAPIEndpoint("https://enterprise.beefapi.com/v1")).toBe(true);
@@ -104,4 +126,11 @@ test("direct video transport sends Wan inline media and rejects unsupported refe
     expect(calls).toHaveLength(1);
     await createVideoGenerationsTask(deps, {...config, baseUrl: "https://other.example"}, model, "test", [{...image, url: "https://media.example/image.png"}], [], []);
     expect(calls[1]).toMatchObject({body: {image_urls: ["https://media.example/image.png"]}});
+});
+
+test("custom channel profiles take their capability from the configured protocol", () => {
+    const channel = createModelChannel({id: "studio", baseUrl: "https://api.example.com", apiKey: "synthetic-key", models: ["clip-x"], modelProfiles: [{model: "clip-x", capability: "text", protocol: "newapi-channel-2"}]});
+    const config = normalizeConfigSnapshot({config: {...defaultConfig, channels: [channel]}}).config;
+    const profile = config.channels[0]!.modelProfiles!.find((item) => item.model === "clip-x")!;
+    expect(profile).toMatchObject({capability: "video", protocol: "newapi-channel-2"});
 });

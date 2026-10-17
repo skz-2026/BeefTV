@@ -13,7 +13,7 @@ type Projection struct {
 
 func Project(task model.Task, stored []localtask.CanonicalOutput, loadErr error, failedRetryBlocked bool) Projection {
 	binding := localtask.TargetBindingFromInput(task.InputJSON)
-	parsed, _ := localtask.InspectResultJSON(task.ResultJSON)
+	parsed, _ := localtask.InspectResultJSON(task.ResultJSON, task.Type)
 	if loadErr != nil {
 		outputs := parsed
 		if len(outputs) == 0 {
@@ -37,6 +37,9 @@ func Project(task model.Task, stored []localtask.CanonicalOutput, loadErr error,
 	for _, output := range parsed {
 		if got, ok := byIndex[output.OutputIndex]; ok {
 			output = got
+		}
+		if output.MaterializedAssetID == "" && (task.Stage == "delivery_paused" || task.Stage == "delivery_timed_out") {
+			output.MaterializationErrorCode = task.Stage
 		}
 		merged = append(merged, localtask.BindOutput(output, task.ID, binding))
 	}

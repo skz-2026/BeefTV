@@ -1,4 +1,4 @@
-import { BookOpen, ChevronLeft, ChevronRight, Home, Images, Megaphone, Palette, Plug, Plus, Settings2, Sun, Moon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Home, Images, Megaphone, Palette, Plug, Plus, Settings2, HardDrive, Sun, Moon } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -14,7 +14,9 @@ import { preloadWorkspaceRoute } from "@/lib/workspace-route-modules";
 import { useUserStore, type FeatureAvailability } from "@/stores/use-user-store";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { useThemeStore } from "@/stores/use-theme-store";
+import { getDesktopAppBinding } from "@/services/desktop-runtime";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
+import { OnboardingEntry } from "@/components/onboarding/first-creation-guide";
 
 export type WorkspaceNavItem = {
     id: string;
@@ -54,7 +56,9 @@ function buildNav(features: FeatureAvailability): { groups: WorkspaceNavGroup[];
                 { id: "comic-books", title: "漫画成书", icon: BookOpen, to: "/comic-books" },
                 { id: "storybook-books", title: "绘本成书", icon: Palette, to: "/storybook-books" },
                 { id: "digital-human-books", title: "数字人口播", icon: Megaphone, to: "/digital-human-books" },
+                { ...toolItem("skills", "/skills"), title: "扩展" },
                 { id: "settings:channels", title: "模型配置", icon: Settings2, to: "/settings?section=channels" },
+                ...(getDesktopAppBinding()?.StorageSettings ? [{ id: "settings:storage", title: "存储设置", icon: HardDrive, to: "/settings?section=storage" }] : []),
                 { id: "agents", title: "BeefTV MCP", icon: Plug, to: "/agents" },
             ],
         },
@@ -300,6 +304,7 @@ export function WorkspaceSidebarNav({ collapsed, onNavigate, onOpenSearch, onExp
             </LayoutGroup>
 
             <div className="app-workspace-sidebar-footer shrink-0 px-3 py-3">
+                <OnboardingEntry compact={collapsed} />
                 {footer.length ? (
                     <div className="flex flex-col gap-0.5">
                         {footer.map((item) => (

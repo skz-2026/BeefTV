@@ -2161,13 +2161,15 @@ func TestRunVideoTaskRetriesTransientPollFailureWithoutRecreating(t *testing.T) 
 	}
 }
 
-func TestRunVideoTaskRetriesDownloadWithoutRepolling(t *testing.T) {
+func TestRunVideoTaskRenewsOriginalContentWithoutResubmitting(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	createCalls := 0
 	pollCalls := 0
 	downloadCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v1/videos":
+			createCalls++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"video-1","status":"queued"}`))
 		case "GET /v1/videos/video-1":
@@ -2195,8 +2197,8 @@ func TestRunVideoTaskRetriesDownloadWithoutRepolling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["mode"] != "video" || pollCalls != 1 || downloadCalls != 2 {
-		t.Fatalf("result = %#v, poll calls = %d, download calls = %d", result, pollCalls, downloadCalls)
+	if result["mode"] != "video" || createCalls != 1 || pollCalls != 2 || downloadCalls != 2 {
+		t.Fatalf("result = %#v, create calls = %d, poll calls = %d, download calls = %d", result, createCalls, pollCalls, downloadCalls)
 	}
 }
 

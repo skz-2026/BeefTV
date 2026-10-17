@@ -50,11 +50,10 @@ export function ReferenceStoragePane() {
         }
     };
     return (
-        <section className="settings-section space-y-4" aria-label="参考素材对象存储">
+        <section className="settings-section storage-settings-block space-y-4" aria-label="参考素材对象存储">
             <div className="settings-pane-header">
                 <div className="min-w-0">
                     <h2>参考素材对象存储</h2>
-                    <p>连接你自己的 S3 兼容存储，例如 R2、S3 或 MinIO。</p>
                 </div>
             </div>
             <label className="flex items-center justify-between gap-4 text-sm">

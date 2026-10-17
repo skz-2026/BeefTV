@@ -1,5 +1,6 @@
 import { AudioLines, Bot, Film, Image, MessageSquareText } from "lucide-react";
 import { Button, Select } from "antd";
+import { useEffect, useRef } from "react";
 
 import { assistantModelOptions, normalizeAssistantModel } from "@/lib/assistant-model";
 import { groupModelsByDisplayName } from "@/lib/model-selection";
@@ -12,6 +13,8 @@ import {
     type ModelCapability,
 } from "@/stores/use-config-store";
 import { workspaceCapabilities } from "@/services/workspace-mode";
+
+import { recordModelPickerChange, recordModelPickerOpenChange, recordModelPickerPress, watchModelPickerBlockers, type ModelPickerSnapshot } from "./model-settings-diagnostics";
 
 export type DefaultModelKey = "imageModel" | "videoModel" | "textModel" | "audioModel" | "assistantModel";
 
@@ -42,10 +45,13 @@ const rows: Array<CapabilityRow | AssistantRow> = [
 
 export function ModelDefaultGrid({ config, onChange, onOpenChannels }: { config: AiConfig; onChange: (key: DefaultModelKey, model: string) => void; onOpenChannels?: () => void }) {
     const localMode = workspaceCapabilities().local;
+    const rootRef = useRef<HTMLDivElement>(null);
+    useEffect(() => (rootRef.current ? watchModelPickerBlockers(rootRef.current) : undefined), []);
+    const buildStartedAt = performance.now();
     const assistantModel = normalizeAssistantModel(config, config.assistantModel);
     const assistantOptions = assistantModelOptions(config);
     return (
-        <div className="model-default-settings">
+        <div ref={rootRef} className="model-default-settings">
             {rows.map((row) => {
                 const isAssistant = row.kind === "assistant";
                 const models = isAssistant ? assistantOptions : filterModelsByCapability(config.models, row.capability, config.channels);
@@ -64,16 +70,20 @@ export function ModelDefaultGrid({ config, onChange, onOpenChannels }: { config:
                 const unavailable = isAssistant ? Boolean(config.assistantModel && !selected) : Boolean(selected && !options.some((option) => option.value === selected));
                 const value = unavailable ? undefined : isAssistant && !config.assistantModel ? "" : options.some((option) => option.value === selected) ? selected : undefined;
                 const Icon = row.icon;
+                const snapshot: ModelPickerSnapshot = { pickerId: row.id, title: row.title, optionCount: options.length, hasValue: value !== undefined && value !== "", unavailable, disabled: !options.length, buildMs: performance.now() - buildStartedAt };
                 return (
                     <section key={row.id} className="model-default-setting-row" aria-labelledby={`default-${row.id}-title`}>
                         <div className="model-default-setting-label">
                             <Icon className="size-4 shrink-0 text-foreground/50" />
                             <h3 id={`default-${row.id}-title`}>{row.title}</h3>
                         </div>
-                        <div className="model-default-setting-control">
+                        <div className="model-default-setting-control" onPointerDownCapture={(event) => {
+                            if (event.target instanceof Element && event.target.closest(".model-default-select")) recordModelPickerPress(snapshot, { x: event.clientX, y: event.clientY });
+                        }}>
                             <Select
                                 aria-label={row.title}
                                 className="model-default-select"
+                                data-model-picker-id={row.id}
                                 value={value}
                                 options={options}
                                 placeholder={unavailable ? "已选模型不可用，请重新选择" : options.length ? "选择模型" : "暂无可用模型"}
@@ -81,14 +91,18 @@ export function ModelDefaultGrid({ config, onChange, onOpenChannels }: { config:
                                 showSearch={{ optionFilterProp: "searchLabel" }}
                                 listHeight={256}
                                 popupMatchSelectWidth
-                                classNames={{ popup: { root: "model-default-select-popup" } }}
+                                classNames={{ popup: { root: `model-default-select-popup model-default-select-popup-${row.id}` } }}
                                 optionRender={(option) => (
                                     <div className="model-default-select-option">
                                         <span>{option.data.label}</span>
                                         {option.data.channel ? <span className="model-default-select-channel">{option.data.channel}</span> : null}
                                     </div>
                                 )}
-                                onChange={(model) => onChange(row.modelKey, model)}
+                                onOpenChange={(open) => recordModelPickerOpenChange(snapshot, open)}
+                                onChange={(model) => {
+                                    recordModelPickerChange(snapshot);
+                                    onChange(row.modelKey, model);
+                                }}
                             />
                             {!options.length && localMode && onOpenChannels ? <Button type="link" size="small" onClick={onOpenChannels}>添加模型渠道</Button> : null}
                         </div>

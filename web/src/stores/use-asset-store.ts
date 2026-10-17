@@ -48,6 +48,8 @@ type AssetBase<T extends AssetKind> = {
     note?: string;
     arkAssetId?: string;
     portraitCertified?: boolean;
+    pendingRemoteUpload?: boolean;
+    remoteUploadError?: string;
     createdAt: string;
     updatedAt: string;
     metadata?: Record<string, unknown>;
@@ -59,7 +61,7 @@ type AssetStore = {
     addAsset: (asset: NewAsset) => string;
     addGenerationAsset: (effectKey: string, asset: NewAsset, signal?: AbortSignal) => Promise<string>;
     updateAsset: (id: string, patch: Partial<Omit<Asset, "id" | "createdAt">>) => void;
-    removeAsset: (id: string) => Promise<void>;
+    removeAsset: (id: string, options?: { cleanupMedia?: boolean }) => Promise<void>;
     replaceAssets: (assets: Asset[]) => void;
     cleanupImages: (extra?: unknown) => Promise<void>;
 };
@@ -228,7 +230,11 @@ function scheduleAssetStoreDraftPersist(userScope: string, captured = captureUse
             throw error;
         }
     });
-    assetDraftWriteChains.set(userScope, run.then(() => undefined, () => undefined));
+    const tail = run.then(() => undefined, () => undefined);
+    assetDraftWriteChains.set(userScope, tail);
+    void tail.then(() => {
+        if (assetDraftWriteChains.get(userScope) === tail) assetDraftWriteChains.delete(userScope);
+    });
     if (captured.userScope === userScope) return trackAssetOperation(run, captured);
     void run.then(undefined, () => undefined);
     return run;
@@ -615,6 +621,12 @@ export async function flushAssetStorePersistence(expectedScope?: CapturedUserSco
     if (failure !== undefined) throw failure;
 }
 
+export function hasActiveAssetStorePersistence() {
+    // queuedAssetPersists can retain a failed save for explicit retry. Active
+    // operations cover running and lock-waiting writes, including draft IO.
+    return assetOperations.size > 0 || assetDraftWriteChains.size > 0;
+}
+
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
         const scope = getActiveUserScope();
@@ -778,7 +790,7 @@ export const useAssetStore = create<AssetStore>()(
                 }));
                 markAssetStoreDraft(id, "upsert");
             },
-            removeAsset: async (id) => {
+            removeAsset: async (id, options) => {
                 let remainingAssets: Asset[] = [];
                 let removedAsset: Asset | undefined;
                 set((state) => {
@@ -790,6 +802,7 @@ export const useAssetStore = create<AssetStore>()(
                 markAssetStoreDraft(id, "delete");
                 // 没有本地媒体定位时没有需要由该删除动作回收的 Blob；跳过全库扫描，
                 // 避免纯文本/远程资源删除依赖浏览器 IndexedDB 驱动。
+                if (options?.cleanupMedia === false) return;
                 if (!removedAsset || (!collectImageStorageKeys(removedAsset).size && !collectMediaStorageKeys(removedAsset).size)) return;
                 await get().cleanupImages({ assets: remainingAssets });
             },

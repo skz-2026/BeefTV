@@ -273,15 +273,30 @@
 .app-product-workspace .task-collection-content .task-record-row { padding-inline: var(--space-4); }
 .assets-collection-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 0px minmax(0, 1fr);
     width: 100%;
     min-width: 0;
     align-items: start;
-    gap: 28px;
+    gap: 0;
+    transition: grid-template-columns 220ms cubic-bezier(.2,.8,.2,1), gap 220ms cubic-bezier(.2,.8,.2,1);
 }
-.assets-collection-layout.is-filters-open { grid-template-columns: 220px minmax(0, 1fr); }
+.assets-collection-layout.is-filters-open { grid-template-columns: 220px minmax(0, 1fr); gap: 28px; }
 .assets-collection-layout > section { min-width: 0; }
-.assets-collection-layout:not(.is-filters-open) .assets-collection-filters { display: none; }
+ .assets-collection-layout:not(.is-filters-open) .assets-collection-filters {
+    opacity: 0;
+    transform: translateX(-8px);
+    visibility: hidden;
+    pointer-events: none;
+    max-height: 0;
+    overflow: hidden;
+    transition: opacity 160ms ease, transform 220ms ease, visibility 0s 220ms, max-height 0s 220ms;
+}
+.assets-collection-layout.is-filters-open .assets-collection-filters {
+    opacity: 1;
+    transform: translateX(0);
+    visibility: visible;
+    transition: opacity 180ms ease 40ms, transform 220ms cubic-bezier(.2,.8,.2,1), visibility 0s;
+}
 .assets-filter-toggle {
     display: inline-flex;
     height: 32px;
@@ -1169,6 +1184,8 @@
 @media (prefers-reduced-motion: reduce) {
     .app-product-workspace *,
     .app-product-overlays * { animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+    /* Placement must measure unscaled coordinates; keep motion-end events. */
+    .app-product-overlays .model-default-select-popup { transition-property: opacity !important; transform: none !important; }
     .app-product-workspace .product-collection-card:hover,
     .app-product-workspace .library-card:hover,
     .app-product-workspace .task-grid-card:hover,
@@ -1508,3 +1525,38 @@
 
 .agent-permissions.ant-radio-group { display: flex; flex-direction: column; gap: 12px; }
 .agent-management .agent-add-connection.ant-btn { padding-inline: 0; }
+
+/* Storage sections share a level; each surface contains its own controls. */
+.settings-page .storage-settings-sections {
+    display: grid;
+    gap: 24px;
+    padding-top: 8px;
+}
+.settings-page .storage-settings-block {
+    padding: 24px;
+    border-radius: var(--r-lg);
+    background: var(--library-surface);
+}
+.settings-page .storage-settings-block .settings-pane-header {
+    margin-bottom: 24px;
+}
+.settings-page .storage-settings-block .settings-pane-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 22px;
+}
+@media (max-width: 767px) {
+    .settings-page .storage-settings-sections { gap: 20px; }
+    .settings-page .storage-settings-block { padding: 20px 16px; }
+}
+
+.asset-inline-title { width:100%; min-width:0; padding:0; border:0; border-radius:0; outline:none; background:transparent; color:inherit; font:inherit; font-weight:600; box-shadow:0 1px 0 #888; }
+.asset-actions-menu .ant-dropdown-menu-item, .asset-actions-menu .ant-dropdown-menu-submenu-title { display:flex; align-items:center; gap:8px; }
+.asset-actions-menu .ant-dropdown-menu-item-icon { display:inline-flex; align-items:center; justify-content:center; flex:0 0 14px; margin-inline-end:0 !important; }
+.asset-actions-menu .ant-dropdown-menu-title-content { min-width:0; }
+
+@media (prefers-reduced-motion: reduce) {
+    .assets-collection-layout,
+    .assets-collection-layout .assets-collection-filters { transition: none !important; transform: none !important; }
+}

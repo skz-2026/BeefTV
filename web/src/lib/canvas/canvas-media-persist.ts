@@ -1,4 +1,4 @@
-import { canvasNodesMissingResourceAssetBinding } from "@/lib/canvas/canvas-node-asset";
+import { canvasNodeResourceId, canvasNodesMissingResourceAssetBinding } from "@/lib/canvas/canvas-node-asset";
 import { assertUserScope, captureUserScope, isUserScopeAbandonedError, type CapturedUserScope } from "@/lib/user-scope-guard";
 import type { CanvasNodeAssetResult } from "@/services/project-asset-sync";
 import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
@@ -115,6 +115,18 @@ export async function persistOwnedCanvasMediaNodes(
     for (const mediaNode of input.mediaNodes) {
         const assetId = assetIds.get(mediaNode.id);
         latestNodes.set(mediaNode.id, assetId ? { ...mediaNode, metadata: { ...mediaNode.metadata, assetId } } : mediaNode);
+    }
+    for (const [id, node] of latestNodes.entries()) {
+        if (node.metadata?.assetId) continue;
+        const primaryId = node.metadata?.isBatchRoot ? node.metadata.primaryImageId : undefined;
+        const primaryNode = primaryId ? latestNodes.get(primaryId) : undefined;
+        const primaryAssetId = primaryId ? (assetIds.get(primaryId) || primaryNode?.metadata?.assetId) : undefined;
+        const rootResourceId = canvasNodeResourceId(node);
+        const primaryResourceId = primaryNode ? canvasNodeResourceId(primaryNode) : "";
+        if (primaryAssetId && rootResourceId && primaryResourceId && rootResourceId === primaryResourceId) {
+            assetIds.set(id, primaryAssetId);
+            latestNodes.set(id, { ...node, metadata: { ...node.metadata, assetId: primaryAssetId } });
+        }
     }
 
     for (const node of canvasNodesMissingResourceAssetBinding([...latestNodes.values()])) {

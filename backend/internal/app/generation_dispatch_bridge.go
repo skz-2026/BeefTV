@@ -57,7 +57,7 @@ func runVolcengineArkImageTask(ctx context.Context, input canvasGenerationInput)
 }
 
 func volcengineArkImageDataURLs(ctx context.Context, config providerConfig, payload imageResponse) ([]map[string]string, error) {
-	return generation.VolcengineArkImageDataURLs(ctx, config, payload)
+	return generation.MaterializeImageDataURLs(ctx, config, payload)
 }
 
 func volcengineArkImageBody(input canvasGenerationInput) (map[string]interface{}, error) {

@@ -138,8 +138,9 @@ func (a *DesktopApp) MigrateStorage(target string) (desktopstorage.Usage, error)
 		old, openErr := openDesktopRuntime(context.Background(), source)
 		if openErr == nil {
 			a.installStorageRuntime(source, old)
+			return desktopstorage.Usage{}, fmt.Errorf("迁移未完成，已恢复原工作区，存储目录未更改。请查看错误详情\n\n%w", cause)
 		}
-		return desktopstorage.Usage{}, errors.Join(cause, openErr)
+		return desktopstorage.Usage{}, fmt.Errorf("迁移未完成，原数据已保留，但工作区未能重新打开。请重启 BeefTV\n\n%w", errors.Join(cause, openErr))
 	}
 	if err != nil {
 		a.mu.Lock()

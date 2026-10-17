@@ -31,7 +31,7 @@ func TestSourcedSeedanceGenerationKeepsServerLimitsAndAudio(t *testing.T) {
 
 func TestNativeArkModelDefaultsAndExplicitRestrictions(t *testing.T) {
 	for _, protocol := range []string{"volcengine-ark-video", "volcengine-ark-agent-plan-video"} {
-		for _, name := range []string{"seedance-2.5", "doubao-seedance-2-5-260528"} {
+		for _, name := range []string{"seedance-2.5", "doubao-seedance-2-5-260528", "dreamina-seedance-2-5-260628"} {
 			profile := DefaultModelCapabilityConfigForModel(protocol, name).Video
 			if profile.References.MaxImages != 30 || profile.References.MaxVideos != 10 || profile.References.MaxAudios != 10 || profile.References.MinAudioDuration != 2 || profile.Duration.Max != 30 {
 				t.Fatalf("%s %s defaults = %#v", protocol, name, profile)
@@ -63,6 +63,66 @@ func TestNativeArkModelDefaultsAndExplicitRestrictions(t *testing.T) {
 			profile := DefaultModelCapabilityConfigForModel(protocol, name).Video
 			if videoCapabilityAllowsAudioOnly(profile) {
 				t.Fatalf("unknown or 2.0 model %s inferred audio-only", name)
+			}
+		}
+	}
+}
+
+func TestDreaminaFastMiniRejectUnsupportedResolution(t *testing.T) {
+	for _, name := range []string{"dreamina-seedance-2-0-fast-260128", "dreamina-seedance-2-0-mini-260615"} {
+		for _, resolution := range []string{"480p", "720p", "1080p"} {
+			profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", name)
+			input := canvasGenerationInput{Mode: "video", Prompt: "test", Config: providerConfig{InterfaceType: "volcengine-ark-video", Model: name, VideoSeconds: "5", Size: "16:9", VQuality: resolution, CapabilityConfig: profile}}
+			err := (&Service{}).validateResolvedVideoCapability(&input)
+			if (err != nil) != (resolution == "1080p") {
+				t.Fatalf("%s %s validation = %v", name, resolution, err)
+			}
+		}
+	}
+}
+
+func TestDreaminaOperationsValidateAndReachOfficialWireContract(t *testing.T) {
+	for _, operation := range []string{"inpaint", "extend", "reference_to_video"} {
+		input := canvasGenerationInput{Mode: "video", Prompt: "change the light", Config: providerConfig{InterfaceType: "volcengine-ark-video", Model: "dreamina-seedance-2-5-260628", VideoSeconds: "6", Size: "16:9", VQuality: "480p"}, Metadata: map[string]interface{}{"videoEditOperation": operation}, ReferenceVideos: []providerMedia{{URL: "https://cdn.example/video.mp4", Width: 864, Height: 496, DurationMs: 4000}}}
+		if err := (&Service{}).validateResolvedVideoCapability(&input); err != nil {
+			t.Fatalf("%s validation: %v", operation, err)
+		}
+		body := officialVideoCreateBody(t, input)
+		wantType, wantRatio, wantDuration := "reference", "16:9", float64(6)
+		if operation == "inpaint" {
+			wantType, wantRatio, wantDuration = "edit", "adaptive", -1
+		}
+		if operation == "extend" {
+			wantType, wantRatio = "extend", "adaptive"
+		}
+		if body["omni_reference_task_type"] != wantType || body["ratio"] != wantRatio || body["duration"] != wantDuration {
+			t.Fatalf("%s body: %#v", operation, body)
+		}
+		input.ReferenceVideos[0].DurationMs = 3999
+		err := (&Service{}).validateResolvedVideoCapability(&input)
+		if (err != nil) != (operation == "inpaint") {
+			t.Fatalf("%s 3999ms: %v", operation, err)
+		}
+		input.ReferenceVideos[0].DurationMs = 4000
+		input.Config.CapabilityConfig.Video.Operations = []string{"text_to_video"}
+		if err := (&Service{}).validateResolvedVideoCapability(&input); err == nil {
+			t.Fatal("explicit profile operations expanded")
+		}
+	}
+}
+
+func TestDreaminaDefaultDurationAndAdaptiveAdmission(t *testing.T) {
+	for _, name := range []string{"dreamina-seedance-2-0-260128", "dreamina-seedance-2-0-fast-260128", "dreamina-seedance-2-0-mini-260615", "dreamina-seedance-2-5-260628"} {
+		profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", name).Video
+		if profile.Duration.Selection != "enum" || len(profile.Duration.Values) != profile.Duration.Max-2 || profile.Duration.Values[0] != -1 || profile.Duration.Values[1] != 4 || profile.Duration.Values[len(profile.Duration.Values)-1] != profile.Duration.Max {
+			t.Fatalf("missing automatic/duration choices: %#v", profile.Duration)
+		}
+		for _, seconds := range []string{"-1", "1", "3", "4", "15", "30"} {
+			input := canvasGenerationInput{Mode: "video", Prompt: "forest", Config: providerConfig{InterfaceType: "volcengine-ark-video", Model: name, VideoSeconds: seconds, Size: "adaptive", VQuality: "480p"}}
+			err := (&Service{}).validateResolvedVideoCapability(&input)
+			blocked := seconds == "1" || seconds == "3" || (seconds == "30" && !strings.Contains(name, "2-5"))
+			if (err != nil) != blocked {
+				t.Fatalf("%s %ss: %v", name, seconds, err)
 			}
 		}
 	}

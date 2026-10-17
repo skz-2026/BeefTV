@@ -338,6 +338,7 @@ export type CanvasNodeMetadata = {
     actionBoardColumns?: number;
     taskId?: string;
     taskClientOperationId?: string;
+    generationSubmissionState?: "submitting" | "unknown" | "accepted" | "rejected";
     taskClientOperationInput?: string;
     taskClientOperationTerminal?: boolean;
     retryOf?: string;
@@ -376,6 +377,10 @@ export type CanvasNodeMetadata = {
     videoCameraMovePrompt?: string;
     videoStartFrameNodeId?: string;
     videoEndFrameNodeId?: string;
+    videoMiddleFrameNodeId?: string;
+    videoMiddleFrameTime?: number;
+    videoH3Options?: import("@/lib/h3-video").H3VideoOptions;
+    videoReferenceOrder?: string[];
     videoFrameSourceNodeId?: string;
     videoFrameTimeMs?: number;
     /** Traceability for media operations created from an existing video node. */

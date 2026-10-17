@@ -98,7 +98,7 @@ func (s *Service) validatePortraitTaskQuote(input map[string]any) error {
 				continue
 			}
 			pricing, valid := beefapi.NormalizeCatalogVideoPricing(profile.VideoPricing)
-			if valid {
+			if valid && pricing["mode"] == "tokens" {
 				rates := pricing["rates"].(map[string]any)
 				_, quoted = rates[resolution]
 			}

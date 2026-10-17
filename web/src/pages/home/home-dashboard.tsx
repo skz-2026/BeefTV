@@ -31,7 +31,7 @@ export function HomeDashboard({ projects, loading, error, onRetry }: { projects:
                             <strong>{label}</strong>
                         </span>
                     ) : (
-                        <Link key={id} to={to} className="beeftv-capability">
+                        <Link key={id} to={to} className="beeftv-capability" title={detail}>
                             <span className="beeftv-capability-icon"><Icon /></span>
                             <strong>{label}</strong>
                         </Link>

@@ -286,9 +286,10 @@ export function getResource(id: string, config?: HttpRequestConfig): Promise<Rem
     if (blocked) return Promise.reject(blocked);
     const cacheKey = resourceCacheKey(id, expected);
     const cached = resourceCache.get(cacheKey);
-    if (cached) return Promise.resolve(cached);
+    const ensureMetadata = config?.params?.metadata === "ensure";
+    if (cached && !ensureMetadata) return Promise.resolve(cached);
     if (missingResourceIds.has(cacheKey)) return Promise.reject(new Error("资源不存在或已被删除"));
-    const sharePending = !config?.signal;
+    const sharePending = !config?.signal && !ensureMetadata;
     if (sharePending) {
         const pending = resourceRequests.get(cacheKey);
         if (pending) return pending;

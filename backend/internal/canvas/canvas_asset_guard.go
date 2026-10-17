@@ -6,7 +6,6 @@ import (
 	"infinite-canvas/backend/internal/asset"
 	"infinite-canvas/backend/internal/assets"
 	"infinite-canvas/backend/internal/kernel"
-	"strings"
 
 	"infinite-canvas/backend/internal/model"
 )
@@ -80,53 +79,6 @@ func (s *Service) validateCanvasMediaAssetsWithCandidates(userID string, raw jso
 	return nil
 }
 
-// BindCanvasMediaAssets fills missing/stale asset bindings from candidate
-// assets by exact Resource identity. It never guesses from titles or URLs.
-func BindCanvasMediaAssets(raw json.RawMessage, candidates []model.Asset) (json.RawMessage, error) {
-	byResource := map[string]string{}
-	for _, asset := range candidates {
-		ids := map[string]struct{}{}
-		if err := assets.CollectOwnedDocumentReferences(asset.PayloadJSON, ids); err != nil {
-			return nil, err
-		}
-		for resourceID := range ids {
-			if existing, found := byResource[resourceID]; found && existing != asset.ID {
-				delete(byResource, resourceID)
-				continue
-			}
-			byResource[resourceID] = asset.ID
-		}
-	}
-	var document map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &document); err != nil {
-		return nil, err
-	}
-	var nodes []map[string]json.RawMessage
-	if err := json.Unmarshal(document["nodes"], &nodes); err != nil && len(document["nodes"]) > 0 {
-		return nil, err
-	}
-	for _, node := range nodes {
-		var kind string
-		_ = json.Unmarshal(node["type"], &kind)
-		if !isCanvasMediaKind(kind) {
-			continue
-		}
-		var metadata map[string]json.RawMessage
-		if json.Unmarshal(node["metadata"], &metadata) != nil {
-			continue
-		}
-		var storageKey, content string
-		_ = json.Unmarshal(metadata["storageKey"], &storageKey)
-		_ = json.Unmarshal(metadata["content"], &content)
-		if assetID := byResource[firstCanvasResourceID(storageKey, content)]; assetID != "" {
-			metadata["assetId"], _ = json.Marshal(assetID)
-			node["metadata"], _ = json.Marshal(metadata)
-		}
-	}
-	document["nodes"], _ = json.Marshal(nodes)
-	return json.Marshal(document)
-}
-
 // validateAssetCanvasReferences prevents an Asset update from changing the
 // resource behind a canvas that already points at that Asset.
 func (s *Service) ValidateAssetCanvasReferences(userID string, item model.Asset) error {
@@ -142,22 +94,4 @@ func (s *Service) ValidateAssetReplacementCanvasReferences(userID string, replac
 
 func MediaAssetReferences(raw json.RawMessage) ([]MediaAssetReference, error) {
 	return asset.CanvasMediaReferences(raw)
-}
-
-func firstCanvasResourceID(values ...string) string {
-	for _, value := range values {
-		if resourceID := assets.ResourceID(value); resourceID != "" {
-			return resourceID
-		}
-	}
-	return ""
-}
-
-func isCanvasMediaKind(kind string) bool {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "image", "video", "audio":
-		return true
-	default:
-		return false
-	}
 }

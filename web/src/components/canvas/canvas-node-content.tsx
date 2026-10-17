@@ -4,7 +4,9 @@ import { AlertCircle, BookOpenCheck, Clock3, Download, FileText, Image as ImageI
 import { VideoPlayer } from "@/components/video-player";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { GenerationFailureNotice } from "@/components/generation/generation-failure-notice";
+import { generationDeliveryProgressView, generationTaskFetchingResult } from "@/lib/generation-delivery-progress";
 import { explainGenerationError } from "@/lib/generation-error";
+import { canvasNodeFailureExplanation, canRecoverOrRetryDepthCapture } from "@/lib/canvas/canvas-depth-capture";
 import { formatGenerationElapsed, generationProgressDisplay, generationTaskShowsProgress, isGenerationTaskSubmissionUncertain, trackGenerationProgressChange, type GenerationProgressRecord } from "@/lib/generation-task-display";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
@@ -22,9 +24,11 @@ import { cacheResourceObjectUrl, getCachedResourceObjectUrl, peekCachedResourceO
 import { resolveMediaUrl } from "@/services/file-storage";
 import { useResourceVideoPlayback } from "@/hooks/use-resource-video-playback";
 import { resolveImageUrl } from "@/services/image-storage";
+import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 import { acquireCanvasVideoPreview, canvasDerivedPreviewSourceKey, canvasVideoPreviewNeedsHydration } from "@/services/canvas-video-preview";
 import { acquireCanvasVideoSource } from "@/services/canvas-video-source";
 import { getActiveUserScopeEpoch, subscribeUserScope } from "@/lib/user-scope";
+import { useGenerationDeliveryProgress } from "@/stores/use-generation-delivery-progress";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
@@ -68,6 +72,7 @@ export type CanvasNodeContentProps = {
     onToggleBatch?: () => void;
     reduceMediaEffects?: boolean;
     mediaActive?: boolean;
+    scale?: number;
     onMediaPlayRequest?: (nodeId: string) => void;
 };
 
@@ -208,22 +213,30 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
     const elapsed = Number.isFinite(createdAtMs) ? `已用 ${formatGenerationElapsed(now - createdAtMs)}` : "刚刚开始";
     const progressKey = taskId || node.id;
     const progressRecord = progress !== null ? rememberProgressChange(progressKey, progress, now) : undefined;
-    const progressView = generationProgressDisplay({
+    const generationView = generationProgressDisplay({
         status: displayTask.status,
         progress,
         progressChangedAt: progressRecord?.changedAt,
         now,
         isVideo: node.type === CanvasNodeType.Video,
     });
+    const deliveryProgress = useGenerationDeliveryProgress((state) => (taskId ? state.byTask[taskId] : undefined));
+    const delivery = deliveryProgress ? generationDeliveryProgressView(deliveryProgress) : null;
+    const fetchingResult = generationTaskFetchingResult(displayTask, Boolean(deliveryProgress));
+    const progressView = delivery
+        ? { percent: delivery.percent, bar: delivery.percent !== null ? "determinate" : "indeterminate" }
+        : fetchingResult && displayTask.status === "running" ? { percent: null, bar: "indeterminate" } : generationView;
     return (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
+        <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ background: theme.node.fill, color: theme.node.activeStroke }}>
             {submissionUncertain ? <AlertCircle className="size-10" /> : <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />}
-            <span className="text-[var(--fs-tiny)] font-semibold">生成中</span>
+            <span className="text-[var(--fs-tiny)] font-semibold">{delivery?.title || (fetchingResult ? "正在取回结果" : "生成中")}</span>
             {hasTaskIdentity ? (
                 <div className="flex w-full max-w-[210px] flex-col items-center gap-1.5">
-                    <div className="max-w-full truncate text-sm font-semibold tabular-nums" style={{ color: theme.node.text }}>
-                        <Clock3 className="mr-1 inline size-3.5 align-[-2px]" />{elapsed}
-                    </div>
+                    {fetchingResult ? null : (
+                        <div className="max-w-full truncate text-sm font-semibold tabular-nums" style={{ color: theme.node.text }}>
+                            <Clock3 className="mr-1 inline size-3.5 align-[-2px]" />{elapsed}
+                        </div>
+                    )}
                     {progressView.percent !== null ? <div className="max-w-full truncate text-[var(--fs-label)] font-medium" style={{ color: theme.node.text }}>{progressView.percent}%</div> : null}
                     {progressView.bar === "determinate" && progressView.percent !== null ? (
                         <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }}>
@@ -231,15 +244,16 @@ function LoadingContent({ node, theme, onOpenTaskDetails, onCancelTask }: Pick<C
                         </div>
                     ) : null}
                     {progressView.bar === "indeterminate" ? (
-                        <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }} role="progressbar" aria-label="仍在生成">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: theme.node.stroke }} role="progressbar" aria-label={fetchingResult ? "正在取回结果" : "仍在生成"}>
                             <div className="canvas-node-progress-indeterminate h-full rounded-full" style={{ background: theme.node.activeStroke }} />
                         </div>
                     ) : null}
+                    {delivery?.detail ? <div className="max-w-full truncate text-[var(--fs-tiny)] tabular-nums" style={{ color: theme.node.muted }}>{delivery.detail}</div> : null}
                     <div className="mt-0.5 flex items-center gap-1.5">
                         <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium transition-colors" style={{ background: theme.toolbar.itemHover, color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenTaskDetails?.(node); }}><FileText className="size-3" />详情</button>
-                        {onCancelTask && (displayTask.status === "queued" || displayTask.status === "running") ? (
-                            <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium transition-colors" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCancelTask(node); }} aria-label="取消生成任务">
-                                <Square className="size-3" />取消
+                        {onCancelTask && (displayTask.status === "queued" || displayTask.status === "running" || displayTask.status === "succeeded") ? (
+                            <button type="button" className="inline-flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[var(--fs-tiny)] font-medium transition-colors" style={{ background: theme.toolbar.itemHover, color: theme.node.muted }} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onCancelTask(node); }} aria-label={displayTask.status === "succeeded" ? "停止取回结果" : "取消生成任务"}>
+                                <Square className="size-3" />{displayTask.status === "succeeded" ? "停止取回" : "取消"}
                             </button>
                         ) : null}
                     </div>
@@ -281,7 +295,8 @@ function rememberProgressChange(key: string, progress: number, now: number) {
 
 
 function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenTaskDetails }: Pick<CanvasNodeContentProps, "node" | "theme" | "onRetry" | "onReloadResource" | "onOpenTaskDetails">) {
-    const explanation = explainGenerationError({ code: node.metadata?.generationErrorCode || node.metadata?.taskErrorCode, message: node.metadata?.errorDetails }, { taskId: node.metadata?.taskId, model: node.metadata?.model, createdAt: node.metadata?.taskCreatedAt, stage: node.metadata?.taskStage });
+    const explanation = canvasNodeFailureExplanation(node);
+    const localDepthAction = canRecoverOrRetryDepthCapture(node);
     const errorDisplayTask = {
         provider: node.metadata?.taskProvider,
         status: (node.metadata?.taskStatus || "failed") as GenerationTask["status"],
@@ -309,8 +324,8 @@ function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenTaskDetail
                     explanation={explanation}
                     context={{ taskId: node.metadata?.taskId, model: node.metadata?.model, createdAt: node.metadata?.taskCreatedAt, stage: node.metadata?.taskStage, providerRequestId: node.metadata?.taskProviderRequestId, failureDiagnostics: node.metadata?.taskFailureDiagnostics, errorSummary: node.metadata?.generationErrorSummary, completedAt: node.metadata?.taskCompletedAt, updatedAt: node.metadata?.taskUpdatedAt }}
                     onOpenDetails={node.metadata?.taskId && onOpenTaskDetails ? () => onOpenTaskDetails(node) : undefined}
-                    onRetry={submissionUncertain || explanation.uncertain || explanation.category === "download_failed" ? undefined : onRetry ? () => onRetry(node) : undefined}
-                    retryLabel={node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
+                    onRetry={!localDepthAction && (submissionUncertain || explanation.uncertain || explanation.category === "download_failed") ? undefined : onRetry ? () => onRetry(node) : undefined}
+                    retryLabel={localDepthAction && node.metadata?.taskStatus === "succeeded" ? "恢复结果" : node.metadata?.isBatchRoot ? "重新生成失败项" : "重新生成"}
                 />
             </div>
             {node.metadata?.resourceReloadAvailable ? (
@@ -322,7 +337,7 @@ function ErrorContent({ node, theme, onRetry, onReloadResource, onOpenTaskDetail
                     onMouseDown={(event) => event.stopPropagation()}
                 >
                     <Download className="size-3.5" />
-                    重新加载资源
+                    继续取回
                 </button>
             ) : null}
         </div>
@@ -446,7 +461,7 @@ function ImageNodeContent(props: CanvasNodeContentProps) {
         return <BatchFrame batchPreviewNodes={props.batchPreviewNodes} batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} theme={props.theme} onToggleBatch={props.onToggleBatch}>{content}</BatchFrame>;
     }
     if (!props.node.metadata?.content) return <EmptyImageContent {...props} />;
-    return <ImageContent batchPreviewNodes={props.batchPreviewNodes} node={props.node} theme={props.theme} isBatchRoot={props.isBatchRoot} batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} onToggleBatch={props.onToggleBatch} />;
+    return <ImageContent scale={props.scale} batchPreviewNodes={props.batchPreviewNodes} node={props.node} theme={props.theme} isBatchRoot={props.isBatchRoot} batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} onToggleBatch={props.onToggleBatch} />;
 }
 
 function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: CanvasNodeContentProps) {
@@ -675,13 +690,14 @@ function EmptyAudioContent({ theme }: { theme: CanvasTheme }) {
     return <div className="flex h-full w-full items-center justify-center" style={{ color: theme.node.muted }}><Music2 className="canvas-node-empty-audio-mark size-14 opacity-30" strokeWidth={1.25} aria-hidden /></div>;
 }
 
-function ImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: Pick<CanvasNodeContentProps, "node" | "theme" | "isBatchRoot" | "batchCount" | "batchPreviewNodes" | "batchExpanded" | "batchOpening" | "batchRecovering" | "onToggleBatch">) {
+function ImageContent({ node, theme, scale = 1, isBatchRoot, batchCount, batchPreviewNodes, batchExpanded, batchOpening, batchRecovering, onToggleBatch }: Pick<CanvasNodeContentProps, "node" | "theme" | "scale" | "isBatchRoot" | "batchCount" | "batchPreviewNodes" | "batchExpanded" | "batchOpening" | "batchRecovering" | "onToggleBatch">) {
     const imageContainerRef = useRef<HTMLDivElement>(null);
     const nearViewport = useNearViewport(imageContainerRef);
     const { url, loading, error, retry, fail } = useNodeResourceUrl(node, nearViewport);
     const importedFromLibTV = node.metadata?.importSource?.provider === "libtv";
     const { updateMediaNode } = useCanvasNodeActions();
     const measuredSizeRef = useRef<{ width: number; height: number } | null>(null);
+    const compactStatus = node.width * scale < 140 || node.height * scale < 80;
 
     /**
      * 让节点跟随图片真实比例。
@@ -721,7 +737,17 @@ function ImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewNodes,
     return (
         <BatchFrame batchPreviewNodes={batchPreviewNodes} batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
             <div ref={imageContainerRef} className="h-full w-full overflow-hidden rounded-[var(--node-radius)]">
-                {error ? <div role="status" className="flex size-full flex-col items-center justify-center gap-2 px-3 text-center text-xs" style={{ color: theme.node.muted }}><span>图片加载失败</span><button type="button" data-canvas-no-zoom className="rounded border px-3 py-1" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); retry(); }}>重新加载</button></div> : url ? <img src={url} alt={node.title} loading="lazy" decoding="async" draggable={false} onDragStart={(event) => event.preventDefault()} onError={fail} onLoad={(event) => fitToImage(event.currentTarget)} className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`} /> : <div className="grid size-full place-items-center" style={{ color: theme.node.muted }}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : <ImageIcon className="size-5 opacity-45" />}</div>}
+                {error ? (
+                    <div role="status" aria-label="图片加载失败" className="flex size-full items-center justify-center text-center text-xs" style={{ background: theme.node.fill, color: theme.node.text }}>
+                        <div className="flex flex-col items-center gap-2" style={{ transform: "scale(var(--canvas-live-inverse-scale, 1))", transformOrigin: "center" }}>
+                            {!compactStatus ? <span>图片加载失败</span> : null}
+                            <button type="button" data-canvas-no-zoom aria-label="重新加载图片" title="重新加载图片" className={`inline-flex items-center justify-center gap-1.5 rounded border focus-visible:outline focus-visible:outline-2 ${compactStatus ? "size-7" : "px-3 py-1"}`} style={{ borderColor: theme.node.stroke, color: theme.node.text }} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); retry(); }}>
+                                <RefreshCw className="size-4 shrink-0" aria-hidden />
+                                {!compactStatus ? "重新加载" : null}
+                            </button>
+                        </div>
+                    </div>
+                ) : url ? <img src={url} alt={node.title} loading="lazy" decoding="async" draggable={false} onDragStart={(event) => event.preventDefault()} onError={fail} onLoad={(event) => fitToImage(event.currentTarget)} className={`pointer-events-none block h-full w-full select-none ${node.metadata?.freeResize ? "object-fill" : "object-contain"}`} /> : <div role="status" aria-label="正在加载图片" className="grid size-full place-items-center" style={{ background: theme.node.fill, color: theme.node.muted }}><span style={{ transform: "scale(var(--canvas-live-inverse-scale, 1))" }}>{loading ? <LoaderCircle className="size-5 animate-spin" /> : <ImageIcon className="size-5" />}</span></div>}
             </div>
         </BatchFrame>
     );
@@ -757,8 +783,19 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
     const reloadRequested = useRef(false);
     const [scopeEpoch, setScopeEpoch] = useState(getActiveUserScopeEpoch);
     useEffect(() => subscribeUserScope((epoch) => setScopeEpoch(epoch.generation)), []);
-    const fail = useCallback(() => setError(true), []);
-    const retry = useCallback(() => { reloadRequested.current = true; setError(false); setAttempt((current) => current + 1); }, []);
+    const reportImageEvent = useCallback((code: "CANVAS_IMAGE_READ_FAILED" | "CANVAS_IMAGE_DECODE_FAILED" | "CANVAS_IMAGE_RELOAD") => {
+        if (node.type !== CanvasNodeType.Image) return;
+        const safeNodeId = /^[A-Za-z0-9._:-]{1,96}$/.test(node.id) ? node.id : "unknown";
+        recordDiagnosticEvent({
+            level: code === "CANVAS_IMAGE_RELOAD" ? "info" : "error",
+            category: "runtime", code,
+            message: `${code === "CANVAS_IMAGE_DECODE_FAILED" ? "画布图片解码失败" : code === "CANVAS_IMAGE_READ_FAILED" ? "画布图片读取失败" : "重新读取画布图片"} node=${safeNodeId}`,
+            taskId: node.metadata?.taskId,
+            route: resourceId && /^[A-Za-z0-9_-]{1,96}$/.test(resourceId) ? `/resources/${resourceId}/file` : undefined,
+        });
+    }, [node.id, node.type, node.metadata?.taskId, resourceId]);
+    const fail = useCallback(() => { reportImageEvent("CANVAS_IMAGE_DECODE_FAILED"); setError(true); }, [reportImageEvent]);
+    const retry = useCallback(() => { reportImageEvent("CANVAS_IMAGE_RELOAD"); reloadRequested.current = true; setError(false); setAttempt((current) => current + 1); }, [reportImageEvent]);
 
     useEffect(() => {
         let cancelled = false;
@@ -775,7 +812,7 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
                     if (!cancelled) setUrl(resolved);
                 })
                 .catch(() => {
-                    if (!cancelled) { setUrl(""); setError(true); }
+                    if (!cancelled) { setUrl(""); setError(true); reportImageEvent("CANVAS_IMAGE_READ_FAILED"); }
                 })
                 .finally(() => {
                     if (!cancelled) setLoading(false);
@@ -801,17 +838,17 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         const resolve = eager ? cacheResourceObjectUrl(storageKey, reload) : getCachedResourceObjectUrl(storageKey);
         void resolve.then((cached) => {
             if (!cancelled && cached) setUrl(cached);
-            if (!cancelled && eager && !cached) setError(true);
+            if (!cancelled && eager && !cached) { setError(true); reportImageEvent("CANVAS_IMAGE_READ_FAILED"); }
             // Never hand a protected resource URL to a native <img> after a
             // cache miss. It cannot attach the auth header and would render
             // as a broken image after relogin.
         }).catch(() => {
-            if (!cancelled && eager) { setUrl(synchronousUrl); setError(true); }
+            if (!cancelled && eager) { setUrl(synchronousUrl); setError(true); reportImageEvent("CANVAS_IMAGE_READ_FAILED"); }
         }).finally(() => {
             if (!cancelled) setLoading(false);
         });
         return () => { cancelled = true; };
-    }, [eager, fallback, isLazyVisual, isRemoteResource, storageKey, attempt, scopeEpoch]);
+    }, [eager, fallback, isLazyVisual, isRemoteResource, storageKey, attempt, scopeEpoch, reportImageEvent]);
 
     return { url, loading, error, retry, fail };
 }

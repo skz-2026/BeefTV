@@ -5,12 +5,16 @@ import { resolve } from "node:path";
 const repository = readFileSync(resolve(import.meta.dir, "../src/services/local-workspace-repository.ts"), "utf8");
 const lifecycle = readFileSync(resolve(import.meta.dir, "../src/pages/canvas/use-canvas-project-lifecycle.ts"), "utf8");
 
-test("desktop local canvas creation is durable in the Go repository before navigation", () => {
-    const sync = repository.indexOf("await syncLocalCanvasProject(id, false, expected);");
-    const returned = repository.indexOf("return { id };");
-    expect(sync).toBeGreaterThan(-1);
+test("desktop local canvas creation starts durable sync without waiting for cache flush", () => {
+    const begin = repository.indexOf("export function beginLocalCanvasProject(");
+    const sync = repository.indexOf("const saved = syncLocalCanvasProject(id, expected);", begin);
+    const returned = repository.indexOf("return { id, saved };", sync);
+    expect(begin).toBeGreaterThan(-1);
+    expect(sync).toBeGreaterThan(begin);
     expect(returned).toBeGreaterThan(sync);
-    expect(repository.slice(0, sync)).not.toContain("await flushCanvasStorePersistence();");
+    expect(repository.slice(begin, sync)).not.toContain("await flushCanvasStorePersistence();");
+    expect(repository).toContain("const { id, saved } = beginLocalCanvasProject(title, projectId, initialContent, workspaceProjectId);");
+    expect(repository).toContain("await saved;");
 });
 
 test("local canvas edits schedule and explicit saves await backend persistence", () => {

@@ -217,6 +217,9 @@ func ApplyChannelCapabilityDefaults(config map[string]any, capability string, pr
 		}
 		if profile.Image.Quality.Supported {
 			setDefault("quality", profile.Image.Quality.Default)
+			if value := strings.ToLower(strings.TrimSpace(fmt.Sprint(config["quality"]))); (value == "auto" || value == "any") && !containsCapabilityString(profile.Image.Quality.Values, "auto") {
+				config["quality"] = profile.Image.Quality.Default
+			}
 		}
 		setDefault("transparentBackground", profile.Image.TransparentBackground.Default)
 		setDefault("count", 1)

@@ -29,6 +29,8 @@ type whisperVerboseJSON struct {
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
+	Model   string
+	APIKey  string
 }
 
 func NewClient(baseURL string) *Client {
@@ -53,6 +55,18 @@ func (c *Client) Transcribe(ctx context.Context, wavPath string, language string
 		return nil, "", fmt.Errorf("读取待转写音频失败: %w", err)
 	}
 	defer audio.Close()
+	if c.Model != "" {
+		info, err := audio.Stat()
+		if err != nil {
+			return nil, "", fmt.Errorf("读取音频大小失败")
+		}
+		if info.Size() > 25<<20 {
+			return nil, "", fmt.Errorf("云端转写音频超过 25 MB，请缩短素材后重试")
+		}
+		if err := writer.WriteField("model", c.Model); err != nil {
+			return nil, "", err
+		}
+	}
 	part, err := writer.CreateFormFile("file", filepath.Base(wavPath))
 	if err != nil {
 		return nil, "", err
@@ -72,17 +86,33 @@ func (c *Client) Transcribe(ctx context.Context, wavPath string, language string
 		return nil, "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/inference", &body)
+	endpoint := c.BaseURL + "/inference"
+	if c.Model != "" {
+		endpoint = strings.TrimSuffix(c.BaseURL, "/v1") + "/v1/audio/transcriptions"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
 	if err != nil {
 		return nil, "", err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	resp, err := httpClient.Do(req)
+	if c.Model != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	// Never forward credentials or replay a paid upload across redirects.
+	client := *httpClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("无法连接本地转写服务(whisper.cpp): %w", err)
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+		return nil, "", fmt.Errorf("无法连接转写服务，请检查连接后重试")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if c.Model != "" {
+			return nil, "", fmt.Errorf("云端转写失败（HTTP %d），请检查连接、余额或素材后重试", resp.StatusCode)
+		}
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, "", fmt.Errorf("本地转写服务返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
@@ -95,7 +125,10 @@ func (c *Client) Transcribe(ctx context.Context, wavPath string, language string
 		return nil, "", err
 	}
 	if len(segments) == 0 {
-		return nil, "", fmt.Errorf("本地转写服务未识别出语音内容")
+		if c.Model == "" {
+			return nil, "", fmt.Errorf("本地转写服务未识别出语音内容")
+		}
+		return nil, "", fmt.Errorf("转写服务未返回带时间的字幕，请检查素材是否包含语音")
 	}
 	return segments, languageOut, nil
 }

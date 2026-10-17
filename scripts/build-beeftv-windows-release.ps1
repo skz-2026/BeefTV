@@ -439,6 +439,7 @@ Invoke-NativeExecutable -FilePath "bun" -ArgumentList @((Join-Path $repoRoot "sc
 
 # Keep media inside the sidecar tree accepted by already released updaters.
 & (Join-Path $repoRoot "scripts\package-media-runtime-windows.ps1") -Destination (Join-Path $binDir "agent-host\media-runtime")
+& (Join-Path $repoRoot "scripts\test-media-runtime-windows.ps1") -Runtime (Join-Path $binDir "agent-host\media-runtime")
 
 # The beeftv CLI ships with the app. External agents (Codex, Claude Code,
 # Cursor) connect through it with their own client credential, so the installed

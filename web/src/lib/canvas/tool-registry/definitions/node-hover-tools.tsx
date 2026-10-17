@@ -1,6 +1,7 @@
 import { AudioLines, Captions, Clapperboard, Download, FolderPlus, Images, Image as ImageIcon, Info, LoaderCircle, Lock, Maximize2, MessageSquare, Minus, Music2, Plus, RefreshCw, Scissors, Settings2, Trash2, Unlock, Upload, UserRound, Video, WandSparkles } from "lucide-react";
 
 import { explainGenerationError } from "@/lib/generation-error";
+import { canvasNodeFailureExplanation, canRecoverOrRetryDepthCapture } from "@/lib/canvas/canvas-depth-capture";
 import { registerToolbarTools, type ToolContext, type ToolDefinition } from "@/lib/canvas/tool-registry";
 import { CanvasNodeType } from "@/types/canvas";
 import { canOpenCanvasNodePromptPanel } from "@/lib/canvas/canvas-node-semantics";
@@ -24,8 +25,8 @@ function simpleMode(ctx: ToolContext) { return ctx.workspaceMode === "simple"; }
 function isImageBatchRoot(ctx: ToolContext) { return isImage(ctx) && Boolean(ctx.nodeMetadata?.isBatchRoot && ctx.nodeMetadata.batchChildIds?.length); }
 function canRetry(ctx: ToolContext) {
     if (ctx.nodeMetadata?.fileUpload) return false;
-    const explanation = explainGenerationError(ctx.nodeMetadata?.errorDetails || ctx.nodeMetadata?.generationErrorCode, { stage: ctx.nodeMetadata?.taskStage });
-    const blocked = explanation.uncertain || explanation.category === "download_failed";
+    const explanation = ctx.node ? canvasNodeFailureExplanation(ctx.node) : explainGenerationError(ctx.nodeMetadata?.errorDetails || ctx.nodeMetadata?.generationErrorCode, { stage: ctx.nodeMetadata?.taskStage });
+    const blocked = explanation.uncertain || (explanation.category === "download_failed" && !(ctx.node && canRecoverOrRetryDepthCapture(ctx.node)));
     const batchHasFailures = isImageBatchRoot(ctx) && (ctx.nodeMetadata?.batchFailedCount || (ctx.nodeMetadata?.status === "error" ? 1 : 0)) > 0;
     return (ctx.nodeMetadata?.status === "error" || (batchHasFailures && ctx.nodeMetadata?.status !== "loading")) && !blocked;
 }
@@ -66,8 +67,8 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         id: "retry",
         toolbar: "node-hover",
         category: "node-state",
-        label: (ctx) => isImageBatchRoot(ctx) ? "重试批次中的失败图片" : "重新生成",
-        displayLabel: (ctx) => isImageBatchRoot(ctx) ? "重试失败项" : "重试",
+        label: (ctx) => ctx.node && canRecoverOrRetryDepthCapture(ctx.node) && ctx.nodeMetadata?.taskStatus === "succeeded" ? "恢复原任务的深度视频" : isImageBatchRoot(ctx) ? "重试批次中的失败图片" : "重新生成",
+        displayLabel: (ctx) => ctx.node && canRecoverOrRetryDepthCapture(ctx.node) && ctx.nodeMetadata?.taskStatus === "succeeded" ? "恢复结果" : isImageBatchRoot(ctx) ? "重试失败项" : "重试",
         icon: <RefreshCw className="size-3.5" />,
         defaultVisible: true,
         defaultOrder: 30,
@@ -291,7 +292,7 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         defaultVisible: true,
         defaultOrder: 145,
         nodeToolbar: { group: "primary", order: 20 },
-        applicable: (ctx) => hasVideo(ctx),
+        applicable: (ctx) => hasVideo(ctx) || hasAudio(ctx),
         run: (ctx) => ctx.handlers.onNodeSubtitles(ctx.node!),
     },
     {
@@ -304,7 +305,8 @@ export const nodeHoverToolbarTools: ToolDefinition[] = [
         defaultVisible: true,
         defaultOrder: 148,
         nodeToolbar: { group: "workspace", order: 30, section: "项目剪辑", description: "打开项目时间线，定位到当前素材" },
-        applicable: (ctx) => hasVideo(ctx) || hasAudio(ctx),
+        // Keep the video editing entry hidden until the editing workflow is ready.
+        applicable: hasAudio,
         run: (ctx) => ctx.handlers.onNodeTimeline(ctx.node!),
     },
     {

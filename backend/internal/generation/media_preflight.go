@@ -7,11 +7,15 @@ import (
 	"strings"
 
 	"infinite-canvas/backend/internal/kernel"
+	"infinite-canvas/backend/internal/model"
 )
 
 // ValidateMediaTransport uses the same installed contract as execution, without
 // reading file bytes, uploading anything, or creating a provider task.
 func ValidateMediaTransport(ctx context.Context, input Input) error {
+	if err := validateBytePlusVideoTransport(input); err != nil {
+		return err
+	}
 	policy := MediaHydrationPolicyFor(ctx, input)
 	if !policy.RequireURL || policy.KeepLocal {
 		return nil
@@ -46,4 +50,30 @@ func ValidateMediaTransport(ctx context.Context, input Input) error {
 		return nil
 	}
 	return &kernel.AppError{Status: 400, Code: 400, Reason: "reference_media_requires_url", Message: "当前渠道需要在线素材链接：" + strings.Join(blocked, "、") + "无法直接读取。请替换为可访问的 HTTPS 链接，或切换支持本地素材的渠道"}
+}
+
+// BytePlus accepts inline images and audio, but reference videos need an online
+// URL or asset ID. A local resource would otherwise be hydrated to base64.
+func validateBytePlusVideoTransport(input Input) error {
+	if !model.IsVolcengineArkVideoProtocol(model.ChannelInterfaceType(input.Config.InterfaceType)) {
+		return nil
+	}
+	endpoint, err := url.Parse(strings.TrimSpace(input.Config.BaseURL))
+	if err != nil || !strings.EqualFold(endpoint.Hostname(), "ark.ap-southeast.bytepluses.com") {
+		return nil
+	}
+	var blocked []string
+	for index, media := range input.ReferenceVideos {
+		address, err := url.Parse(strings.TrimSpace(media.URL))
+		remote := err == nil && address.Scheme == "https" && address.Hostname() != "" && address.User == nil
+		asset := err == nil && address.Scheme == "asset" && address.Hostname() != "" && address.User == nil && address.Path == "" && address.RawQuery == "" && address.Fragment == ""
+		if !strings.HasPrefix(media.StorageKey, "resource:") && (remote || asset) {
+			continue
+		}
+		blocked = append(blocked, fmt.Sprintf("参考视频 %d", index+1))
+	}
+	if len(blocked) == 0 {
+		return nil
+	}
+	return &kernel.AppError{Status: 400, Code: 400, Reason: "reference_media_requires_url", Message: "BytePlus 无法直接读取本地参考视频：" + strings.Join(blocked, "、") + "。请改用可公开访问的 HTTPS 视频链接或 BytePlus 素材 ID（asset://），或切换支持本地视频的渠道。图片和音频可以继续使用本地文件"}
 }

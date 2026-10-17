@@ -1,3 +1,4 @@
+import { createClientId } from "@/lib/client-id";
 import { Button, Dropdown, Tooltip } from "antd";
 import { History, MessageSquarePlus, X, ArrowUpRight } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -13,11 +14,13 @@ import { captureUserScope, userScopeMatches } from "@/lib/user-scope-guard";
 import { getActiveUserScope, getActiveUserScopeEpoch, subscribeUserScope } from "@/lib/user-scope";
 import { attachmentFromCanvasReference, attachmentRangeError, readAssistantInputDraft, saveAssistantInputDraft, uploadAssistantAttachment } from "@/services/assistant-attachments";
 import { CanvasAssistantAttachments } from "./canvas-assistant-attachments";
-import { ASSISTANT_CONTINUE_PROMPT, ASSISTANT_STARTER_PROMPTS, assistantStatusNotice, assistantVisibleReply } from "./canvas-assistant-copy";
+import { ASSISTANT_CONTINUE_PROMPT, ASSISTANT_STARTER_PROMPTS, assistantSkillLabel, assistantStatusNotice, assistantVisibleReply } from "./canvas-assistant-copy";
 import { CanvasAssistantComposer } from "./canvas-assistant-composer";
 import { CanvasAssistantReply, CanvasAssistantTurnView, CanvasAssistantUserMessage } from "./canvas-assistant-turn";
 import { ASSISTANT_MAX_WIDTH, ASSISTANT_MIN_WIDTH, type CanvasAssistantController } from "./use-canvas-assistant";
 import "./canvas-assistant-sidebar.css";
+import { CanvasSkillContext } from "./canvas-skill-context";
+import { PublishingApprovals } from "@/pages/skills/publishing-approvals";
 
 type Props = {
     assistant: CanvasAssistantController;
@@ -27,7 +30,7 @@ type Props = {
     selectedNodeIds: string[];
     references: CanvasResourceReference[];
     onLocateNodes: (nodeIds: string[]) => void;
-    onRunProposal: (proposal: AssistantGenerationProposal) => void;
+    onRunProposal: (proposal: AssistantGenerationProposal, turnId: string) => void;
     onOpenModelSettings: () => void;
     proposalFeedback?: Record<string, string>;
     runningProposalIds?: ReadonlySet<string>;
@@ -102,7 +105,7 @@ export function CanvasAssistantSidebar(props: Props) {
         if (attachmentCount.current + files.length > 8) { setInputError("一次最多添加 8 份参考素材"); return; }
         setInputError("");
         attachmentCount.current += files.length;
-        const entries = files.map(file => ({ id: crypto.randomUUID(), file, busy: true }));
+        const entries = files.map(file => ({ id: createClientId(), file, busy: true }));
         setUploads(items => [...items, ...entries]);
         entries.forEach(item => void upload(item.id, item.file));
     }, [attachments.length, draftIdentity, draftLoaded, loadedDraftIdentity, readOnly, upload, uploads.length]);
@@ -226,7 +229,7 @@ export function CanvasAssistantSidebar(props: Props) {
                         <CanvasAssistantUserMessage text={assistant.pendingUserText || ""} selectedCount={assistant.pendingSelectedNodeIds.length} />
                         <CanvasAssistantAttachments attachments={assistant.pendingAttachments} />
                         {assistant.awaitingReceipt ? <p className="canvas-assistant-meta" role="status">正在读取这次处理的最终结果，已有内容仍然保留。</p> : null}
-                        {assistant.pendingSkills.map(skill => <span className="canvas-assistant-chip" key={skill.skillId}>技能：{skill.skillName || skill.skillId} · {skill.version || skill.versionId}</span>)}
+                        {assistant.pendingSkills.map(skill => <span className="canvas-assistant-chip" key={skill.skillId}>{assistantSkillLabel(skill)}</span>)}
                         {assistant.supplements.map((item, index) => <div key={index}>
                             <CanvasAssistantUserMessage text={item.text} selectedCount={0} />
                             <CanvasAssistantAttachments attachments={item.attachments || []} />
@@ -256,6 +259,8 @@ export function CanvasAssistantSidebar(props: Props) {
                 ) : null}
             </div>
 
+            <CanvasSkillContext readOnly={readOnly} canvasId={assistant.canvasId} sessionId={assistant.sessionId || ""} busy={assistant.streaming || assistant.sessionBusy} onChanged={() => void assistant.reloadHistory()} />
+            <PublishingApprovals canvasId={assistant.canvasId} refreshKey={`${assistant.canvasId}:${assistant.turns.length}`} />
             <CanvasAssistantComposer
                 value={inputReady ? draft : ""}
                 onChange={setDraft}

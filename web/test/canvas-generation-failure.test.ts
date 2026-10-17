@@ -11,6 +11,16 @@ import moderationFixtures from "../../fixtures/moderation-errors.json";
 
 const rejection = { code: "content_policy_violation", message: "opaque" };
 
+test("confirmed unsent submission remains retryable after restoring the task", () => {
+    const task = { id: "unsent-task", type: "canvas_video", status: "failed", stage: "任务失败", errorCode: "request_not_sent", error: "未能连接服务，本次请求尚未提交。请检查网络或代理后重试。" } as GenerationTask;
+    const metadata = { ...generationTaskMetadata(task), ...canvasTaskFailureMetadata(task) };
+    expect(taskRetryBlocked(task)).toBe(false);
+    expect(canvasGenerationRetryBlocked(metadata)).toBe(false);
+    expect(canvasGenerationRetryBlocked(metadata, { prompt: "same", mode: "video" })).toBe(false);
+    expect(explainGenerationError({ code: task.errorCode, message: task.error }).message).toContain("尚未提交");
+    expect(canvasGenerationRetryBlocked({ ...metadata, taskStage: "submission_unknown", generationErrorCode: "submission_uncertain" })).toBe(true);
+});
+
 test("completed media with a canvas commit conflict offers reload without another paid generation", () => {
     const failure = canvasGenerationFailureMetadata({ code: "canvas_conflict" }, { prompt: "red square", mode: "video" });
     expect(failure.errorDetails).toContain("生成结果已保留");

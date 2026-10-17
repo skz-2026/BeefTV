@@ -281,7 +281,7 @@ export async function deleteWorkspaceAsset(id: string, expectedScope?: CapturedU
         if (later && later.version !== submittedVersion && later.kind === "upsert") return;
         if (later && later.version === submittedVersion) ackAssetStoreDraft(expected, assetId, submittedVersion);
         if (useAssetStore.getState().assets.some((item) => item.id === assetId)) {
-            await runAssetStoreProjection(() => useAssetStore.getState().removeAsset(assetId));
+            await runAssetStoreProjection(() => useAssetStore.getState().removeAsset(assetId, { cleanupMedia: false }));
         }
     });
 }

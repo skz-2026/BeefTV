@@ -38,12 +38,16 @@ describe("desktop release build contract", () => {
         const workflow = readFileSync(resolve(root, ".github/workflows/publish-images.yml"), "utf8");
         expect(workflow).not.toContain("cmd/host-updater");
         expect(workflow).not.toContain("beeftv-host-updater");
+        expect(workflow).not.toContain("docker-compose.deploy.yml");
 
         for (const name of ["docker-compose.server.yml", "docker-compose.deploy.yml"]) {
+            expect(existsSync(resolve(root, name))).toBe(false);
+        }
+
+        for (const name of ["docker-compose.yml", "docker-compose.local.yml", "docker-compose.dev.yml"]) {
             const compose = readFileSync(resolve(root, name), "utf8");
-            expect(compose).toContain('CANVAS_AUTO_MIGRATE: "true"');
-            expect(compose).not.toContain("migrate-schema");
-            expect(compose).not.toMatch(/^\s{2}migrate:\s*$/m);
+            expect(compose).toContain("CANVAS_DATABASE_DRIVER");
+            expect(compose).not.toMatch(/postgres|REDIS_URL/i);
         }
     });
 

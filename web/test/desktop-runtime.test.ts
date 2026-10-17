@@ -79,3 +79,21 @@ test("desktop bootstrap rejects an empty early binding result and uses the asset
     expect(await bootstrapDesktopRuntime()).toBe(true);
     expect(apiBaseURL).toBe("http://127.0.0.1:43126/api");
 });
+
+test("Windows WebView waits for private asset bootstrap when OnStartup has not prepared the binding yet", async () => {
+    Object.assign(globalThis, {
+        window: {
+            location: { protocol: "http:", origin: "http://wails.localhost" },
+            go: { main: { DesktopApp: { RuntimeConfig: async () => ({ baseURL: "", launchToken: "" }) } } },
+        },
+    });
+    let requested = "";
+    globalThis.fetch = (async (input: string) => {
+        requested = input;
+        return new Response(JSON.stringify({ baseURL: "http://127.0.0.1:43127/api", launchToken: "ready-after-startup" }), { status: 200 });
+    }) as typeof fetch;
+    expect(await bootstrapDesktopRuntime()).toBe(true);
+    expect(requested).toBe("/__desktop/runtime-config");
+    expect(apiBaseURL).toBe("http://127.0.0.1:43127/api");
+    expect(apiClient.defaults.headers.common["X-Desktop-Token"]).toBe("ready-after-startup");
+});

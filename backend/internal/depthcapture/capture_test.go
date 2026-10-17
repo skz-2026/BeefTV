@@ -73,6 +73,23 @@ func testVideo() *model.Resource {
 	}
 }
 
+func TestProcessRetainsWorkerExitReasonAfterLongProgressMeter(t *testing.T) {
+	tasks := &fakeTasks{}
+	message := strings.Repeat("\r 0 0 0 0 Time Time Current", 150) + "\ncurl: (28) Connection timed out\n模型补下载失败"
+	svc := New(Deps{
+		GOOS: "darwin", GOARCH: "arm64", Media: &fakeMedia{resource: testVideo(), body: []byte("mp4")}, Tasks: tasks, Installer: fakeInstaller{},
+		Run: func(context.Context, string, string, string, string, string, string, func(string)) error {
+			return errors.New(message)
+		},
+	})
+	if err := svc.Process(context.Background(), &model.Task{ID: "t1", UserID: "user-1", InputJSON: `{"resourceId":"res-1"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if tasks.failStage != stageFailed || !strings.Contains(tasks.failMsg, "curl: (28)") || !strings.HasSuffix(tasks.failMsg, "模型补下载失败") || len([]rune(tasks.failMsg)) > 801 {
+		t.Fatalf("failure summary = %q", tasks.failMsg)
+	}
+}
+
 func TestProcessRejectsUnsupportedPlatform(t *testing.T) {
 	tasks := &fakeTasks{}
 	svc := New(Deps{

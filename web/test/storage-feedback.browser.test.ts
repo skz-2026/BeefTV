@@ -47,6 +47,39 @@ afterAll(async () => {
     await browser?.close();
     server?.stop(true);
 }, 30000);
+test("migration restart advice stays visible while technical details are collapsed", async () => {
+    const page = await browser.newPage();
+    try {
+        await page.goto(server.url + "?migration-error");
+        await page.getByRole("button", { name: "选择文件夹", exact: true }).click();
+        await page.getByRole("button", { name: "迁移旧数据并使用新目录" }).click();
+        await page.getByText("迁移未完成，原数据已保留，但工作区未能重新打开。请重启 BeefTV", { exact: true }).waitFor();
+        expect(await page.getByText(/fixture failure/).isVisible()).toBe(false);
+        await page.getByText("错误详情", { exact: true }).click();
+        expect(await page.getByText(/fixture failure/).isVisible()).toBe(true);
+    } finally {
+        await page.close();
+    }
+}, 30000);
+test("failed cleanup closes stale confirmation and retains honest retry state", async () => {
+    const page = await browser.newPage();
+    try {
+        await page.goto(server.url + "?cleanup-error");
+        expect(await page.getByText(/原目录可能已部分清理/).count()).toBe(0);
+        await page.screenshot({ path: import.meta.dir + "/../../output/storage-before-cleanup.png" });
+        await page.getByRole("button", { name: "清理原目录，释放磁盘空间" }).click();
+        await page.getByRole("button", { name: "确认并清理", exact: true }).click();
+        await page.getByRole("dialog").waitFor({ state: "detached" });
+        await page.getByText("临时文件仍在使用中，请重启 BeefTV 后再次清理。当前存储目录不受影响", { exact: true }).waitFor();
+        expect(await page.getByText(/原数据仍保留在/).count()).toBe(0);
+        await page.getByText(/请保留当前存储目录/).waitFor();
+        await page.screenshot({ path: import.meta.dir + "/../../output/storage-cleanup-interrupted.png" });
+        await page.getByRole("button", { name: "清理原目录，释放磁盘空间" }).click();
+        await page.getByText(/可释放约 0.0 GB/).waitFor();
+    } finally {
+        await page.close();
+    }
+}, 30000);
 for (const width of [1440, 390])
     for (const dark of [false, true])
         test(`storage and URL entry ${width}px dark=${dark}`, async () => {

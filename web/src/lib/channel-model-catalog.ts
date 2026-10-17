@@ -1,7 +1,8 @@
 import { defaultModelCapabilityConfig, sanitizeServerVideoCapability, type ModelCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
-import { modelProtocolCapability, protocolForModelCatalog, type ModelProtocol } from "@/lib/model-protocols";
+import { modelProtocolCapability, protocolForModelCatalog, protocolForBeefAPICatalog, type ModelProtocol } from "@/lib/model-protocols";
 import type { ModelChannel } from "@/stores/use-config-store";
 import { isBeefAPIEndpoint } from "@/lib/beefapi-video-contracts";
+import { beefAPIImageContract } from "@/lib/beefapi-image-contracts";
 import { sanitizeVideoPriceQuote, seedancePortraitModel, type VideoPriceQuote } from "@/lib/seedance-portrait";
 
 export type ChannelModelCatalogOption = { value: string; label?: string };
@@ -81,6 +82,8 @@ export function catalogModelMapping(
         .trim()
         .toLowerCase();
     const endpoints = (item.supportedEndpointTypes || []).map((value) => value.trim().toLowerCase()).filter(Boolean);
+    const imageContract = options.providerNameFallback ? beefAPIImageContract(id) : undefined;
+    if (imageContract) return { capability: "image", protocol: imageContract.protocol };
     if (endpoints.some((endpoint) => endpoint === "audio.transcriptions" || endpoint === "audio-transcriptions" || endpoint === "transcriptions")) {
         return { skipGeneration: true };
     }
@@ -141,7 +144,7 @@ export function mergeFetchedChannelModelProfiles(channel: ModelChannel, catalog:
     for (const item of catalog) {
         const existing = existingByModel.get(item.id);
         const mapped = catalogModelMapping(item, { providerNameFallback: isBeefAPICatalogChannel(channel) });
-        const inferredProtocol = mapped.protocol || protocolForModelCatalog(item.supportedEndpointTypes);
+        const inferredProtocol = mapped.protocol || (isBeefAPICatalogChannel(channel) ? protocolForBeefAPICatalog(item.supportedEndpointTypes) : protocolForModelCatalog(item.supportedEndpointTypes));
         const catalogVideo = isBeefAPICatalogChannel(channel) ? sanitizeServerVideoCapability(item.videoCapabilities) : null;
         // BeefAPI may advertise generic OpenAI endpoints without modelType.
         // Its explicit video contract still identifies the profile and its quote.

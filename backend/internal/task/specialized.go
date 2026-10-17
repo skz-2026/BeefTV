@@ -141,10 +141,27 @@ func (s *Service) CreateTimelineTranscriptionTask(userID string, req TimelineTra
 	if !transcription.IsTranscribableMIME(resource.MimeType) {
 		return nil, kernel.BadAuthRequest(OnlyAudioVideoTranscriptionMessage)
 	}
+	managedTokenID := ""
+	req.Model = strings.TrimSpace(req.Model)
+	if req.Model != "" {
+		if s.deps.BindTranscriptionModel == nil {
+			return nil, kernel.BadAuthRequest("云端转写暂不可用")
+		}
+		managedTokenID, err = s.deps.BindTranscriptionModel(req.Model)
+		if err != nil {
+			return nil, err
+		}
+	}
 	input, err := marshalLocalExecutorInput(TimelineTranscriptionInput{
-		ResourceID: resourceID,
-		Language:   strings.TrimSpace(req.Language),
+		Model:          strings.TrimSpace(req.Model),
+		ManagedTokenID: managedTokenID,
+		ResourceID:     resourceID,
+		Language:       strings.TrimSpace(req.Language),
 	})
+	if req.Model != "" {
+		kind.Provider = "beefapi"
+		kind.Model = strings.TrimSpace(req.Model)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +197,12 @@ func (s *Service) CreateDepthCaptureTask(userID string, req DepthCaptureCreateRe
 	input, err := decodeObject(prepared)
 	if err != nil {
 		return nil, err
+	}
+	if nodeID := strings.TrimSpace(req.NodeID); nodeID != "" {
+		if strings.TrimSpace(req.ProjectID) == "" {
+			return nil, kernel.BadAuthRequest("指定深度结果节点时必须提供画布 ID")
+		}
+		input["metadata"] = map[string]any{"nodeId": nodeID, "source": "canvas"}
 	}
 	return s.admitSpecialized(userID, specializedAdmission{
 		kind:      kind,

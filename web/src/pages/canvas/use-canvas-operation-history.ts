@@ -12,7 +12,6 @@ type CanvasGenerationContinuationDependencies = {
     persistContinuation?: typeof persistCanvasOperationContinuationEffect;
     projectId?: string;
     nodeId?: string;
-    previousNodes?: CanvasNodeData[];
     nodesRef?: { current: CanvasNodeData[] };
     setNodes?: Dispatch<SetStateAction<CanvasNodeData[]>>;
 };
@@ -41,7 +40,6 @@ export async function consumeCanvasGenerationContinuation(
                     continuation: completed,
                     effectKey,
                     signal: leaseSignal,
-                    previousNodes: dependencies.previousNodes,
                     nodesRef: dependencies.nodesRef,
                     setNodes: dependencies.setNodes,
                 });

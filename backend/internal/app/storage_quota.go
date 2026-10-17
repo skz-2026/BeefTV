@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"infinite-canvas/backend/internal/kernel"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -123,6 +124,9 @@ func createTaskWithStorageQuotaRepository(repo *repository.Repository, task *mod
 }
 
 func taskStorageError(cause error) error {
+	if full := kernel.DiskFullError(cause); full != nil {
+		return full
+	}
 	if mapped := localtask.AdmissionValidationError(cause); mapped != nil {
 		return mapped
 	}
@@ -130,7 +134,12 @@ func taskStorageError(cause error) error {
 }
 
 // 任务完成会同时扩张任务历史和画布操作数据，必须在同一临界区核算并原子写入。
-func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJSON []byte, opsJSON []byte, hasCanvasOps bool) error {
+func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJSON []byte, opsJSON []byte, hasCanvasOps bool) (returnErr error) {
+	defer func() {
+		if full := kernel.DiskFullError(returnErr); full != nil {
+			returnErr = full
+		}
+	}()
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return err
@@ -142,7 +151,10 @@ func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJ
 	if err != nil {
 		return err
 	}
-	publicInputJSON := publicTaskInputJSON(task.InputJSON)
+	publicInputJSON, err := s.completionInputJSON(*task, resultJSON)
+	if err != nil {
+		return err
+	}
 	taskDelta := int64(len(resultJSON) + len(publicInputJSON) - len(task.ResultJSON) - len(task.InputJSON))
 
 	results := make([]model.Result, 0, 2)

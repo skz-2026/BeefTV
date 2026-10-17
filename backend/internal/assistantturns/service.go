@@ -227,14 +227,69 @@ func (s *Service) ScopeForHost(userID, turnID string) (Scope, bool, error) {
 			taskIDs = append(taskIDs, result.TaskID)
 		}
 	}
+	sessionPins, err := s.sessionSkillPins(rec)
+	if err != nil {
+		return Scope{}, false, err
+	}
+	// Active pins authorize exact resources on a continued round without
+	// confusing the historical transcript union with the current selection.
+	activePins := []skills.Pin{}
+	if rec.DurableSessionID != "" {
+		var contextRow model.AssistantSkillContext
+		queryErr := s.store.DB().Where(&model.AssistantSkillContext{UserID: userID, CanvasID: rec.CanvasID, DurableSessionID: rec.DurableSessionID}).First(&contextRow).Error
+		if queryErr == nil {
+			current, decodeErr := contextProjection(contextRow)
+			if decodeErr != nil {
+				return Scope{}, false, decodeErr
+			}
+			if current.Lifecycle != "active" {
+				return Scope{}, false, contextError("skill_scope_reset_pending", "独立任务正在准备")
+			}
+			activePins = current.ActivePins
+		} else if !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+			return Scope{}, false, queryErr
+		}
+	}
 	return Scope{
-		PermissionMode: Mode(rec.PermissionMode),
-		CanvasID:       rec.CanvasID,
-		AssetIDs:       uniqueSorted(append(append([]string{}, rec.ReferencedAssetIDs...), rec.AssociatedAssetIDs...)),
-		CanvasIDs:      uniqueSorted(rec.ReferencedCanvasIDs),
-		TaskIDs:        uniqueSorted(taskIDs),
-		SkillPins:      SortedSkillPins(rec.SkillPins),
+		PermissionMode:   Mode(rec.PermissionMode),
+		CanvasID:         rec.CanvasID,
+		AssetIDs:         uniqueSorted(append(append([]string{}, rec.ReferencedAssetIDs...), rec.AssociatedAssetIDs...)),
+		CanvasIDs:        uniqueSorted(rec.ReferencedCanvasIDs),
+		TaskIDs:          uniqueSorted(taskIDs),
+		SkillPins:        SortedSkillPins(rec.SkillPins),
+		ActiveSkillPins:  activePins,
+		SessionSkillPins: sessionPins,
 	}, true, nil
+}
+
+// sessionSkillPins returns the exact pins of other rounds bound to the same
+// Durable conversation and owner. Undone rounds still count: their skill text
+// remains in the conversation transcript.
+func (s *Service) sessionSkillPins(rec Record) ([]skills.Pin, error) {
+	if strings.TrimSpace(rec.DurableSessionID) == "" || s.store.DB() == nil {
+		return nil, nil
+	}
+	var rows []model.AssistantTurn
+	if err := s.store.DB().Select("turn_id", "skill_pins_json").
+		Where("user_id = ? AND durable_session_id = ? AND turn_id <> ? AND skill_pins_json <> ''", rec.UserID, rec.DurableSessionID, rec.TurnID).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	seen := map[skills.Pin]bool{}
+	pins := []skills.Pin{}
+	for _, row := range rows {
+		var stored []skills.Pin
+		if json.Unmarshal([]byte(row.SkillPinsJSON), &stored) != nil {
+			return nil, errCorruptStored()
+		}
+		for _, pin := range stored {
+			if identity := pin.Identity(); !seen[identity] {
+				seen[identity] = true
+				pins = append(pins, pin)
+			}
+		}
+	}
+	return SortedSkillPins(pins), nil
 }
 
 // Finalize settles an open round from this round's succeeded receipts.
@@ -336,7 +391,33 @@ func (s *Service) History(userID, canvasID, turnID string) (*HistoryState, error
 			return nil, err
 		}
 	}
-	return &HistoryState{Change: change, Undone: rec.Undone, PermissionMode: Mode(rec.PermissionMode)}, nil
+	return &HistoryState{Change: change, Undone: rec.Undone, PermissionMode: Mode(rec.PermissionMode), SkillPins: SortedSkillPins(rec.SkillPins)}, nil
+}
+
+// CheckProposalRunnable is the server gate before a generation the round
+// suggested is started: an undone round must not start paid generation for
+// nodes it no longer owns. Missing or foreign rounds read as not found.
+func (s *Service) CheckProposalRunnable(userID, canvasID, turnID string) error {
+	if err := requireActor(userID, canvasID); err != nil {
+		return err
+	}
+	if NormalizeTurnID(turnID) == "" {
+		return errNotFound()
+	}
+	rec, err := s.load(nil, turnID)
+	if err != nil {
+		if isMissing(err) {
+			return errNotFound()
+		}
+		return err
+	}
+	if rec.UserID != userID || rec.CanvasID != canvasID {
+		return errNotFound()
+	}
+	if rec.Undone {
+		return &Error{Reason: ReasonUndone, Message: "这一轮已撤销，不会生成。"}
+	}
+	return nil
 }
 
 // Undone reports whether the owner-scoped round carries a durable undo marker.

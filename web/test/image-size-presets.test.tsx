@@ -101,13 +101,17 @@ describe("统一图片分辨率与宽高比", () => {
 
     test("三档预设与任意合理比例都满足像素范围", () => {
         for (const tier of IMAGE_RESOLUTIONS)
-            for (const ratio of [...IMAGE_RATIOS, "17:11", "3:1", "1:3", "99999:99998"]) {
+            for (const ratio of [...IMAGE_RATIOS, "17:11", "21:8", "42:18", "3:1", "1:3", "99999:99998"]) {
                 const preset = imagePresetForRatio(tier, ratio);
-                expect(() => validateImageSize(preset.width, preset.height, false)).not.toThrow();
+                expect(() => validateImageSize(preset.width, preset.height, true)).not.toThrow();
             }
         for (const ratio of ["0:9", "4:1", "1:4", "NaN:1", "1.5:1", "999999999:1"]) {
             expect(() => imagePresetForRatio("1k", ratio)).toThrow();
         }
+    });
+
+    test("21:9 的 1K 预设满足上游的 16 像素对齐要求", () => {
+        expect(imagePresetForRatio("1k", "21:9").size).toBe("2048x880");
     });
 
     test("固定比例编辑器包含 4:5 和 5:4 三档尺寸", () => {

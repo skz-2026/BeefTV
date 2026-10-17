@@ -14,6 +14,7 @@ import { appQueryClient } from "@/lib/query-client";
 import { isLocalWorkspaceMode } from "@/services/workspace-mode";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { confirmDesktopUpdateStartup } from "@/services/desktop-update-startup";
+import { runStartupEnvironmentCheck } from "@/services/diagnostics/environment-startup";
 
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const config = useConfigStore((state) => state.config);
@@ -31,6 +32,22 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const pluginStoreHydrated = usePluginStore((state) => state.hydrated);
     const localMediaCleanupScope = useRef("");
     const updateStartupConfirmed = useRef(false);
+    const environmentScope = useRef("");
+
+    useEffect(() => {
+        if (!userId || !localMode || environmentScope.current === userId) return;
+        environmentScope.current = userId;
+        const controller = new AbortController();
+        void runStartupEnvironmentCheck(controller.signal).then((report) => {
+            if (useUserStore.getState().user?.id === userId && report?.checks.some((check) => check.status === "error" || check.status === "warning")) {
+                message.warning("环境检查发现可能影响创作的问题，可在设置的问题诊断中查看。", 8);
+            }
+        });
+        return () => {
+            controller.abort();
+            if (environmentScope.current === userId) environmentScope.current = "";
+        };
+    }, [localMode, userId, message]);
 
     useEffect(() => {
         if (!localMode) return;

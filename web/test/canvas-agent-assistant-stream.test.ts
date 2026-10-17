@@ -91,6 +91,20 @@ afterEach(() => {
 const TURN_END = JSON.stringify({ type: "turn_end", reply: "完成", toolCalls: [], error: null, cancelled: false });
 
 describe("创作助手回合流边界", () => {
+    test("交接会话身份在 observer_error 和断流前交给界面，不能冒充回合完成", async () => {
+        let sessionId = "legacy-session";
+        let ended = false;
+        chatResponse = () => chatResponseOf([
+            JSON.stringify({ type: "session", sessionId: "durable:successor" }) + "\n",
+            JSON.stringify({ type: "observer_error", reason: "interrupted" }) + "\n",
+        ]);
+        await expect(streamAgentChat("c1", "继续", {
+            onSession: value => { sessionId = value; },
+            onTurnEnd: () => { ended = true; },
+        })).rejects.toThrow(AGENT_STREAM_INCOMPLETE_MESSAGE);
+        expect(sessionId).toBe("durable:successor");
+        expect(ended).toBe(false);
+    });
     test("运行中补充只发文字和当前会话，不创建新回合或附加素材", async () => {
         await steerAgentChat("c1", "s1", "结尾换成蛋糕");
         const calls = requests.filter(item => item.url.includes("/assistant/steer"));

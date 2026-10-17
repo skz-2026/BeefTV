@@ -103,10 +103,12 @@ func (e *Engine) downloadArchive(ctx context.Context, artifact PlatformArtifact,
 	started := time.Now()
 	restarted := false
 	for {
+		e.setPhase("downloading")
 		resumedFrom, err := e.fetchPartial(ctx, artifact, partial)
 		if err != nil {
 			return err
 		}
+		e.setPhase("verifying")
 		if err := verifyDownloadedFile(partial, artifact); err != nil {
 			_ = os.Remove(partial)
 			e.setProgress(0)

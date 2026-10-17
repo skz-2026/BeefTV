@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/provider/workflow"
 )
 
@@ -255,6 +256,19 @@ func (p workflowVideoPoller) Poll(ctx context.Context, taskID string, policy wor
 	})
 }
 
-func (p workflowVideoPoller) Download(ctx context.Context, taskID string, policy workflow.PollPolicy, download func(context.Context) ([]byte, string, error)) ([]byte, string, error) {
-	return runVideoDownload(ctx, taskID, p.appPolicy(policy), download)
+func (p workflowVideoPoller) Download(ctx context.Context, taskID string, policy workflow.PollPolicy, source workflow.BinarySource, renew func(context.Context) (workflow.BinarySource, error)) ([]byte, string, error) {
+	var resolve func(context.Context) (generation.VideoResultSource, error)
+	if renew != nil {
+		resolve = func(ctx context.Context) (generation.VideoResultSource, error) {
+			fresh, err := renew(ctx)
+			var pending workflow.StatusError
+			if errors.As(err, &pending) && pending.Err == nil {
+				err = providerHTTPError{StatusCode: pending.StatusCode, Body: pending.Body}
+			}
+			return generation.VideoResultSource{URL: fresh.URL, Read: fresh.Read, CredentialValues: fresh.CredentialValues}, err
+		}
+	}
+	download := generation.VideoResultDownloader(providerConfig{BaseURL: source.ProviderURL}, taskID, generation.VideoResultSource{URL: source.URL, Read: source.Read, CredentialValues: source.CredentialValues}, resolve)
+	data, mimeType, err := runVideoDownload(ctx, taskID, p.appPolicy(policy), download)
+	return data, generation.NormalizedMediaMIMEType(mimeType, data), err
 }

@@ -17,6 +17,33 @@ permissions:
 # Core behavior checks run on every change. Formatting stays a local command.
 # Browser coverage lives in director-e2e.yml and runs for web changes or on demand.
 jobs:
+  windows-storage:
+    name: Windows storage migration
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Verify migration with real Windows file locks
+        working-directory: backend
+        run: go test ./internal/environment ./internal/desktopstorage -count=1 -v
+      - uses: msys2/setup-msys2@v2
+        id: storage-msys2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-binutils
+      - name: Select supported Windows compiler
+        env:
+          MSYSTEM_PREFIX: ${{ steps.storage-msys2.outputs.msys2-location }}\ucrt64
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\assert-windows-dwarf5-cgo.ps1
+      - name: Verify open desktop migration and rollback
+        working-directory: backend
+        run: go test ./cmd/desktop -run 'TestWindowsOpenDesktopMigratesWithBusyScratch|TestNativeMigration' -count=1 -v
+
   released-windows-upgrades:
     if: github.event_name == 'workflow_dispatch'
     name: Published Windows upgrade and rollback
@@ -119,6 +146,13 @@ jobs:
         run: |
           bunx playwright install --with-deps chromium
           bun run test
+      - name: Preserve environment check screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-check-screenshots-${{ github.sha }}
+          path: output/environment-check/*.png
+          if-no-files-found: warn
 
   database-platforms:
     if: github.event_name == 'workflow_dispatch'

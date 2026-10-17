@@ -17,6 +17,7 @@ import { isCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import { audioFileExtension } from "@/lib/character-voice-formats";
 import type { ModelReferenceLimits } from "@/lib/model-selection";
 import type { Asset } from "@/stores/use-asset-store";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
 
 export type CharacterGenerationReference = {
     nodeId: string;
@@ -490,40 +491,43 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
         ]);
         context = { ...context, referenceVideos, referenceAudios };
     }
-    const { imageToDataUrl } = await import("@/services/image-storage");
     let referenceImages = await Promise.all(
         context.referenceImages.map(async (image) => {
             if (image.source?.kind === "drawing") return resolveCanvasDrawingReference(projectId, image);
             if (image.source?.kind === "colorgrade") return resolveCanvasColorGradeReference(image);
+            // Backend task preparation consumes these references directly. Reading
+            // their preview blob here would make submission wait for the UI cache.
+            if (resourceIdFromStorageKey(image.storageKey) || /^https?:\/\//i.test(image.url || image.dataUrl)) return image;
+            const { imageToDataUrl } = await import("@/services/image-storage");
             return { ...image, dataUrl: await imageToDataUrl(image) };
         }),
     );
     if (!context.characterReferences.length) return { ...context, referenceImages };
     if (!domainProjectId) throw new Error("角色引用未关联短剧项目，无法解析角色版本");
     const { getProjectCharacter } = await import("@/services/api/projects");
-    const { getResource, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } = await import("@/services/api/resources");
+    const { getResource, resourceFileUrl, resourceStorageKey } = await import("@/services/api/resources");
     const details = await Promise.all(context.characterReferences.map((reference) => getProjectCharacter(domainProjectId, reference.assetId)));
     const remainingBudget = Math.max(0, (referenceLimits?.maxImages ?? 9) - referenceImages.length);
-    const selected = details.flatMap((detail) => {
+    const selected = details.flatMap((detail, index) => {
         const representation = preferredCharacterRepresentation(detail.character.representations);
-        return representation ? [representation] : [];
+        return representation ? [{ ...representation, sourceNodeId: context.characterReferences[index]!.nodeId }] : [];
     });
     if (selected.length > remainingBudget) throw new Error(`当前模型参考图容量不足：角色至少需要 ${selected.length} 张主参考图`);
     const usedResourceIds = new Set(selected.map((item) => item.resourceId));
-    const supplements = details.flatMap((detail) => detail.character.representations.filter((item) => {
+    const supplements = details.flatMap((detail, index) => detail.character.representations.filter((item) => {
         if (!["front", "side", "back", "turnaround_sheet"].includes(item.role) || usedResourceIds.has(item.resourceId)) return false;
         usedResourceIds.add(item.resourceId);
         return true;
-    }));
+    }).map((item) => ({ ...item, sourceNodeId: context.characterReferences[index]!.nodeId })));
     const characterImages = [...selected, ...supplements].slice(0, Math.max(0, remainingBudget)).map((representation, index) => ({
         id: `character-reference-${index + 1}`,
+        sourceNodeId: representation.sourceNodeId,
         name: `character-reference-${index + 1}.png`,
         type: "image/png",
         dataUrl: "",
         storageKey: resourceStorageKey(representation.resourceId),
     } satisfies ReferenceImage));
-    const hydratedCharacterImages = await Promise.all(characterImages.map(async (image) => ({ ...image, dataUrl: await imageToDataUrl(image) })));
-    referenceImages = [...referenceImages, ...hydratedCharacterImages];
+    referenceImages = [...referenceImages, ...characterImages];
     const characterBlocks = details.map((detail) => compileCharacterReferencePrompt(detail.asset.title, detail.character.definition));
     const resolvedCharacterVersions = details.map((detail) => ({ assetId: detail.asset.id, versionId: detail.character.versionId }));
     const resolvedCharacterVoices = details.flatMap((detail): ResolvedCharacterVoice[] => {
@@ -564,6 +568,7 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
         const extension = audioFileExtension(resource.mimeType, resource.objectKey);
         return resolveReferenceMediaDuration({
             id: `character-voice-${voice.assetId}`,
+            sourceNodeId: context.characterReferences.find((reference) => reference.assetId === voice.assetId)?.nodeId,
             name: `${voice.characterName}-声音样本.${extension}`,
             type: resource.mimeType || "audio/mpeg",
             url: resourceFileUrl(voice.sampleResourceId!),

@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/modelcatalog"
 )
@@ -46,6 +49,8 @@ func (s *Service) FetchChannelModelCatalog(ctx context.Context, actor *model.Use
 }
 
 func (s *Service) fetchChannelModelCatalogBytes(ctx context.Context, baseURL, apiFormat, apiKey string, headers []modelcatalog.ChannelHeader) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
 	target := apiURL(baseURL, "/models")
 	if apiFormat == "gemini" {
 		if !strings.HasSuffix(strings.ToLower(baseURL), "/v1beta") {
@@ -54,7 +59,7 @@ func (s *Service) fetchChannelModelCatalogBytes(ctx context.Context, baseURL, ap
 		target = baseURL + "/models"
 	}
 	if _, err := ValidateOutboundURL(target); err != nil {
-		return nil, err
+		return nil, catalogError(http.StatusBadRequest, "catalog_address_invalid", err.Error(), err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -94,32 +99,44 @@ func mapChannelModelCatalogError(err error) error {
 	}
 	var jsonErr modelcatalog.CatalogJSONError
 	if errors.As(err, &jsonErr) {
-		return WrapAppError(http.StatusBadGateway, jsonErr.Error(), jsonErr.Cause)
+		return catalogError(http.StatusBadGateway, "catalog_response_invalid", "模型目录响应格式不兼容，需要 OpenAI data 数组或 Gemini models 数组", jsonErr.Cause)
 	}
 	var rejected modelcatalog.CatalogUpstreamRejectedError
 	if errors.As(err, &rejected) {
-		return NewAppError(http.StatusBadGateway, rejected.Error())
+		return catalogError(http.StatusBadGateway, "catalog_upstream_rejected", rejected.Error(), err)
 	}
 	return err
 }
 
 func channelModelsUpstreamError(err error) error {
+	var network net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &network) && network.Timeout()) {
+		return catalogError(http.StatusGatewayTimeout, "catalog_timeout", "读取模型目录超时，请检查渠道地址和网络后重试", err)
+	}
 	var authErr *AuthError
 	if errors.As(err, &authErr) {
 		return authErr
 	}
 	var httpErr providerHTTPError
 	if !errors.As(err, &httpErr) {
-		return WrapAppError(http.StatusBadGateway, "连接模型服务失败，请检查渠道地址和网络", err)
+		return catalogError(http.StatusBadGateway, "catalog_network_failed", "连接模型服务失败，请检查渠道地址和网络", err)
 	}
 	switch httpErr.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return NewAppError(http.StatusBadGateway, "模型服务鉴权失败，请检查 API Key")
+		return catalogError(http.StatusBadGateway, "catalog_auth_failed", "模型服务鉴权失败，请检查 API Key 或服务商访问权限", err)
 	case http.StatusNotFound:
-		return NewAppError(http.StatusBadGateway, "模型服务未提供 /models 接口")
+		return catalogError(http.StatusBadGateway, "catalog_unsupported", "模型服务未提供此模型目录接口，请核对地址或手动添加模型", err)
+	case http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return catalogError(http.StatusBadGateway, "catalog_unsupported", "模型服务不支持读取模型目录，请手动添加模型", err)
 	case http.StatusTooManyRequests:
-		return NewAppError(http.StatusBadGateway, "模型服务请求过于频繁或额度不足")
+		return catalogError(http.StatusBadGateway, "catalog_rate_limited", "模型服务请求过于频繁或额度不足", err)
 	default:
-		return WrapAppError(http.StatusBadGateway, httpErr.Error(), err)
+		return catalogError(http.StatusBadGateway, "catalog_upstream_failed", httpErr.Error(), err)
 	}
+}
+
+func catalogError(status int, reason kernel.ErrorReason, message string, cause error) *AppError {
+	err := WrapAppError(status, message, cause)
+	err.Reason = reason
+	return err
 }

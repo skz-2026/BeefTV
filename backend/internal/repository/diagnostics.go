@@ -23,7 +23,11 @@ func (r *Repository) DiagnosticTasks(userID string, from time.Time, to time.Time
 	if taskID = strings.TrimSpace(taskID); taskID != "" {
 		query = query.Where("user_id = ? AND id = ?", userID, taskID)
 	} else {
-		query = query.Where("user_id = ? AND created_at >= ? AND created_at <= ?", userID, from, to)
+		// SQLite stores timestamps as text in the writer's local offset while the
+		// window is UTC, so a raw string comparison silently drops rows. Compare
+		// instants instead, and keep a task that is still running/failing inside
+		// the window even when it was created before it.
+		query = query.Where("user_id = ? AND ((julianday(created_at) >= julianday(?) AND julianday(created_at) <= julianday(?)) OR (julianday(updated_at) >= julianday(?) AND julianday(updated_at) <= julianday(?)))", userID, from, to, from, to)
 		if projectID = strings.TrimSpace(projectID); projectID != "" {
 			query = query.Where("project_id = ?", projectID)
 		}
@@ -38,7 +42,7 @@ func (r *Repository) DiagnosticTaskLogs(userID string, from time.Time, to time.T
 	if taskID = strings.TrimSpace(taskID); taskID != "" {
 		query = query.Where("task_id = ?", taskID)
 	} else {
-		query = query.Where("created_at >= ? AND created_at <= ?", from, to)
+		query = query.Where("julianday(created_at) >= julianday(?) AND julianday(created_at) <= julianday(?)", from, to)
 		if projectID = strings.TrimSpace(projectID); projectID != "" {
 			query = query.Where("task_id IN (SELECT id FROM tasks WHERE user_id = ? AND project_id = ?)", userID, projectID)
 		}
@@ -53,7 +57,7 @@ func (r *Repository) DiagnosticAPICallLogs(userID string, from time.Time, to tim
 	if taskID = strings.TrimSpace(taskID); taskID != "" {
 		query = query.Where("task_id = ?", taskID)
 	} else {
-		query = query.Where("created_at >= ? AND created_at <= ?", from, to)
+		query = query.Where("julianday(created_at) >= julianday(?) AND julianday(created_at) <= julianday(?)", from, to)
 		if projectID = strings.TrimSpace(projectID); projectID != "" {
 			query = query.Where("task_id IN (SELECT id FROM tasks WHERE user_id = ? AND project_id = ?)", userID, projectID)
 		}

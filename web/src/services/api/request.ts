@@ -20,20 +20,28 @@ export class ApiError extends Error {
     readonly status?: number;
     readonly code?: number;
     readonly reason?: string;
+    readonly requestId?: string;
     readonly retryable: boolean;
     readonly retryAfterMs?: number;
     readonly cause?: unknown;
 
-    constructor(message: string, options: { status?: number; code?: number; reason?: string; retryable?: boolean; retryAfterMs?: number; cause?: unknown } = {}) {
+    constructor(message: string, options: { status?: number; code?: number; reason?: string; requestId?: string; retryable?: boolean; retryAfterMs?: number; cause?: unknown } = {}) {
         super(message);
         this.name = "ApiError";
         this.status = options.status;
         this.code = options.code;
         this.reason = options.reason;
-        this.retryable = options.retryable ?? isRetryableStatus(options.status ?? options.code);
+        this.requestId = options.requestId;
+        this.retryable = options.reason === "local_credential_failed" || options.reason === "local_disk_full" ? false : options.retryable ?? isRetryableStatus(options.status ?? options.code);
         this.retryAfterMs = options.retryAfterMs;
         this.cause = options.cause;
     }
+}
+
+export function getTransportFailureKind(error: unknown): "timeout" | "network" | undefined {
+    const cause = error instanceof ApiError ? error.cause : error;
+    if (!axios.isAxiosError(cause) || cause.response || axios.isCancel(cause)) return undefined;
+    return cause.code === "ECONNABORTED" || cause.code === "ETIMEDOUT" ? "timeout" : "network";
 }
 
 // 所有后端 JSON 请求共用同一实例，避免认证、Base URL 和错误语义在模块间漂移。
@@ -63,6 +71,7 @@ export async function request<T>(promise: Promise<{ data: BackendEnvelope<T>; st
                 status: response.status,
                 code: response.data.code,
                 reason: response.data.reason,
+                requestId: responseRequestId(response.headers),
                 retryable: isRetryableStatus(response.status) || isRetryableStatus(response.data.code),
                 retryAfterMs: retryAfterMilliseconds(response.headers),
             });
@@ -87,12 +96,20 @@ function unwrapTransportError(error: unknown): never {
             status,
             code,
             reason: error.response?.data?.reason,
+            requestId: responseRequestId(error.response?.headers),
             retryable: isRetryableStatus(status) || isRetryableStatus(code),
             retryAfterMs: retryAfterMilliseconds(error.response?.headers),
             cause: error,
         });
     }
     throw error;
+}
+
+function responseRequestId(headers: unknown): string | undefined {
+    if (!headers || typeof headers !== "object") return undefined;
+    const bag = headers as { get?: (name: string) => unknown; [key: string]: unknown };
+    const value = bag.get?.("x-request-id") ?? bag["x-request-id"] ?? bag["X-Request-ID"];
+    return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{5,127}$/.test(value) ? value : undefined;
 }
 
 function transportFailureMessage(status?: number, fallback?: string) {

@@ -151,6 +151,27 @@ test("automatic canvas creation failure leaves the opening screen and shows a re
         expect(requests.some((entry) => entry.startsWith("PUT ") && entry.includes("/api/canvas-projects/"))).toBe(true);
         expect(await page.getByText("正在打开画布...", { exact: true }).count()).toBe(0);
         expect(await page.getByRole("button", { name: "开始创作", exact: true }).count()).toBe(1);
+        expect(await page.getByTestId("canvas-route").textContent()).toBe("/canvas?mode=new");
+
+        // Retry must also wait for a durable receipt before navigating.
+        let acceptSave!: () => void;
+        const saveGate = new Promise<void>((resolve) => { acceptSave = resolve; });
+        let startedSave!: () => void;
+        const saveStarted = new Promise<void>((resolve) => { startedSave = resolve; });
+        let savedId = "";
+        await page.route("**/api/canvas-projects/*", async (route) => {
+            if (route.request().method() !== "PUT") return route.fallback();
+            const { project } = route.request().postDataJSON();
+            savedId = project.id;
+            startedSave();
+            await saveGate;
+            await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ code: 0, data: { project: { ...project, revision: 1 } } }) });
+        });
+        await page.getByRole("button", { name: "开始创作", exact: true }).click();
+        await saveStarted;
+        expect(await page.getByTestId("canvas-route").textContent()).toBe("/canvas?mode=new");
+        acceptSave();
+        await page.waitForFunction((id) => document.querySelector('[data-testid="canvas-route"]')?.textContent === `/canvas/${id}?mode=new`, savedId);
         expect(pageErrors).toEqual([]);
     } finally { await context.close(); }
 }, 15_000);

@@ -8,6 +8,7 @@
   "frontend:dev:watcher": "",
   "frontend:dev:serverUrl": "http://127.0.0.1:3000",
   "assetdir": "frontend/dist",
+  "info": { "protocols": [{ "scheme": "beeftv", "description": "BeefTV 技能安装链接", "role": "Viewer" }] },
   "wailsjsdir": "frontend/wailsjs",
   "author": {
     "name": "BeefTV Contributors"

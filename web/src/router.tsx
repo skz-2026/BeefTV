@@ -22,6 +22,7 @@ const StorybookBooksPage = lazy(() => import("@/pages/storybook-books"));
 const CreatePage = lazy(loadCreatePage);
 const NotFound = lazy(() => import("@/pages/not-found"));
 const PluginsPage = lazy(() => import("@/pages/plugins"));
+const SkillsPage = lazy(() => import("@/pages/skills/market-page"));
 const EagleLibraryPage = lazy(() => import("@/pages/plugins/eagle"));
 const ProjectDetailPage = lazy(loadProjectDetailPage);
 const PromptLibraryPage = lazy(() => import("@/pages/prompt-library"));
@@ -91,8 +92,8 @@ export const router = createWorkspaceRouter([
             },
             { path: "/assets", element: deferred(<AssetsPage />) },
             { path: "/prompt-library", element: deferred(<PromptLibraryPage />) },
-            { path: "/skills", element: <Navigate to="/" replace /> },
-            { path: "/skill", element: <Navigate to="/" replace /> },
+            { path: "/skills", element: deferred(<SkillsPage />) },
+            { path: "/skill", element: <Navigate to="/skills" replace /> },
             { path: "/skills/reference", element: <Navigate to="/" replace /> },
             {
                 path: "/plugins",

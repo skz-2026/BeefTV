@@ -129,6 +129,11 @@ cp "$ROOT_DIR/plugin-packages/"*.beeftv-plugin "$PLUGIN_RESOURCE_DIR/"
 
 bun "$ROOT_DIR/scripts/package-agent-host.mjs" "$AGENT_TARGET" \
   "$APP_BUNDLE/Contents/Resources/agent-host"
+bash "$ROOT_DIR/scripts/package-media-runtime-macos.sh" "$AGENT_TARGET" \
+  "$APP_BUNDLE/Contents/Resources/agent-host/media-runtime"
+if [[ "$AGENT_TARGET" == "darwin/$(uname -m)" || ( "$AGENT_TARGET" == darwin/amd64 && "$(uname -m)" == x86_64 ) ]]; then
+  bash "$ROOT_DIR/scripts/test-media-runtime-macos.sh" "$APP_BUNDLE/Contents/Resources/agent-host/media-runtime"
+fi
 
 # The beeftv CLI ships inside the bundle. External agents (Codex, Claude Code,
 # Cursor) connect through it with their own client credential, so the installed

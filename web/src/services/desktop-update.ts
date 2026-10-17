@@ -1,5 +1,5 @@
 import { DESKTOP_UPDATE_STATUSES, getDesktopAppBinding, type DesktopRuntimeBinding, type DesktopUpdateState, type DesktopUpdateStatus } from "@/services/desktop-runtime";
-import { prepareDesktopEditorsForUpdate } from "@/services/desktop-update-preparation";
+import { assertDesktopUpdateProgressSettled, DesktopUpdateSaveInProgressError, hasActiveDesktopEditorSaves, prepareDesktopEditorsForUpdate } from "@/services/desktop-update-preparation";
 
 export type { DesktopUpdateState, DesktopUpdateStatus };
 
@@ -15,6 +15,7 @@ export type DesktopUpdateSnapshot = {
     persistBusy: boolean;
     actionBusy: boolean;
     runtime: DesktopUpdateRuntimeKind;
+    canForceInstall: boolean;
 };
 
 export type DesktopUpdateScheduler = {
@@ -22,9 +23,12 @@ export type DesktopUpdateScheduler = {
 };
 
 export type DesktopUpdateControllerOptions = {
+	/** Save deadline; expiration must never continue into native installation. */
+	persistTimeoutMs?: number;
     getBinding?: () => DesktopRuntimeBinding | undefined;
     isDesktopRuntime?: () => boolean;
     persistWorkspace?: () => Promise<void>;
+    assertNoActiveSaves?: () => Promise<void>;
     fallbackVersion?: string;
     pollIntervalMs?: number;
     scheduler?: DesktopUpdateScheduler;
@@ -37,6 +41,7 @@ export type DesktopUpdateController = {
     check: () => Promise<void>;
     download: () => Promise<void>;
     install: () => Promise<void>;
+    forceInstall: () => Promise<void>;
     downloadAndInstall: () => Promise<void>;
     retry: () => Promise<void>;
     dispose: () => void;
@@ -82,6 +87,12 @@ export function parseDesktopUpdateState(value: unknown, fallbackCurrentVersion =
     const status = isDesktopUpdateStatus(source.status) ? source.status : error ? "error" : "idle";
     return {
         status,
+        ...(["downloading", "verifying", "extracting", "preparing", "restarting"].includes(readText(source.phase)) ? {
+            phase: readText(source.phase) as DesktopUpdateState["phase"],
+            completedFiles: readBytes(source.completedFiles),
+            totalFiles: readBytes(source.totalFiles),
+        } : {}),
+        ...(source.installPrepared === true ? { installPrepared: true } : {}),
         currentVersion,
         latestVersion: readText(source.latestVersion),
         releaseNotes: readText(source.releaseNotes),
@@ -114,7 +125,10 @@ export function shouldPollDesktopUpdate(status: DesktopUpdateStatus): boolean {
 
 export function desktopUpdateProgressPercent(state: DesktopUpdateState): number | null {
     if (state.totalBytes <= 0) return null;
-    return Math.min(100, Math.round((state.downloadedBytes / state.totalBytes) * 100));
+    if (state.status === "installing" && state.installPrepared) return 100;
+    if (state.status === "installing") return 98;
+    if (state.status === "ready") return 96;
+    return Math.min(95, Math.floor((state.downloadedBytes / state.totalBytes) * 95));
 }
 
 export function formatDesktopUpdateBytes(bytes: number): string {
@@ -156,8 +170,14 @@ export function formatDesktopUpdateRemaining(seconds: number | null): string {
 
 /** Secondary line under the download status: speed and time left, or why it paused. */
 export function desktopUpdateDetailLabel(state: DesktopUpdateState): string {
+    if (state.status === "installing") {
+        if (state.phase === "extracting" && state.totalFiles) return `${state.completedFiles ?? 0} / ${state.totalFiles} 个文件`;
+        if (state.phase === "restarting" || state.installPrepared) return "完成后将自动打开新版本";
+        return "请保持应用开启";
+    }
     if (state.status === "downloading") {
         if (state.reconnecting) return "网络中断，正在重新连接";
+        if (state.totalBytes > 0 && state.downloadedBytes >= state.totalBytes) return "下载完成，正在校验更新包";
         const speed = formatDesktopUpdateSpeed(state.bytesPerSecond);
         if (speed) return [speed, formatDesktopUpdateRemaining(desktopUpdateRemainingSeconds(state))].filter(Boolean).join(" · ");
         return state.downloadedBytes > 0 && state.totalBytes > 0 ? desktopUpdateProgressLabel(state) : "正在连接";
@@ -218,10 +238,36 @@ function readBuildVersion(): string {
 
 export async function persistWorkspaceBeforeDesktopInstall() {
     await prepareDesktopEditorsForUpdate();
-    const [{ flushCanvasStorePersistence }, { flushAssetStorePersistence }, { flushModelConfig }] = await Promise.all([import("@/stores/canvas/use-canvas-store"), import("@/stores/use-asset-store"), import("@/services/model-config-repository")]);
-    await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence(), flushModelConfig()]);
+    const [{ flushCanvasStorePersistence }, { flushAssetStorePersistence }, { flushModelConfig, getModelConfigPersistenceState }] = await Promise.all([import("@/stores/canvas/use-canvas-store"), import("@/stores/use-asset-store"), import("@/services/model-config-repository")]);
+    // A failed store must not offer restart while another store is still writing.
+    const results = await Promise.allSettled([flushCanvasStorePersistence(), flushAssetStorePersistence(), flushModelConfig()]);
+    const failed = results.find(result => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    const modelConfig = getModelConfigPersistenceState();
+    if (modelConfig.status === "saving") throw new DesktopUpdateSaveInProgressError();
+    if (modelConfig.dirty || modelConfig.status === "error") throw new Error("模型配置尚未保存完成，请重试保存，或选择仍然更新。");
+    await assertDesktopSaveProgress();
+    await assertNoActiveDesktopSaves();
+}
+
+export async function assertNoActiveDesktopSaves() {
+    const [canvas, assets, generation, modelConfig, progress] = await Promise.all([
+        import("@/stores/canvas/use-canvas-store"), import("@/stores/use-asset-store"),
+        import("@/services/generation-asset-repository"), import("@/services/model-config-repository"),
+        import("@/stores/use-sync-progress-store"),
+    ]);
+    if (hasActiveDesktopEditorSaves() || canvas.hasActiveCanvasStorePersistence() || assets.hasActiveAssetStorePersistence()
+        || generation.hasActiveGenerationAssetWrites() || modelConfig.getModelConfigPersistenceState().status === "saving") {
+        throw new DesktopUpdateSaveInProgressError();
+    }
+    assertDesktopUpdateProgressSettled(progress.useSyncProgressStore.getState().syncingProjects,
+        new Set(canvas.useCanvasStore.getState().projects.map(project => project.id)), undefined, true);
+}
+
+async function assertDesktopSaveProgress(allowFailed = false) {
     const { useSyncProgressStore } = await import("@/stores/use-sync-progress-store");
-    if (useSyncProgressStore.getState().isAnySyncing()) throw new Error("仍有内容正在保存，请稍后再更新。");
+    const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
+    assertDesktopUpdateProgressSettled(useSyncProgressStore.getState().syncingProjects, new Set(useCanvasStore.getState().projects.map(project => project.id)), undefined, allowFailed);
 }
 
 const defaultScheduler: DesktopUpdateScheduler = {
@@ -235,15 +281,18 @@ export function createDesktopUpdateController(options: DesktopUpdateControllerOp
     const getBinding = options.getBinding ?? getDesktopAppBinding;
     const isDesktopRuntime = options.isDesktopRuntime ?? (() => isDesktopUpdateRuntime(getBinding()));
     const persistWorkspace = options.persistWorkspace ?? persistWorkspaceBeforeDesktopInstall;
+    const assertNoActiveSaves = options.assertNoActiveSaves ?? assertNoActiveDesktopSaves;
     const fallbackVersion = options.fallbackVersion ?? readBuildVersion();
     const pollIntervalMs = options.pollIntervalMs ?? DESKTOP_UPDATE_POLL_INTERVAL_MS;
     const scheduler = options.scheduler ?? defaultScheduler;
 
     let state = emptyDesktopUpdateState(fallbackVersion);
     let persistBusy = false;
+    let canForceInstall = false;
     let actionBusy = false;
     let lastAction: InternalPhase = "none";
     let stagedReady = false;
+    let pendingPersistence: Promise<void> | null = null;
     let startPromise: Promise<void> | null = null;
     let stopPoll: (() => void) | null = null;
     let pollGeneration = 0;
@@ -258,6 +307,7 @@ export function createDesktopUpdateController(options: DesktopUpdateControllerOp
         persistBusy,
         actionBusy,
         runtime: runtimeKind(),
+        canForceInstall,
     });
 
     const emit = () => {
@@ -373,18 +423,47 @@ export function createDesktopUpdateController(options: DesktopUpdateControllerOp
         }
     };
 
-    const install = async () => {
+    const install = async (force = false) => {
         if (actionBusy || persistBusy) return;
+        if (force && !canForceInstall) return;
         const binding = getBinding();
         if (!hasDesktopUpdateBinding(binding) || runtimeKind() !== "desktop") return;
         if (state.status !== "ready" && !(state.status === "error" && stagedReady)) return;
+        if (pendingPersistence) {
+            apply({ ...state, status: "error", error: "上次保存仍未结束，请稍后重试。" });
+            return;
+        }
         lastAction = "install";
         persistBusy = true;
+        canForceInstall = false;
         emit();
+        let saveTimer: ReturnType<typeof setTimeout> | undefined;
         try {
-            await persistWorkspace();
+            if (force) {
+                if (pendingPersistence) throw new DesktopUpdateSaveInProgressError();
+                await assertNoActiveSaves();
+            } else {
+                const save = persistWorkspace();
+                pendingPersistence = save;
+                // A timeout stops this install attempt, not the editor's write.
+                // Keep ownership until settlement; the next attempt must save afresh.
+                void save.then(() => { pendingPersistence = null; }, () => { pendingPersistence = null; });
+                await Promise.race([
+                    save,
+                    new Promise<never>((_, reject) => {
+                        saveTimer = setTimeout(() => reject(new Error("保存耗时较长，尚未开始安装。请稍后重试。")), options.persistTimeoutMs ?? 60_000);
+                    }),
+                ]);
+            }
         } catch (error) {
+            if (!(error instanceof DesktopUpdateSaveInProgressError)) {
+                try { await assertNoActiveSaves(); }
+                catch (activeError) {
+                    if (activeError instanceof DesktopUpdateSaveInProgressError) error = activeError;
+                }
+            }
             persistBusy = false;
+            canForceInstall = !(error instanceof DesktopUpdateSaveInProgressError);
             apply(
                 {
                     ...state,
@@ -394,14 +473,22 @@ export function createDesktopUpdateController(options: DesktopUpdateControllerOp
                 { persistBusy: false, actionBusy: false },
             );
             return;
+        } finally {
+            clearTimeout(saveTimer);
         }
+        if (disposed) return;
         persistBusy = false;
         actionBusy = true;
-        apply({ ...state, status: "installing", error: "" }, { persistBusy: false, actionBusy: true });
+        apply({ ...state, status: "installing", phase: "verifying", completedFiles: 0, totalFiles: 0, installPrepared: false, error: "" }, { persistBusy: false, actionBusy: true });
         try {
             await binding.InstallUpdate();
             if (disposed) return;
             apply({ ...state, status: "installing", error: "" }, { actionBusy: false });
+            // A late status read must never turn a started installation into a retry.
+            try {
+                const latest = await binding.UpdateStatus();
+                if (!disposed && (latest.status === "installing" || latest.status === "error")) apply(latest);
+            } catch { /* The application may already be exiting; polling remains the fallback. */ }
         } catch (error) {
             if (disposed) return;
             stagedReady = true;
@@ -464,6 +551,7 @@ export function createDesktopUpdateController(options: DesktopUpdateControllerOp
         check,
         download,
         install,
+        forceInstall: () => install(true),
         downloadAndInstall,
         retry,
         dispose: () => {

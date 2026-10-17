@@ -7,10 +7,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { serveEmptySkillContext } from './skill-context-fixture.mjs';
 const root = path.resolve(process.argv[2] || '.');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'beeftv-budget-'));
 const token = 'synthetic-budget-token';
 let calls = 0, hold = false, base, child, log = '';
+let turnSeq = 0;
+const turnCanvas = new Map();
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const provider = createServer(async (req, res) => {
   for await (const chunk of req) { /* drain request */ }
@@ -23,7 +26,16 @@ const provider = createServer(async (req, res) => {
   ]) res.write('data: ' + JSON.stringify({ id: 'fake', object: 'chat.completion.chunk', created: 1, model: 'fake', choices: [choice] }) + '\n\n');
   res.end('data: [DONE]\n\n');
 });
-const ops = createServer((req, res) => res.setHeader('content-type', 'application/json').end(JSON.stringify({ code: 0, data: { ops: [] } })));
+const ops = createServer((req, res) => {
+  res.setHeader('content-type', 'application/json');
+  if(serveEmptySkillContext(req,res))return;
+  if (req.url.startsWith('/api/assistant/runtime/turns/')) {
+    const turnId = decodeURIComponent(req.url.split('/')[5] || '');
+    res.end(JSON.stringify({ code: 0, data: { turnId, canvasId: turnCanvas.get(turnId) || 'test', permissionMode: 'canvas', open: true } }));
+    return;
+  }
+  res.end(JSON.stringify({ code: 0, data: { ops: [] } }));
+});
 async function stop() {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, 'close'); child.kill('SIGKILL'); await exited;
@@ -33,11 +45,11 @@ async function start(dir, limit) {
   base = `http://127.0.0.1:${port}`;
   log = '';
   child = spawn(process.execPath, [path.join(root, 'agent-host/server.mjs')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: {
-    ...process.env, BEEFTV_AGENT_NEW_SESSION_RUNTIME: 'sdk', BEEFTV_AGENT_PORT: String(port), BEEFTV_AGENT_LISTEN_FD: '0', BEEFTV_AGENT_LIFETIME_STDIN: '0',
+    ...process.env, BEEFTV_AGENT_PORT: String(port), BEEFTV_AGENT_LISTEN_FD: '0', BEEFTV_AGENT_LIFETIME_STDIN: '0',
     BEEFTV_AGENT_INSTANCE_NONCE: '', BEEFTV_AGENT_DATA_DIR: dir, BEEFTV_AGENT_HOST_TOKEN: token,
     BEEFTV_AGENT_API_KEY: 'fake', BEEFTV_AGENT_MODEL: 'fake', BEEFTV_AGENT_API: 'openai-completions',
     BEEFTV_AGENT_BASE_URL: `http://127.0.0.1:${provider.address().port}/v1`, BEEFTV_OPS_URL: `http://127.0.0.1:${ops.address().port}/api`,
-    BEEFTV_AGENT_TOTAL_REQUEST_BUDGET: String(limit), BEEFTV_AGENT_MAX_REQUESTS_PER_TURN: '1', BEEFTV_AGENT_TURN_TIMEOUT_MS: '10000',
+    BEEFTV_AGENT_TOTAL_REQUEST_BUDGET: String(limit), BEEFTV_AGENT_MAX_REQUESTS_PER_TURN: '1',
   }});
   child.stdout.on('data', data => { log += data; }); child.stderr.on('data', data => { log += data; });
   for (let i = 0; i < 150; i++) {
@@ -48,7 +60,9 @@ async function start(dir, limit) {
   throw Error('Host did not start: ' + log);
 }
 async function chat(canvasId = 'test') {
-  const res = await fetch(base + '/chat', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Beeftv-Agent-Token': token }, body: JSON.stringify({ canvasId, message: 'Reply ok', turnId: String(Date.now()) }), signal: AbortSignal.timeout(20000) });
+  const turnId = `budget-${++turnSeq}`;
+  turnCanvas.set(turnId, canvasId);
+  const res = await fetch(base + '/chat', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Beeftv-Agent-Token': token }, body: JSON.stringify({ canvasId, message: 'Reply ok', turnId }), signal: AbortSignal.timeout(20000) });
   const text = await res.text(); assert.equal(res.status, 200, text);
   const end = text.trim().split('\n').map(JSON.parse).find(event => event.type === 'turn_end');
   assert(end, text); return end;

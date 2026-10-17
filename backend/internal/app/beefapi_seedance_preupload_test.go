@@ -528,7 +528,7 @@ func TestBeefAPISeedancePreuploadOpenResourceLargeLocalVideo(t *testing.T) {
 	resource := model.Resource{
 		ID: "beefapi-preupload-large-video", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
 		Provider: "local", ObjectKey: "users/user-1/video/reference.mp4", MimeType: "video/mp4",
-		Size: size,
+		Size: size, Width: 1280, Height: 720, DurationMs: 3200,
 	}
 	if err := svc.repo.CreateResource(&resource); err != nil {
 		t.Fatal(err)
@@ -541,14 +541,14 @@ func TestBeefAPISeedancePreuploadOpenResourceLargeLocalVideo(t *testing.T) {
 	if err := svc.hydrateVideoReferenceMetadata(harness.ctx(), "user-1", &input); err != nil {
 		t.Fatal(err)
 	}
-	if input.ReferenceVideos[0].Width != 0 || input.ReferenceVideos[0].Height != 0 || input.ReferenceVideos[0].DurationMs != 0 {
-		t.Fatalf("preupload hydrate probed the full file: %#v", input.ReferenceVideos[0])
+	if input.ReferenceVideos[0].Width != 1280 || input.ReferenceVideos[0].Height != 720 || input.ReferenceVideos[0].DurationMs != 3200 {
+		t.Fatalf("preupload hydrate did not reuse stored metadata: %#v", input.ReferenceVideos[0])
 	}
 	if err := svc.resolveVideoCapability(harness.ctx(), &input); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateVideoTaskParameters(input.VideoCapability, input); err != nil {
-		t.Fatalf("missing stored metadata blocked parameter preflight: %v", err)
+		t.Fatalf("stored metadata blocked parameter preflight: %v", err)
 	}
 	if err := svc.hydrateGenerationMedia("user-1", &input, providerMediaHydrationPolicyFor(harness.ctx(), input)); err != nil {
 		t.Fatal(err)

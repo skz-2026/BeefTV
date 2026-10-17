@@ -1,5 +1,6 @@
 // BeefTV 内置 pi 会话宿主（正式）：HTTP 适配器。
-// SDK 会话所有权在 session-owner.mjs；画布操作桥在 operation-bridge.mjs。
+// 执行运行时只有 durable-session-owner.mjs 一套；旧 JSONL 会话只读历史在 session-owner.mjs。
+// 画布操作桥在 operation-bridge.mjs。
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,15 +10,12 @@ import { ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { createDurableSessionStore, isDurableSessionId } from './durable-session-owner.mjs';
 import { createDurableTurnBudget } from './durable-turn-budget.mjs';
-import { createDurableSkillExtension } from './skill-resource.mjs';
 import { providerRegistration, providerUnavailableReason,
-  turnContextPrefix, modelTurnCompletion,
-  unflushedSessionHistory,
-  resetTurnAccumulator, turnChange } from './canvas-turn.mjs';
-import { budgetError, createTurnBudget, spendModelRequest } from './request-budget.mjs';
+  turnContextPrefix, unflushedSessionHistory } from './canvas-turn.mjs';
+import { budgetError, spendModelRequest } from './request-budget.mjs';
 import { createDurableRequestBudget } from './durable-request-budget.mjs';
 import { createOperationBridge } from './operation-bridge.mjs';
-import { TURN_ENTRY_TYPE, createSessionStore } from './session-owner.mjs';
+import { createLegacyHistory } from './session-owner.mjs';
 import { adaptMediaRequest, trustedMediaSources } from './media-content.mjs';
 import {nativeSourceKey} from './native-history.mjs';
 import { createNativePartStore } from './native-part-store.mjs';
@@ -41,15 +39,14 @@ const MODEL_ID = (process.env.BEEFTV_AGENT_MODEL || '').trim();
 const MODEL_API = (process.env.BEEFTV_AGENT_API || 'openai-completions').trim();
 const BASE_URL = (process.env.BEEFTV_AGENT_BASE_URL || '').replace(/\/+$/, '');
 const API_KEY = process.env.BEEFTV_AGENT_API_KEY || '';
-const MAX_OUTPUT_TOKENS = Number(process.env.BEEFTV_AGENT_MAX_TOKENS || 4096);
+// Thinking shares this ceiling with the answer (pi-ai adds its budget within it).
+const MAX_OUTPUT_TOKENS = Number(process.env.BEEFTV_AGENT_MAX_TOKENS || 16384);
 const CONTEXT_WINDOW = Number(process.env.BEEFTV_AGENT_CONTEXT_WINDOW || 200000);
-const TURN_TIMEOUT_MS = Number(process.env.BEEFTV_AGENT_TURN_TIMEOUT_MS || 180000);
 const MAX_REQUESTS_PER_TURN = Number(process.env.BEEFTV_AGENT_MAX_REQUESTS_PER_TURN || 40);
 const MAX_TOOL_STEPS_PER_TURN = Number(process.env.BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN || 40);
 const LIFETIME_REQUEST_BUDGET = Number(process.env.BEEFTV_AGENT_TOTAL_REQUEST_BUDGET || 0);
 const MAX_BODY_BYTES = 64 * 1024;
 const READ_ONLY_MODE = process.env.BEEFTV_AGENT_READ_ONLY === '1';
-const NEW_SESSION_RUNTIME = process.env.BEEFTV_AGENT_NEW_SESSION_RUNTIME || 'durable';
 const PROVIDER_ID = 'beeftv';
 
 for (const [name, value] of Object.entries({ BEEFTV_AGENT_HOST_TOKEN: HOST_TOKEN,
@@ -170,14 +167,7 @@ const ops = createOperationBridge({
   nativePartStore,
 });
 
-const store = createSessionStore({
-  sessionRoot: SESSION_ROOT,
-  workspaceRoot: WORKSPACE_ROOT,
-  agentDir: AGENT_DIR,
-  runId: RUN_ID,
-  getModelRuntime: () => modelRuntime,
-  getModel: () => MODEL,
-});
+const legacy = createLegacyHistory({ sessionRoot: SESSION_ROOT, workspaceRoot: WORKSPACE_ROOT });
 
 const durable = createDurableSessionStore({
   sessionRoot: SESSION_ROOT, workspaceRoot: WORKSPACE_ROOT, buildTools: ops.buildTools,
@@ -194,9 +184,12 @@ const durable = createDurableSessionStore({
     return models;
   },
   getModelRef: () => ({ provider: PROVIDER_ID, modelId: MODEL_ID }),
-  extensions: entry => [createDurableSkillExtension({getPins:()=>entry.skillPins || [],
-    readVersion:async (pin,signal) => (await ops.opsRequest('POST','/ops/skill.get',{params:pin},signal,entry.turn.turnId)).result,
-  })],
+  skills: {
+    readContext:async (entry,turnId) => ops.opsRequest('GET',`/assistant/runtime/canvases/${encodeURIComponent(entry.canvasId)}/skill-context?sessionId=${encodeURIComponent(entry.sessionId)}${turnId?`&turnId=${encodeURIComponent(turnId)}`:''}`),
+    changeContext:async (entry,change,turnId) => ops.opsRequest('POST',`/assistant/runtime/canvases/${encodeURIComponent(entry.canvasId)}/skill-context`,{...change,sessionId:entry.sessionId,...(turnId?{turnId}:{})}),
+    readVersion:async (entry,pin,signal,turnId) => (await ops.opsRequest('POST','/ops/skill.get',{params:pin},signal,turnId || entry.turn.turnId)).result,
+    readCatalog:async (entry,signal,turnId,query={}) => (await ops.opsRequest('POST','/ops/skill.catalog',{params:query},signal,turnId || entry.turn.turnId)).result,
+  },
   authorizeTurn: async ({canvasId, turnId,sessionId}) => {
     const state = await ops.opsRequest('GET', `/assistant/runtime/turns/${encodeURIComponent(turnId)}`);
     if(sessionId && state.open) await ops.opsRequest('POST',`/assistant/runtime/turns/${encodeURIComponent(turnId)}/bind-session`,{sessionId});
@@ -214,17 +207,16 @@ const durable = createDurableSessionStore({
 });
 
 function currentId(canvasId) {
-  try { return store.readCurrentSessionId(canvasId) || ''; }
+  try { return legacy.readCurrentSessionId(canvasId) || ''; }
   catch (error) {
     // Failed pointer publication must not erase a previously owned live chat.
-    const entry = durable.sessions.get(canvasId) || store.sessions.get(canvasId);
+    const entry = durable.sessions.get(canvasId);
     if (entry) return entry.sessionId;
     throw error;
   }
 }
 function liveEntry(canvasId) {
-  const id = currentId(canvasId);
-  return isDurableSessionId(id) ? durable.sessions.get(canvasId) : store.sessions.get(canvasId);
+  return durable.sessions.get(canvasId) || null;
 }
 function emitDurable(entry, event) {
   const mapped = [];
@@ -308,6 +300,12 @@ function respond(res, status, payload) {
 }
 
 function respondStoreError(res, error) {
+  if (['skill_context_revision_conflict','skill_context_request_conflict','skill_scope_reset_pending','skill_context_changed'].includes(error?.reason)) {
+    respond(res,409,{code:409,reason:error.reason});return true;
+  }
+  if (['invalid_skill_context_action','invalid_skill_context_request','invalid_skill_selection','skill_selection_limit','skill_context_budget_exceeded'].includes(error?.reason)) {
+    respond(res,400,{code:400,reason:error.reason});return true;
+  }
   if (error?.reason === 'session_busy') { respond(res, 409, { code: 409, reason: 'session_busy' }); return true; }
   if (error?.reason === 'session_not_current') { respond(res, 409, { code: 409, reason: 'session_not_current' }); return true; }
   if (error?.reason === 'session_not_found') { respond(res, 404, { code: 404, reason: 'session_not_found' }); return true; }
@@ -324,7 +322,6 @@ function respondStoreError(res, error) {
 
 function anySessionBusy() {
   for (const entry of durable.sessions.values()) if (entry.busy) return true;
-  for (const entry of store.sessions.values()) if (entry.busy) return true;
   return false;
 }
 
@@ -337,10 +334,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/health') {
     if (!instanceOK(req)) { respond(res, 403, { code: 403, reason: 'instance_mismatch' }); return; }
-    const persistenceSummary = store.sessions.size === 0 ? 'ok' : [...new Set([...store.sessions.values()].map((entry) => entry.persistence))].join(',');
+    const persistenceSummary = durable.sessions.size === 0 ? 'ok' : [...new Set([...durable.sessions.values()].map((entry) => entry.persistence))].join(',');
     const proof = instanceProof();
     respond(res, 200, { ok: !providerReason, reason: providerReason || undefined,
-      sessions: store.sessions.size, busy: anySessionBusy(), model: MODEL?.id || MODEL_ID, api: MODEL_API,
+      sessions: durable.sessions.size, busy: anySessionBusy(), model: MODEL?.id || MODEL_ID, api: MODEL_API,
       baseUrl: MODEL?.baseUrl || BASE_URL, persistence: persistenceSummary, runId: RUN_ID,
       instance: proof || undefined,
       requests: { dispatched, perTurnRequests: MAX_REQUESTS_PER_TURN, perTurnToolSteps: MAX_TOOL_STEPS_PER_TURN,
@@ -350,22 +347,31 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && url.pathname === '/tools') {
     const canvasId = url.searchParams.get('canvasId') || '';
-    const entry = canvasId ? store.sessions.get(canvasId) : null;
-    respond(res, 200, { canvasId, activeTools: entry?.session?.getActiveToolNames?.() || [], known: [...ops.descriptors.keys()] });
+    const entry = canvasId ? durable.sessions.get(canvasId) : null;
+    respond(res, 200, { canvasId, activeTools: entry?.toolNames || [], known: [...ops.descriptors.keys()] });
     return;
   }
   try {
+    if (url.pathname === '/skill-context' && ['GET','POST'].includes(req.method)) {
+      const body=req.method==='POST'?JSON.parse((await readBody(req)) || '{}'):Object.fromEntries(url.searchParams);
+      const canvasId=String(body.canvasId || '').trim();
+      if (!canvasId) {respond(res,400,{reason:'invalid_request'});return;}
+      const entry=await durable.ensureSession(canvasId,String(body.sessionId || ''));
+      const result=req.method==='GET'?await durable.skillContext(entry):await durable.changeSkillContext(entry,{
+        action:body.action,expectedRevision:body.expectedRevision,requestId:body.requestId,...(body.pins?{pins:body.pins}:{})});
+      respond(res,200,result);return;
+    }
     if (req.method === 'GET' && url.pathname === '/active') {
       const canvasId = String(url.searchParams.get('canvasId') || '');
       const sessionId = String(url.searchParams.get('sessionId') || currentId(canvasId));
       let entry = liveEntry(canvasId);
       if (isDurableSessionId(sessionId)) entry = await durable.ensureSession(canvasId,sessionId);
-      respond(res,200,{sessionId:entry?.sessionId || null,turnId:entry?.turn.turnId || null,busy:Boolean(entry?.busy)}); return;
+      respond(res,200,{sessionId:entry?.sessionId || sessionId || null,turnId:entry?.turn.turnId || null,busy:Boolean(entry?.busy)}); return;
     }
     if (req.method === 'GET' && url.pathname === '/sessions') {
       const canvasId = String(url.searchParams.get('canvasId') || '').trim();
       if (!canvasId) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
-      const list = [...await store.listCanvasSessions(canvasId), ...await durable.listCanvasSessions(canvasId)];
+      const list = [...await legacy.listCanvasSessions(canvasId), ...await durable.listCanvasSessions(canvasId)];
       const active = currentId(canvasId) || null;
       if (active && !list.some((item) => item.sessionId === active)) {
         list.unshift({ sessionId: active, title: '', updatedAt: new Date().toISOString(), turnCount: 0 });
@@ -378,13 +384,7 @@ const server = http.createServer(async (req, res) => {
       const canvasId = String(body.canvasId || '').trim();
       if (!canvasId) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
       if (liveEntry(canvasId)?.busy) { respond(res,409,{reason:'session_busy'}); return; }
-      if (NEW_SESSION_RUNTIME === 'durable') {
-        const entry = await durable.createSession(canvasId);
-        respond(res,200,{sessionId:entry.sessionId}); return;
-      }
-      const entry = await store.replaceSession(canvasId, () => store.createLiveSession({
-        canvasId, sessionId: '', buildTools: ops.buildTools,
-      }));
+      const entry = await durable.createSession(canvasId);
       respond(res, 200, { sessionId: entry.sessionId });
       return;
     }
@@ -400,18 +400,17 @@ const server = http.createServer(async (req, res) => {
         if (submission) followDurable(entry,submission);
         respond(res,200,{sessionId:entry.sessionId}); return;
       }
-      const entry = await store.replaceSession(canvasId, () => store.createLiveSession({
-        canvasId, sessionId, buildTools: ops.buildTools,
-      }));
-      respond(res, 200, { sessionId: entry.sessionId });
+      // 旧 JSONL 会话只切换当前指针用于读取展示；执行在下一次发消息时交接给新的 Durable 会话。
+      legacy.writeCurrentSessionId(canvasId, sessionId);
+      respond(res, 200, { sessionId });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/history') {
       const canvasId = String(url.searchParams.get('canvasId') || '').trim();
       const requested = String(url.searchParams.get('sessionId') || '').trim();
       if (!canvasId) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
-      const cwd = store.canvasWorkspace(canvasId);
-      const sessionDir = store.canvasSessionDir(canvasId);
+      const cwd = legacy.canvasWorkspace(canvasId);
+      const sessionDir = legacy.canvasSessionDir(canvasId);
       let sessionId = requested;
       if (!sessionId) {
         sessionId = currentId(canvasId);
@@ -428,29 +427,23 @@ const server = http.createServer(async (req, res) => {
       }
       const file = SessionManager.findById(cwd, sessionId, sessionDir);
       if (!file) {
-        const active = store.sessions.get(canvasId)?.sessionId || store.readCurrentSessionId(canvasId) || '';
+        const active = durable.sessions.get(canvasId)?.sessionId || legacy.readCurrentSessionId(canvasId) || '';
         const empty = unflushedSessionHistory(sessionId, active);
         if (empty) { respond(res, 200, empty); return; }
         respond(res, 404, { code: 404, reason: 'session_not_found' }); return;
       }
-      respond(res, 200, { sessionId, turns: store.turnEntries(SessionManager.open(file, sessionDir, cwd)) });
+      respond(res, 200, { sessionId, turns: legacy.turnEntries(SessionManager.open(file, sessionDir, cwd)) });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/cancel') {
       const body = JSON.parse((await readBody(req)) || '{}');
       const entry = liveEntry(body.canvasId);
       if (!entry) { respond(res, 404, { code: 404, reason: 'session_not_found' }); return; }
-      if (entry.kind === 'durable') {
-        // Persist stop intent before the Go fence so a crash can still journal it.
-        await durable.fenceStop(entry);
-        await ops.opsRequest('POST',`/assistant/runtime/turns/${encodeURIComponent(entry.turn.turnId)}/complete`,{});
-        await durable.stop(entry);
-        respond(res,202,{accepted:true,busy:entry.busy}); return;
-      }
-      entry.generation.aborted = true;
-      try { await entry.session.abort(); } catch (error) { console.error(`agent-host: abort 失败 ${error.message}`); }
-      respond(res, 202, { accepted: true, busy: entry.busy });
-      return;
+      // Persist stop intent before the Go fence so a crash can still journal it.
+      await durable.fenceStop(entry);
+      await ops.opsRequest('POST',`/assistant/runtime/turns/${encodeURIComponent(entry.turn.turnId)}/complete`,{});
+      await durable.stop(entry);
+      respond(res,202,{accepted:true,busy:entry.busy}); return;
     }
     if (req.method === 'POST' && url.pathname === '/steer') {
       const body = JSON.parse((await readBody(req)) || '{}');
@@ -464,35 +457,16 @@ const server = http.createServer(async (req, res) => {
       if (!entry || entry.sessionId !== sessionId) {
         respond(res, 409, { code: 409, reason: 'session_not_current' }); return;
       }
-      if (entry.kind === 'durable') {
-        if (!entry.busy || entry.completing || entry.generation.aborted) {
-          respond(res,409,{code:409,reason:'session_not_running'}); return;
-        }
-        const pending = durable.beginPendingInput(entry);
-        try {
-          const content = await attachmentContent(body,entry.turn.turnId);
-          await durable.supplement(entry,{requestId:body.requestId || crypto.randomUUID(),content,input:body});
-          pending.resolve();
-          respond(res,202,{accepted:true}); return;
-        } catch (error) { pending.reject(error); throw error; }
+      if (!entry.busy || entry.completing || entry.generation.aborted) {
+        respond(res,409,{code:409,reason:'session_not_running'}); return;
       }
-      if (!entry.busy || entry.generation.aborted || !entry.session.isStreaming) {
-        respond(res, 409, { code: 409, reason: 'session_not_running' }); return;
-      }
-      // Block stale writes immediately; only journal a supplement after the
-      // official queue accepts it. A rejected supplement is never acknowledged.
-      entry.generation.intentEpoch += 1;
+      const pending = durable.beginPendingInput(entry);
       try {
-        await entry.session.steer(message);
-      } catch {
-        respond(res, 409, { code: 409, reason: 'steer_failed' }); return;
-      }
-      entry.manager.appendCustomEntry(`${TURN_ENTRY_TYPE}.supplement`, {
-        turnId: entry.turn.turnId, message, createdAt: new Date().toISOString(),
-      });
-      entry.turn.supplements.push(message);
-      respond(res, 202, { accepted: true });
-      return;
+        const content = await attachmentContent(body,entry.turn.turnId);
+        await durable.supplement(entry,{requestId:body.requestId || crypto.randomUUID(),content,input:body});
+        pending.resolve();
+        respond(res,202,{accepted:true}); return;
+      } catch (error) { pending.reject(error); throw error; }
     }
     if (req.method === 'POST' && url.pathname === '/chat') {
       const body = JSON.parse((await readBody(req)) || '{}');
@@ -502,89 +476,32 @@ const server = http.createServer(async (req, res) => {
       const revisionBefore = Number(body.revisionBefore || 0);
       const requestedSessionId = String(body.sessionId || '').trim();
       const chosen = requestedSessionId || currentId(canvasId);
-      if(isDurableSessionId(chosen) || (!chosen && NEW_SESSION_RUNTIME === 'durable') || body.permissionMode) {
-        const authority=await ops.opsRequest('GET',`/assistant/runtime/turns/${encodeURIComponent(turnId)}`);
-        if(authority.canvasId!==canvasId || authority.open===false) throw Object.assign(new Error('turn_not_open'),{reason:'turn_not_open'});
-        body.permissionMode=authority.permissionMode || 'canvas';
-      } else {body.permissionMode='canvas';} // Legacy unannotated sessions never gain workspace access.
-      if (isDurableSessionId(chosen) || (!chosen && NEW_SESSION_RUNTIME === 'durable')) {
-        if (!canvasId || (!userText && !body.attachments?.length) || !turnId) { respond(res,400,{reason:'invalid_request'}); return; }
-        if (providerReason) { respond(res,503,{reason:providerReason}); return; }
-        const entry = await durable.ensureSession(canvasId,chosen);
-        const content = await attachmentContent(body,turnId);
-        content[0].text = `${turnContextPrefix(body)}\n${content[0].text}`;
-        const submission = await durable.submit(entry,{...body,content,userText,revisionBefore,requestId:body.requestId || turnId});
-        res.durableTurn = true;
-        res.writeHead(200,{'Content-Type':'application/x-ndjson'});
-        const result = followDurable(entry,submission);
-        const listener = payload=>{ if (!res.destroyed) sendLine(res,payload); };
-        entry.listeners.add(listener);
-        try {
-          const record = await result;
-          if (!res.destroyed) { sendLine(res,{...record,type:'turn_end',persistence:entry.persistence}); res.end(); }
-        } finally { entry.listeners.delete(listener); }
-        return;
-      }
-      let message = userText;
-      const selected = Array.isArray(body.selectedNodeIds) ? body.selectedNodeIds.map((v) => String(v)) : [];
-      const references = Array.isArray(body.references)
-        ? body.references.filter((item) => item && typeof item === 'object' && item.id)
-          .map((item) => ({ kind: String(item.kind || ''), id: String(item.id) }))
-        : [];
-      if (selected.length > 0 || references.length > 0) {
-        message = `${turnContextPrefix({ canvasId, selectedNodeIds: selected, references,permissionMode:body.permissionMode })}\n${userText}`;
-      }
-      if (!canvasId || !message) { respond(res, 400, { code: 400, reason: 'invalid_request' }); return; }
-      if (providerReason) { respond(res, 503, { code: 503, reason: providerReason }); return; }
-      const entry = await store.acquireChatSession(canvasId, ops.buildTools, requestedSessionId);
-      entry.generation.permissionMode=body.permissionMode;
-      entry.session.setActiveToolsByName(ops.buildTools(canvasId,entry.log,entry.generation,entry.turn,entry.identity.prefix).map(tool=>tool.name));
-      const budget = createTurnBudget({ maxRequests: MAX_REQUESTS_PER_TURN, maxToolSteps: MAX_TOOL_STEPS_PER_TURN });
-      entry.generation.intentEpoch = 0;
-      entry.generation.modelEpoch = 0;
-      budget.generation = entry.generation;
+      if (!canvasId || (!userText && !body.attachments?.length) || !turnId) { respond(res,400,{reason:'invalid_request'}); return; }
+      if (providerReason) { respond(res,503,{reason:providerReason}); return; }
+      // 权限只由 Go 回合记录决定：宿主和模型都不能自报。
+      const authority=await ops.opsRequest('GET',`/assistant/runtime/turns/${encodeURIComponent(turnId)}`);
+      if(authority.canvasId!==canvasId || authority.open===false) throw Object.assign(new Error('turn_not_open'),{reason:'turn_not_open'});
+      body.permissionMode=authority.permissionMode || 'canvas';
+      // 只有 Durable 一套执行运行时：选中的是 Durable 会话就直接接上；否则（旧 JSONL 会话或尚无会话）
+      // 新建一条 Durable 会话，并用旧会话文本作为交接说明开头。
+      const entry = isDurableSessionId(chosen)
+        ? await durable.ensureSession(canvasId,chosen)
+        : chosen ? await durable.handoffSession(canvasId, legacy.readHandoffNote(canvasId,chosen), chosen)
+          : await durable.ensureSession(canvasId);
+      const content = await attachmentContent(body,turnId);
+      content[0].text = `${turnContextPrefix(body)}\n${content[0].text}`;
+      const submission = await durable.submit(entry,{...body,content,userText,revisionBefore,requestId:body.requestId || turnId});
+      res.durableTurn = true;
+      res.writeHead(200,{'Content-Type':'application/x-ndjson'});
+      sendLine(res, { type: 'session', sessionId: entry.sessionId, turnId });
+      const result = followDurable(entry,submission);
+      const listener = payload=>{ if (!res.destroyed) sendLine(res,payload); };
+      entry.listeners.add(listener);
       try {
-        resetTurnAccumulator(entry.turn, revisionBefore, turnId);
-        entry.turn.canvasId=canvasId;
-        entry.turn.supplements = [];
-        entry.manager.appendCustomEntry(`${TURN_ENTRY_TYPE}.started`, {
-          turnId, userText, permissionMode:body.permissionMode, selectedNodeIds: selected, references, createdAt: new Date().toISOString(),
-        });
-        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
-        const before = entry.log.length;
-        const started = Date.now();
-        let firstTokenMs = null;
-        const { observer, error: promptError, timedOut } = await store.runOwnedPrompt(entry, message, {
-          onEvent: (payload) => {
-            if (payload.type === 'text_delta' && firstTokenMs === null) firstTokenMs = Date.now() - started;
-            sendLine(res, payload);
-          },
-          runWithBudget: (fn) => turnBudgetContext.run(budget, fn),
-          timeoutMs: TURN_TIMEOUT_MS,
-        });
-        const completion = modelTurnCompletion(observer.lastAssistantMessage, promptError, budget.failure, {
-          cancelled: entry.generation.aborted, timedOut,
-        });
-        const reply = completion.reply;
-        const error = completion.error;
-        const errorReason = completion.errorReason;
-        const toolCalls = entry.log.slice(before);
-        const change = turnChange(entry.turn);
-        const proposals = [...entry.turn.proposals];
-        const supplements = [...entry.turn.supplements];
-        const record = { turnId, userText, permissionMode:body.permissionMode, supplements, selectedNodeIds: selected, references, reply, toolCalls, change, proposals,
-          error, errorReason, cancelled: entry.generation.aborted, createdAt: new Date().toISOString() };
-        try { entry.manager.appendCustomEntry(TURN_ENTRY_TYPE, record); }
-        catch (persistError) { console.error(`agent-host: 轮次记录写入失败 ${persistError?.message || persistError}`); }
-        sendLine(res, { type: 'turn_end', turnId, reply, supplements, toolCalls, change, proposals, error, errorReason,
-          cancelled: entry.generation.aborted, persistence: entry.persistence,
-          sessionId: entry.sessionId, metrics: { firstTokenMs, totalMs: Date.now() - started,
-            requests: budget.requests, toolSteps: budget.toolSteps } });
-        res.end();
-        return;
-      } finally {
-        store.releaseChatSession(entry);
-      }
+        const record = await result;
+        if (!res.destroyed) { sendLine(res,{...record,type:'turn_end',persistence:entry.persistence,sessionId:entry.sessionId}); res.end(); }
+      } finally { entry.listeners.delete(listener); }
+      return;
     }
     respond(res, 404, { code: 404, reason: 'not_found' });
   } catch (error) {
@@ -607,8 +524,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   try {
-    await durable.disposeAll();
-    const released = await store.disposeAll();
+    const released = await durable.disposeAll();
     console.error(`agent-host: 关闭，释放 ${released} 个会话`);
   } catch (error) {
     console.error(`agent-host: 关闭时释放会话失败 ${error?.message || error}`);

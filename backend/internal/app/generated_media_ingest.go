@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"infinite-canvas/backend/internal/kernel"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/playback"
 	"infinite-canvas/backend/internal/taskdelivery"
@@ -13,9 +14,13 @@ func (s *Service) persistTaskGeneratedMediaResult(task model.Task, result map[st
 	if strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.UserID) == "" {
 		return nil, fmt.Errorf("生成结果缺少任务身份")
 	}
-	return s.generatedMediaIngestor().IngestResult(task.UserID, result, taskdelivery.IngestOptions{
+	persisted, err := s.generatedMediaIngestor().IngestResult(task.UserID, result, taskdelivery.IngestOptions{
 		EnforceQuota: true, IdentityPrefix: task.ID + ":inline",
 	})
+	if full := kernel.DiskFullError(err); full != nil {
+		return nil, full
+	}
+	return persisted, err
 }
 
 func (s *Service) persistGeneratedMediaResult(userID string, result map[string]interface{}) (map[string]interface{}, error) {

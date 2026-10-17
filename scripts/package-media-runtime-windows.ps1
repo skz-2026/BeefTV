@@ -23,15 +23,23 @@ try {
     $stage = Join-Path $scratch "media-runtime"
     New-Item -ItemType Directory -Path $stage | Out-Null
     Copy-Item -LiteralPath (Join-Path $upstream "bin\ffmpeg.exe") -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $upstream "bin\ffprobe.exe") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $upstream "LICENSE") -Destination $stage
     Copy-Item -LiteralPath (Join-Path $upstream "README.txt") -Destination $stage
     $binary = Join-Path $stage "ffmpeg.exe"
     $info = & $binary -version
     if ($LASTEXITCODE -ne 0 -or $info[0] -notmatch '^ffmpeg version 8\.0\.1-essentials_build') { throw "Unexpected FFmpeg runtime" }
+    $probe = Join-Path $stage "ffprobe.exe"
+    $probeInfo = & $probe -version
+    if ($LASTEXITCODE -ne 0 -or $probeInfo[0] -notmatch '^ffprobe version 8\.0\.1-essentials_build') { throw "Unexpected FFprobe runtime" }
     # Relocated native conversion works with no globally installed media tools.
     & $binary -nostdin -hide_banner -loglevel error -f lavfi -i "color=c=red:s=64x48:r=5:d=0.4" -threads 2 -c:v libx264 -pix_fmt yuv420p -y (Join-Path $scratch "probe.mp4")
     if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg H.264 smoke failed" }
-    $manifest = [ordered]@{version=$version; archiveURL=$url; archiveSHA256=$sha; binarySHA256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant(); license="GPL-3.0-or-later"; source="https://github.com/FFmpeg/FFmpeg/commit/894da5ca7d"}
+    $facts = & $probe -v error -protocol_whitelist file,pipe -show_entries stream=width,height:format=duration -of json (Join-Path $scratch "probe.mp4")
+    if ($LASTEXITCODE -ne 0) { throw "Bundled FFprobe smoke failed" }
+    $facts = ($facts -join "`n") | ConvertFrom-Json
+    if ($facts.streams[0].width -ne 64 -or $facts.streams[0].height -ne 48 -or [double]$facts.format.duration -le 0) { throw "Bundled FFprobe returned invalid metadata" }
+    $manifest = [ordered]@{version=$version; archiveURL=$url; archiveSHA256=$sha; binarySHA256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant(); probeSHA256=(Get-FileHash -LiteralPath $probe -Algorithm SHA256).Hash.ToLowerInvariant(); license="GPL-3.0-or-later"; source="https://github.com/FFmpeg/FFmpeg/commit/894da5ca7d"}
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage "manifest.json") -Encoding UTF8
     New-Item -ItemType Directory -Path (Split-Path -Parent ([IO.Path]::GetFullPath($Destination))) -Force | Out-Null
     Copy-Item -LiteralPath $stage -Destination $Destination -Recurse

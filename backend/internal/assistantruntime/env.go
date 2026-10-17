@@ -30,12 +30,6 @@ func (h *Host) buildEnv(provider assistant.Provider, pin childPin) []string {
 	set("BEEFTV_AGENT_HOST_TOKEN", h.hostToken())
 	set("BEEFTV_AGENT_DESKTOP_TOKEN", pin.DesktopTok)
 	set("BEEFTV_AGENT_API_KEY", provider.APIKey)
-	config, _ := h.EffectiveConfig()
-	newRuntime := "durable"
-	if config.NewSessionRuntime == "sdk" {
-		newRuntime = "sdk"
-	}
-	set("BEEFTV_AGENT_NEW_SESSION_RUNTIME", newRuntime)
 	if pin.Port > 0 {
 		set("BEEFTV_AGENT_PORT", strconv.Itoa(pin.Port))
 	} else {
@@ -102,7 +96,7 @@ func agentTunableKey(upper string) bool {
 		"BEEFTV_AGENT_TURN_TIMEOUT_MS", "BEEFTV_AGENT_MAX_REQUESTS_PER_TURN",
 		"BEEFTV_AGENT_MAX_TOOL_STEPS_PER_TURN", "BEEFTV_AGENT_TOTAL_REQUEST_BUDGET",
 		"BEEFTV_AGENT_ALLOWED_ORIGIN", "BEEFTV_AGENT_READ_ONLY",
-		"BEEFTV_AGENT_MAX_REQUESTS":
+		"BEEFTV_AGENT_MAX_REQUESTS", "BEEFTV_AGENT_THINKING":
 		return true
 	}
 	return false

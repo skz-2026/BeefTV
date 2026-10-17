@@ -138,7 +138,7 @@ func (s *Service) Process(ctx context.Context, task *model.Task) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return s.fail(task, stageFailed, s.truncate(runErr.Error(), 800))
+		return s.fail(task, stageFailed, workerFailureSummary(runErr.Error()))
 	}
 	if err := ctx.Err(); err != nil {
 		return err

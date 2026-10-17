@@ -211,10 +211,6 @@ function clearCanvasSaveTimer(scope: string) {
     canvasSaveTimers.delete(scope);
 }
 
-export function canvasStoreStorageRevision(scope: string) {
-    return observedCanvasPersists.get(scope)?.revision ?? 0;
-}
-
 /** 该作用域最近一次落进浏览器存储的画布内容；没有记录返回 undefined。 */
 export function canvasDurableSnapshot(scope: string, projectId: string) {
     return observedCanvasPersists.get(scope)?.projects.find((project) => project.id === projectId);
@@ -442,16 +438,6 @@ export function pendingCanvasStorePersistence(scope: string) {
     return queued ? { projects: queued.state.projects, token: queued.token } : null;
 }
 
-export function rebasePendingCanvasStorePersistenceAfterGenerationCommitLocked(scope: string, committed: CanvasStorageDocument) {
-    const queued = queuedCanvasPersists.get(scope);
-    if (!queued) return;
-    const latestMemory = canvasMemoryStates.get(scope)?.projects ?? queued.state.projects;
-    // Dedicated commit 已确认 generation stamp；用同 scope 最新内存重新投影队列，避免同节点普通编辑被旧 durable 快照替换。
-    queued.baseProjects = committed.state.projects;
-    queued.baseRevision = committed.storageRevision;
-    queued.state = ordinaryCanvasPersistenceState(scope, { projects: latestMemory }, committed.state.projects);
-}
-
 export function withCanvasStorePersistenceSuppressed<T>(operation: () => T) {
     suppressCanvasStorePersistence += 1;
     try {
@@ -612,7 +598,9 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
         nodes.push({ ...node, metadata });
     }
     const chatSessions: CanvasAssistantSession[] = [];
-    for (const session of project.chatSessions) {
+    // Backend-created canvases may omit assistant sessions. Treat the missing
+    // optional collection like an empty one, as document hydration does.
+    for (const session of project.chatSessions || []) {
         const durableSession = durableSessions.get(session.id);
         const durableKeys = durableSession?.generationEffectKeys;
         if (durableProject && hasUnconfirmedGenerationKey(session.generationEffectKeys, durableKeys)) {
@@ -677,14 +665,6 @@ function ordinaryCanvasPersistenceState(scope: string, state: PersistedCanvasSta
     };
 }
 
-export function reconcileCanvasGenerationFailure(scope: string, durableProjects: CanvasProject[]) {
-    if (getActiveUserScope() !== scope) return;
-    const projects = ordinaryCanvasPersistenceState(scope, { projects: useCanvasStore.getState().projects }, durableProjects).projects;
-    withCanvasStorePersistenceSuppressed(() => {
-        useCanvasStore.setState({ projects });
-    });
-}
-
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
         const scope = getActiveUserScope();
@@ -745,6 +725,12 @@ export async function flushCanvasStorePersistence() {
         if (writes.length) await Promise.all(writes);
         else if (canvasStorageTails.size) await Promise.all([...canvasStorageTails.values()]);
     }
+}
+
+export function hasActiveCanvasStorePersistence() {
+    // Failed queues remain retryable, but only a timer or storage tail can
+    // still perform IO without another explicit save request.
+    return canvasStorageTails.size > 0 || canvasSaveTimers.size > 0;
 }
 
 export const useCanvasStore = create<CanvasStore>()(

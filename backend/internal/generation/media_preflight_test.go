@@ -44,6 +44,50 @@ func TestMediaTransportUsesSelectedContractBeforeReadingFiles(t *testing.T) {
 	}
 }
 
+func TestBytePlusRejectsOnlyLocalVideoBeforeHydration(t *testing.T) {
+	input := Input{Mode: "video", Config: Config{InterfaceType: "volcengine-ark-video", BaseURL: "https://ark.ap-southeast.bytepluses.com/api/v3"}, ReferenceImages: []Media{{StorageKey: "resource:image"}}, ReferenceAudios: []Media{{DataURL: "data:audio/wav;base64,YQ=="}}}
+	for _, tc := range []struct {
+		name    string
+		media   Media
+		blocked bool
+	}{
+		{"resource", Media{StorageKey: "resource:private-video"}, true},
+		{"inline", Media{DataURL: "data:video/mp4;base64,YQ=="}, true},
+		{"inline URL", Media{URL: "data:video/mp4;base64,YQ=="}, true},
+		{"blob", Media{URL: "blob:local"}, true},
+		{"HTTPS", Media{URL: "https://cdn.example/video.mp4?signature=test"}, false},
+		{"asset", Media{URL: "asset://asset-test"}, false},
+		{"embedded credentials", Media{URL: "https://user:secret@cdn.example/video.mp4"}, true},
+		{"stale remote on resource", Media{StorageKey: "resource:private-video", URL: "https://cdn.example/video.mp4"}, true},
+		{"URL takes precedence", Media{URL: "https://cdn.example/video.mp4", DataURL: "data:video/mp4;base64,YQ=="}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input.ReferenceVideos = []Media{tc.media}
+			err := ValidateMediaTransport(context.Background(), input)
+			if (err != nil) != tc.blocked {
+				t.Fatalf("error = %v", err)
+			}
+			if err != nil {
+				var appErr *kernel.AppError
+				if !errors.As(err, &appErr) || appErr.Reason != "reference_media_requires_url" || !strings.Contains(err.Error(), "参考视频 1") || strings.Contains(err.Error(), "private-video") || strings.Contains(err.Error(), "secret") {
+					t.Fatalf("unactionable or leaked error: %v", err)
+				}
+			}
+		})
+	}
+	input.ReferenceVideos = nil
+	if err := ValidateMediaTransport(context.Background(), input); err != nil {
+		t.Fatalf("local image/audio blocked: %v", err)
+	}
+	input.ReferenceVideos = []Media{{StorageKey: "resource:video"}}
+	for _, host := range []string{"https://ark.cn-beijing.volces.com/api/v3", "https://other.example/api/v3", "https://ark.ap-southeast.bytepluses.com.example/api/v3"} {
+		input.Config.BaseURL = host
+		if err := ValidateMediaTransport(context.Background(), input); err != nil {
+			t.Fatalf("changed other host %s: %v", host, err)
+		}
+	}
+}
+
 func TestMediaTransportNamesOnlyBlockedReferences(t *testing.T) {
 	input := Input{Config: Config{InterfaceType: "newapi-channel-2"}, ReferenceImages: []Media{{URL: "https://cdn.example/ok.png"}, {StorageKey: "resource:private-secret"}}, ReferenceVideos: []Media{{StorageKey: "resource:video"}}, ReferenceAudios: []Media{{URL: "data:audio/mp3;base64,YQ=="}}}
 	err := ValidateMediaTransport(context.Background(), input)

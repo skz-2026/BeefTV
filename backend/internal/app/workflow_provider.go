@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"infinite-canvas/backend/internal/generation"
 	"infinite-canvas/backend/internal/provider/workflow"
 )
 
@@ -82,6 +83,10 @@ func (s *Service) fenceWorkflowSubmission(ctx context.Context, input workflow.In
 		return err
 	}
 	mapped := uncertainVideoSubmission(ctx, err)
+	var notSent generation.RequestNotSentError
+	if errors.As(mapped, &notSent) {
+		return mapped
+	}
 	var unknown providerSubmissionUnknownError
 	if errors.As(mapped, &unknown) {
 		return mapped

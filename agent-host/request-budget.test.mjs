@@ -80,8 +80,8 @@ describe("server 接线", () => {
     });
 
     test("预算按轮构造并跑在独立的异步上下文里", () => {
-        expect(serverSource).toContain("turnBudgetContext.run(budget");
-        expect(serverSource).toContain("createTurnBudget({ maxRequests: MAX_REQUESTS_PER_TURN");
+        expect(serverSource).toContain("turnBudgetContext.run(entry.budget");
+        expect(serverSource).toContain("createDurableTurnBudget(entry,{maxRequests:MAX_REQUESTS_PER_TURN");
         expect(serverSource).not.toContain("MAX_MODEL_REQUESTS");
         expect(serverSource).not.toContain("readFileSync(ledgerPath");
     });
@@ -92,6 +92,7 @@ describe("server 接线", () => {
     });
 
     test("Chat 信封里的引用进入模型上下文", () => {
-        expect(serverSource).toContain("turnContextPrefix({ canvasId, selectedNodeIds: selected, references,permissionMode:body.permissionMode })");
+        // Durable 路径把整封 Chat 信封交给 turnContextPrefix：选中对象与引用都在其中。
+        expect(serverSource).toContain("turnContextPrefix(body)");
     });
 });

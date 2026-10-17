@@ -90,6 +90,9 @@ func RunHelperRequest(req HelperRequest) error {
 	}
 	var releaseLock func()
 	defer func() {
+		if result.Error != "" && result.Status != "rolled_back" {
+			result.Status = "failed"
+		}
 		// Startup cleanup must see the final record before it can take the lock.
 		writeRecovery()
 		if releaseLock != nil {
@@ -194,6 +197,9 @@ func pathExists(path string) bool {
 }
 
 func (e *Engine) prepareAndStartHelper(ctx context.Context, staged *stagedUpdate) error {
+	started := time.Now()
+	defer func() { e.logf("install preparation elapsed=%s", time.Since(started).Round(time.Millisecond)) }()
+	e.setPhase("verifying")
 	target, err := e.locate()
 	if err != nil {
 		return err
@@ -236,14 +242,30 @@ func (e *Engine) prepareAndStartHelper(ctx context.Context, staged *stagedUpdate
 		return err
 	}
 	hash := sha256.New()
-	n, copyErr := io.Copy(hash, io.LimitReader(archive, staged.artifact.Size+1))
+	n, copyErr := io.Copy(hash, io.LimitReader(contextReader{ctx, archive}, staged.artifact.Size+1))
 	_ = archive.Close()
+	if ctx.Err() != nil {
+		return ErrPreparationTimeout
+	}
 	if copyErr != nil || n != staged.artifact.Size || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), staged.artifact.SHA256) {
 		return ErrTampered
 	}
 	payloadPath := filepath.Join(workDir, "payload")
-	if err := extractSecureZip(staged.archive, payloadPath, defaultExtractLimits()); err != nil {
+	e.setPhase("extracting")
+	if err := extractSecureZipWithProgress(ctx, staged.archive, payloadPath, defaultExtractLimits(), func(completed, total int) {
+		e.set(func(state *UpdateState) { state.CompletedFiles, state.TotalFiles = completed, total })
+	}); err != nil {
+		if ctx.Err() != nil {
+			return ErrPreparationTimeout
+		}
 		return err
+	}
+	e.setPhase("preparing")
+	if err := validateExtractedLayout(payloadPath, staged.platform); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidArchive, err)
+	}
+	if ctx.Err() != nil {
+		return ErrPreparationTimeout
 	}
 	req := HelperRequest{
 		DataDir:        e.dataDir,

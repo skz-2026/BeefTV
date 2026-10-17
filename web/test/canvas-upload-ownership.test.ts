@@ -77,11 +77,12 @@ describe("persistOwnedCanvasUploadNode", () => {
         }
     });
 
-    test("confirmed persist writes assetId, invalidates project, and reports saved", async () => {
+    test("confirmed persist writes assetId synchronously to nodesRef and setNodes, invalidates project, and reports saved", async () => {
         const restore = switchScope("owner-a");
         const lifetime = createCanvasOwnerLifetime();
         const expectedScope = captureUserScope();
         const owner = lifetime.capture("canvas-a", "owner-a");
+        const nodesRef = { current: [imageNode("media-1")] };
         const setNodesCalls: string[][] = [];
         const invalidated: string[] = [];
         try {
@@ -94,12 +95,14 @@ describe("persistOwnedCanvasUploadNode", () => {
                 domainProjectId: "project-a",
                 node: imageNode("media-1"),
             }, persistDeps({
+                nodesRef,
                 setNodes: (updater) => {
                     setNodesCalls.push(updater([imageNode("media-1")]).map((node) => String(node.metadata?.assetId || "")));
                 },
                 invalidateProject: async (projectId) => { invalidated.push(projectId); },
             }));
             expect(result).toEqual({ applied: true, confirmed: true, assetId: "asset-1", linkedToProject: true });
+            expect(nodesRef.current[0]?.metadata?.assetId).toBe("asset-1");
             expect(setNodesCalls).toEqual([["asset-1"]]);
             expect(invalidated).toEqual(["project-a"]);
         } finally {

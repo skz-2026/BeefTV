@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
@@ -10,6 +11,7 @@ import { createOperationBridge } from './operation-bridge.mjs';
 import { createDurableSessionStore } from './durable-session-owner.mjs';
 
 const [directory, phase] = process.argv.slice(2);
+const selectedSkillPin = { skillId: 'selected', versionId: 'v1', contentHash: createHash('sha256').update('selected-fixture-skill-v1').digest('hex') };
 fs.mkdirSync(directory, { recursive: true });
 const businessPath = path.join(directory, 'business.json');
 const read = () => fs.existsSync(businessPath) ? JSON.parse(fs.readFileSync(businessPath, 'utf8')) : { nodes: 0, edges: 0, executions: 0, receipts: {}, completed: 0 };
@@ -34,7 +36,12 @@ const send = (res, tool, text = 'fixture complete') => {
   frame({}, tool ? 'tool_calls' : 'stop'); res.end('data: [DONE]\n\n');
 };
 const unsafe = phase.startsWith('unsafe');
-const descriptors = [unsafe ? 'future.paid.submit' : 'canvas.nodes.create', 'canvas.edge.create'].map((id) => ({ id, summary: id, params: { type: 'object', properties: { canvasId: { type: 'string' } } }, readOnly: false }));
+const policies = JSON.parse(fs.readFileSync(new URL('./operation-descriptors.fixture.json', import.meta.url), 'utf8'));
+const descriptors = [unsafe ? 'future.paid.submit' : 'canvas.nodes.create', 'canvas.edge.create'].map((id) => ({
+  ...policies.find(descriptor => descriptor.id === id),
+  ...(id === 'future.paid.submit' ? { assistantModes: ['full-access'], replay: 'unsafe' } : {}),
+  id, summary: id, params: { type: 'object', properties: { canvasId: { type: 'string' } } }, readOnly: false,
+}));
 const server = createServer(async (req, res) => {
   let raw = ''; for await (const chunk of req) raw += chunk;
   if (req.url === '/ops') { res.end(JSON.stringify({ code: 0, data: { ops: descriptors } })); return; }
@@ -234,7 +241,7 @@ try {
     fs.writeFileSync(path.join(directory, 'denied.json'), JSON.stringify({ modelRequests, state: read() }));
   } else {
     const input = { turnId: 'fixture-turn', permissionMode:'full-access', content: 'Create two nodes and connect references', userText: 'Create two nodes and connect references', revisionBefore: 1,
-      skills: [{ skillId: 'selected', versionId: 'v1', contentHash: 'fixture-hash' }] };
+      skills: [selectedSkillPin] };
     const submission = ['resume', 'closed-resume', 'unsafe-resume', 'supplement-resume'].includes(phase) ? await store.recover(entry) : await store.submit(entry, input);
     const originalPath = path.join(directory, 'submission-id');
     if (fs.existsSync(originalPath)) assert.equal(String(submission.id), fs.readFileSync(originalPath, 'utf8'));
@@ -268,7 +275,7 @@ try {
     }
     const record = await store.wait(entry, submission);
     assert.equal(record.reply, 'fixture complete');
-    assert.equal(record.skills[0].versionId, 'v1');
+    assert.deepEqual(record.skills, [selectedSkillPin]);
     if (phase === 'resume') { assert.equal(read().nodes, 2); assert.equal(read().edges, 2); assert.equal(read().executions, 3); }
     if (phase === 'unsafe-resume') { assert.equal(read().nodes, 2); assert.equal(read().edges, 0); assert.equal(read().executions, 1); }
     if (phase === 'closed-resume') { assert.equal(modelRequests, 0); assert.equal(read().completed, 1); }
