@@ -238,6 +238,76 @@
             "description": "插件命名空间内的厂商扩展字段。"
           }
         ],
+        "validations": [
+          {
+            "assert": {
+              "$lte": [
+                {
+                  "$len": {
+                    "$ref": "request.images"
+                  }
+                },
+                7
+              ]
+            },
+            "message": "本插件最多透传 7 张有序参考图（对应本地 ComfyUI/newapi 网关多参考图流水线），超出请在网关侧扩展槽位。"
+          },
+          {
+            "assert": {
+              "$lte": [
+                {
+                  "$len": {
+                    "$ref": "request.audios"
+                  }
+                },
+                3
+              ]
+            },
+            "message": "本插件最多透传 3 路参考音频，请移除多余音频。"
+          },
+          {
+            "assert": {
+              "$eq": [
+                {
+                  "$len": {
+                    "$ref": "request.videos"
+                  }
+                },
+                0
+              ]
+            },
+            "message": "本插件协议不支持参考视频，请选择支持该素材的请求协议。"
+          },
+          {
+            "assert": {
+              "$eq": [
+                {
+                  "$len": {
+                    "$filter": {
+                      "from": {
+                        "$ref": "request.images"
+                      },
+                      "as": "media",
+                      "where": {
+                        "$in": [
+                          {
+                            "$ref": "media.role"
+                          },
+                          [
+                            "mask",
+                            "last_frame"
+                          ]
+                        ]
+                      }
+                    }
+                  }
+                },
+                0
+              ]
+            },
+            "message": "本插件按有序参考图透传，不支持蒙版或尾帧角色，请改用普通参考图。"
+          }
+        ],
         "create": {
           "method": "POST",
           "path": "/v1/videos",

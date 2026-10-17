@@ -17,6 +17,17 @@ func ResolveFFmpeg() (string, error) {
 }
 
 func ResolveFFprobe() (string, error) {
+	// ffprobe 与 ffmpeg 同源分发：CANVAS_FFPROBE_PATH 显式指定优先由 resolveTool 处理，
+	// 这里在通用解析链之前先尝试 CANVAS_FFMPEG_PATH 同目录的 ffprobe。
+	if configured := strings.TrimSpace(os.Getenv(FFmpegPathEnv)); configured != "" {
+		dir := filepath.Dir(configured)
+		for _, name := range []string{"ffprobe.exe", "ffprobe"} {
+			candidate := filepath.Join(dir, name)
+			if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
+				return candidate, nil
+			}
+		}
+	}
 	return resolveTool("ffprobe", FFprobePathEnv)
 }
 
@@ -61,40 +72,4 @@ func bundledTool(executable, tool string) string {
 		}
 	}
 	return ""
-}
-
-// ResolveFFprobe 与 ffmpeg 同源解析：CANVAS_FFMPEG_PATH 同目录的 ffprobe 优先，
-// 其次可执行文件旁的 media-runtime，最后 PATH。桌面安装包两者始终同目录分发。
-func ResolveFFprobe() (string, error) {
-	probeNames := []string{"ffprobe.exe", "ffprobe"}
-	if configured := strings.TrimSpace(os.Getenv(FFmpegPathEnv)); configured != "" {
-		dir := filepath.Dir(configured)
-		for _, name := range probeNames {
-			candidate := filepath.Join(dir, name)
-			if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
-				return candidate, nil
-			}
-		}
-	}
-	if executable, err := os.Executable(); err == nil {
-		if resolved, e := filepath.EvalSymlinks(executable); e == nil {
-			executable = resolved
-		}
-		dir := filepath.Dir(executable)
-		if filepath.Base(dir) == "cli" {
-			dir = filepath.Dir(dir)
-		}
-		for _, media := range []string{filepath.Join(dir, "agent-host", "media-runtime"), filepath.Join(dir, "media-runtime")} {
-			for _, name := range probeNames {
-				candidate := filepath.Join(media, name)
-				if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
-					return candidate, nil
-				}
-			}
-		}
-	}
-	if path, err := exec.LookPath("ffprobe"); err == nil {
-		return path, nil
-	}
-	return "", fmt.Errorf("媒体探测工具不可用，请重新安装应用")
 }

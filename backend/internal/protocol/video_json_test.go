@@ -67,12 +67,14 @@ func TestVideoGenerationsJSONPreservesMediaAndOptions(t *testing.T) {
 
 func TestOpenAIVideosRejectsMediaItCannotSend(t *testing.T) {
 	a := officialPackageAdapter(t, "openai-videos.beeftv-plugin", "newapi")
+	// 本 fork 保留多参考图/参考音频透传（本地 ComfyUI/newapi 网关流水线），
+	// 只拒绝协议确实发不出去的素材：参考视频、蒙版/尾帧角色、超出文件槽位的数量。
 	for name, request := range map[string]GenerationRequest{
-		"two images": {Images: []MediaReference{{URL: "https://example.com/a.png"}, {URL: "https://example.com/b.png"}}},
-		"video":      {Videos: []MediaReference{{URL: "https://example.com/a.mp4"}}},
-		"audio":      {Audios: []MediaReference{{URL: "https://example.com/a.wav"}}},
-		"last frame": {Images: []MediaReference{{URL: "https://example.com/a.png", Role: "last_frame"}}},
-		"mask":       {Images: []MediaReference{{URL: "https://example.com/a.png", Role: "mask"}}},
+		"video":          {Videos: []MediaReference{{URL: "https://example.com/a.mp4"}}},
+		"last frame":     {Images: []MediaReference{{URL: "https://example.com/a.png", Role: "last_frame"}}},
+		"mask":           {Images: []MediaReference{{URL: "https://example.com/a.png", Role: "mask"}}},
+		"image overflow": {Images: []MediaReference{{URL: "https://example.com/a.png"}, {URL: "https://example.com/b.png"}, {URL: "https://example.com/c.png"}, {URL: "https://example.com/d.png"}, {URL: "https://example.com/e.png"}, {URL: "https://example.com/f.png"}, {URL: "https://example.com/g.png"}, {URL: "https://example.com/h.png"}}},
+		"audio overflow": {Audios: []MediaReference{{URL: "https://example.com/1.wav"}, {URL: "https://example.com/2.wav"}, {URL: "https://example.com/3.wav"}, {URL: "https://example.com/4.wav"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			request.Capability, request.Model, request.Prompt = CapabilityVideo, "seedance-2.5", "move"
@@ -86,5 +88,10 @@ func TestOpenAIVideosRejectsMediaItCannotSend(t *testing.T) {
 		if err != nil || spec.ContentType != "multipart/form-data" || len(spec.Files) != len(images) {
 			t.Fatalf("spec=%+v err=%v", spec, err)
 		}
+	}
+	// 多参考图与参考音频按声明槽位透传，不静默丢件。
+	multi, err := a.BuildCreate(context.Background(), RequestContext{Request: GenerationRequest{Model: "sora-2", Prompt: "move", Images: []MediaReference{{URL: "https://example.com/a.png"}, {URL: "https://example.com/b.png"}, {URL: "https://example.com/c.png"}}, Audios: []MediaReference{{URL: "https://example.com/a.wav"}}}})
+	if err != nil || len(multi.Files) != 4 {
+		t.Fatalf("multi-reference spec=%+v err=%v", multi, err)
 	}
 }

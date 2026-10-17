@@ -241,6 +241,49 @@
     "replay": "safe"
   },
   {
+    "id": "canvas.motion.render",
+    "summary": "用已导入的动效模板本地渲染成片（免费、确定性、不调用付费生成）",
+    "readOnly": false,
+    "scope": "canvas",
+    "params": {
+      "properties": {
+        "canvasId": {
+          "type": "string"
+        },
+        "contentDigest": {
+          "type": "string"
+        },
+        "operationId": {
+          "description": "调用方生成的稳定幂等键；重试同一操作必须复用同一个值，服务端据此回读原结果",
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "templateId": {
+          "type": "string"
+        },
+        "versionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "canvasId",
+        "templateId",
+        "versionId",
+        "contentDigest",
+        "params",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    "assistantModes": [
+      "full-access",
+      "canvas"
+    ],
+    "replay": "safe"
+  },
+  {
     "id": "canvas.node.bind_asset",
     "summary": "把已上传的素材库图片/视频/音频绑定到已有同类型参考节点；写入真实资源与素材身份，不生成不付费，再用 edge.create 连接生成节点",
     "readOnly": false,
