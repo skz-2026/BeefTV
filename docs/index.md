@@ -23,6 +23,7 @@ BeefTV 是一个本地优先、轻量、AI Native 的视频工作台。本页只
 
 ## 开发参考
 
+- [Fork 与上游合并指南](refactor/fork-upstream-merge.md)
 - [后端本地开发](content/docs/backend/local-development.mdx)
 - [HTTP API](content/docs/backend/http-api.mdx)
 - [代码地图](content/docs/backend/code-map.mdx)
