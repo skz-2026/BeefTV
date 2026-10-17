@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"infinite-canvas/backend/internal/mediatools"
 	"infinite-canvas/backend/internal/sysproc"
 	"math"
 	"os/exec"
@@ -13,9 +14,9 @@ import (
 
 // Probe reads codec_type streams and container duration from a local media file.
 func Probe(ctx context.Context, path string) (SourceFacts, error) {
-	bin, err := exec.LookPath("ffprobe")
+	bin, err := mediatools.ResolveFFprobe()
 	if err != nil {
-		return SourceFacts{}, fmt.Errorf("媒体探测依赖未安装（需要 ffprobe）")
+		return SourceFacts{}, err
 	}
 	cmd := exec.CommandContext(ctx, bin,
 		"-v", "error", "-show_entries", "stream=codec_type:format=duration",

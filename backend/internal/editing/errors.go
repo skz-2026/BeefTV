@@ -21,4 +21,5 @@ var (
 	ErrUnsupportedKind      = errors.New("不支持的片段类型")
 	ErrInvalidOutput        = errors.New("输出尺寸、帧率或采样率无效")
 	ErrInvalidDuration      = errors.New("时间线或片段时长无效")
+	ErrInvalidOverlay       = errors.New("叠加层参数无效")
 )

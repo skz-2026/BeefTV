@@ -8,14 +8,14 @@ import { createZip } from "@/lib/zip";
 import { audioSpeechProfile } from "@/lib/audio-generation";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { resolveModelRequestConfig, useConfigStore } from "@/stores/use-config-store";
-import { defaultStorybookAudioModel, fetchVoiceforgeVoices, isVoiceforgeModel, storybookAudioModelOptions, storybookLineHash, synthesizeStorybookLine, VOICEFORGE_FALLBACK_VOICES, type StorybookVoice } from "@/services/storybook-audio";
+import { defaultStorybookAudioModel, fetchVoiceforgeVoices, isVoiceforgeModel, storybookAudioModelOptions, synthesizeStorybookLine, VOICEFORGE_FALLBACK_VOICES, type StorybookVoice } from "@/services/storybook-audio";
 import { exportStorybookVideo, type StorybookVideoProgress } from "@/services/storybook-video";
+import { applyEditOverlay, collectEditOverlay, lineAudioStale, withPanelMeta, type LineAudio } from "./edit-overlay";
 
 // ---------- 绘本数据合同（画布节点承载） ----------
 // storybook-config 文本节点 content：{ kind, title, subtitle, style, pageEnd, audio?, castVoices?, pages }
 // panel-* 图片节点：metadata.narration = { text, audio? }，metadata.dialogue = [{ speaker, name, text, audio? }]
 // 音频引用放在嵌套字段，顶层 storageKey/content 仍是图片本体（canvas_asset_guard 只校验顶层媒体引用）。
-type LineAudio = { storageKey: string; url: string; durationMs: number; textHash: string; mimeType?: string; bytes?: number };
 type DialogueLine = { speaker: string; name: string; text: string; audio?: LineAudio; /** 气泡在整页图上的归一化位置（缺失时按序自动摆放） */ x?: number; y?: number; w?: number; tail?: "bl" | "br" };
 
 /** 无坐标对白的默认气泡摆放：两句左右交替、超过两行下移 */
@@ -116,40 +116,6 @@ function parseStorybook(canvas: CanvasProject): { config: StorybookConfig | null
         config.audio = { model: "", narratorVoice: "alloy", narratorInstructions: DEFAULT_NARRATOR_INSTRUCTIONS, speed: "0.9" };
     }
     return { config, panels, cast };
-}
-
-// ---------- 成书页可编辑字段的写回合同（panel-* metadata 与 storybook-config content 整体覆盖） ----------
-type EditOverlay = {
-    panelMeta: Map<string, Record<string, unknown>>;
-    configContent: string | null;
-};
-function collectEditOverlay(project: CanvasProject): EditOverlay {
-    const panelMeta = new Map<string, Record<string, unknown>>();
-    let configContent: string | null = null;
-    for (const node of project.nodes) {
-        const md = (node.metadata ?? {}) as Record<string, unknown>;
-        if (node.id.startsWith("panel-") && node.type === "image") panelMeta.set(node.id, md);
-        else if (node.id === "storybook-config" && typeof md.content === "string") configContent = md.content;
-    }
-    return { panelMeta, configContent };
-}
-function applyEditOverlay(nodes: CanvasProject["nodes"], overlay: EditOverlay): CanvasProject["nodes"] {
-    return nodes.map((node) => {
-        const meta = overlay.panelMeta.get(node.id);
-        if (meta) return { ...node, metadata: { ...(node.metadata ?? {}), ...meta } };
-        if (node.id === "storybook-config" && overlay.configContent) {
-            return { ...node, metadata: { ...(node.metadata ?? {}), content: overlay.configContent } };
-        }
-        return node;
-    });
-}
-
-function withPanelMeta(doc: CanvasProject, pid: string, patch: (md: Record<string, unknown>) => Record<string, unknown>): CanvasProject {
-    return { ...doc, nodes: doc.nodes.map((node) => (node.id === `panel-${pid}` ? { ...node, metadata: patch({ ...(node.metadata ?? {}) }) } : node)) };
-}
-
-function lineAudioStale(audio: LineAudio | undefined, text: string, voice?: string): boolean {
-    return !audio || !audio.storageKey || audio.textHash !== storybookLineHash(text, voice);
 }
 
 // ---------- 页面 ----------
@@ -849,6 +815,14 @@ export default function StorybookBookPage() {
             c.arcTo(x, y, x + w, y, r);
             c.closePath();
         };
+        // 单行长文字（书名/副题/封底语）不换行，按页宽自适应缩号到放得下为止
+        const fitFont = (text: string, base: number, min: number, weight = "") => {
+            let fs = base;
+            const setFont = () => { ctx.font = `${weight ? `${weight} ` : ""}${fs}px ${kai}`; };
+            setFont();
+            const maxW = geo.w * 0.88;
+            while (fs > min && ctx.measureText(text).width > maxW) { fs -= 4; setFont(); }
+        };
         const panel = page.panel ? panels.get(page.panel) : undefined;
         // 整页大图(contain 居中)，旁白与对白全部叠加在图上（与 DOM 视图同合同）
         if (panel?.imageSrc) {
@@ -879,10 +853,10 @@ export default function StorybookBookPage() {
             ctx.fillStyle = grad;
             ctx.fillRect(0, 0, geo.w, geo.h * 0.3);
             ctx.fillStyle = INK;
-            ctx.font = `bold 104px ${kai}`;
+            fitFont(config.title || "未命名绘本", 104, 52, "bold");
             ctx.fillText(config.title || "未命名绘本", geo.w / 2, geo.h * 0.11);
             if (config.subtitle) {
-                ctx.font = `46px ${kai}`;
+                fitFont(config.subtitle, 46, 26);
                 ctx.fillStyle = "#6d5f4c";
                 ctx.fillText(config.subtitle, geo.w / 2, geo.h * 0.175);
             }
@@ -964,9 +938,9 @@ export default function StorybookBookPage() {
             }
         } else {
             ctx.fillStyle = INK;
-            ctx.font = `bold 88px ${kai}`;
+            fitFont(config.pageEnd || "—— 完 ——", 88, 40, "bold");
             ctx.fillText(config.pageEnd || "—— 完 ——", geo.w / 2, geo.h / 2 - 40);
-            ctx.font = `44px ${kai}`;
+            fitFont(config.title || "", 44, 24);
             ctx.fillStyle = "#6d5f4c";
             ctx.fillText(config.title || "", geo.w / 2, geo.h / 2 + 70);
         }
@@ -981,6 +955,54 @@ export default function StorybookBookPage() {
         a.click();
         setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
     }, []);
+
+    /** 导出完成度门禁：导出前亮出缺图/未绑帧/缺配音/配音过期，确认后才继续（防占位灰页混进成品） */
+    const confirmExportReadiness = useCallback(async (scope: "zip" | "video"): Promise<boolean> => {
+        if (!config) return false;
+        const pageLabel = (i: number, type: StorybookPage["type"]) => (type === "cover" ? "封面" : type === "end" ? "封底" : `第 ${i} 页`);
+        const missingImgPages: string[] = [];
+        const unboundPages: string[] = [];
+        for (let i = 0; i < config.pages.length; i++) {
+            const pg = config.pages[i];
+            if (pg.type === "end") continue;
+            const panel = pg.panel ? panels.get(pg.panel) : undefined;
+            if (!panel) unboundPages.push(pageLabel(i, pg.type));
+            else if (!panel.imageSrc) missingImgPages.push(`${pageLabel(i, pg.type)}（${pg.panel}）`);
+        }
+        let missingAudio = 0;
+        let staleAudio = 0;
+        if (scope === "video") {
+            for (const pg of config.pages) {
+                const panel = pg.panel ? panels.get(pg.panel) : undefined;
+                if (!panel) continue;
+                if (panel.narration.text) {
+                    if (!panel.narration.audio) missingAudio++;
+                    else if (lineAudioStale(panel.narration.audio, panel.narration.text, narratorVoiceOf().voice)) staleAudio++;
+                }
+                for (const line of panel.dialogue) {
+                    if (!line.text.trim()) continue;
+                    if (!line.audio) missingAudio++;
+                    else if (lineAudioStale(line.audio, line.text, castVoiceOf(line.speaker, line.name).voice)) staleAudio++;
+                }
+            }
+        }
+        if (!missingImgPages.length && !unboundPages.length && !missingAudio && !staleAudio) return true;
+        const issues: string[] = [];
+        if (missingImgPages.length) issues.push(`${missingImgPages.length} 页插画未生成，导出会是占位灰页：${missingImgPages.slice(0, 6).join("、")}${missingImgPages.length > 6 ? " 等" : ""}`);
+        if (unboundPages.length) issues.push(`${unboundPages.length} 页未绑定插画帧：${unboundPages.slice(0, 6).join("、")}${unboundPages.length > 6 ? " 等" : ""}`);
+        if (missingAudio) issues.push(`${missingAudio} 句台词未配音，视频里对应页按默认停留处理`);
+        if (staleAudio) issues.push(`${staleAudio} 句台词文字已改、配音过期，视频不会用过期配音`);
+        return await new Promise<boolean>((resolve) => {
+            modal.confirm({
+                title: scope === "video" ? "导出有声视频前有未完成项" : "导出全册 ZIP 前有未完成项",
+                content: (<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>{issues.map((s) => <div key={s}>· {s}</div>)}</div>),
+                okText: "仍要导出",
+                cancelText: "先去补齐",
+                onOk: () => resolve(true),
+                onCancel: () => resolve(false),
+            });
+        });
+    }, [castVoiceOf, config, modal, narratorVoiceOf, panels]);
 
     const exportPagePng = useCallback(async () => {
         const canvasEl = await renderPageCanvas(pageIndex);
@@ -997,6 +1019,7 @@ export default function StorybookBookPage() {
 
     const exportAllZip = useCallback(async () => {
         if (!config) return;
+        if (!(await confirmExportReadiness("zip"))) return;
         setExporting({ done: 0, total: config.pages.length });
         try {
             const files: Array<{ name: string; data: BlobPart }> = [];
@@ -1015,7 +1038,7 @@ export default function StorybookBookPage() {
         } finally {
             setExporting(null);
         }
-    }, [config, renderPageCanvas, downloadBlob, message]);
+    }, [config, confirmExportReadiness, renderPageCanvas, downloadBlob, message]);
 
     // ---------- 有声视频导出：页 PNG + 行音频 → 时间线 → ffmpeg.wasm MP4 ----------
     const exportVideo = useCallback(async () => {
@@ -1024,6 +1047,7 @@ export default function StorybookBookPage() {
             message.error("精简版未包含 FFmpeg 本地媒体工具，无法导出视频");
             return;
         }
+        if (!(await confirmExportReadiness("video"))) return;
         const controller = new AbortController();
         videoAbortRef.current = controller;
         setExportingVideo({ phase: "render", percent: 0, detail: "渲染页面" });
@@ -1073,7 +1097,7 @@ export default function StorybookBookPage() {
             videoAbortRef.current = null;
             setExportingVideo(null);
         }
-    }, [castVoiceOf, config, narratorVoiceOf, orientation, panels, renderPageCanvas, downloadBlob, message]);
+    }, [castVoiceOf, config, confirmExportReadiness, narratorVoiceOf, orientation, panels, renderPageCanvas, downloadBlob, message]);
 
     // 键盘：←/→ 翻页；Ctrl+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做（输入框内跳过）
     useEffect(() => {
@@ -1105,6 +1129,29 @@ export default function StorybookBookPage() {
     useEffect(() => {
         if (config && pageIndex >= config.pages.length) setPageIndex(Math.max(0, config.pages.length - 1));
     }, [config, pageIndex]);
+
+    // ---------- 误关防护：有未保存编辑或任务进行中时，拦截刷新/关闭并确认页内跳转 ----------
+    const busy = !!batching || !!dubbing || !!exporting || !!exportingVideo || regenerating.size > 0;
+    useEffect(() => {
+        if (!dirty && !busy) return;
+        const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+        window.addEventListener("beforeunload", onBeforeUnload);
+        return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    }, [dirty, busy]);
+
+    const navigateGuarded = useCallback((to: string) => {
+        const leave = () => navigate(to);
+        if (!dirty && !busy) { leave(); return; }
+        modal.confirm({
+            title: "离开绘本成书页？",
+            content: dirty
+                ? "有未保存的编辑（台词、气泡位置、书册结构等），离开将丢失本次改动。"
+                : "有生成/配音/导出任务正在进行，离开会中断当前任务（已完成的帧图与配音都已保存，回来可续跑）。",
+            okText: "仍要离开",
+            cancelText: "留下",
+            onOk: leave,
+        });
+    }, [busy, dirty, modal, navigate]);
 
     if (loading) {
         return <div style={{ padding: 24 }}><Skeleton active paragraph={{ rows: 10 }} /></div>;
@@ -1144,7 +1191,7 @@ export default function StorybookBookPage() {
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
             {/* 顶栏 */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--border, #2a2d33)", flexWrap: "wrap" }}>
-                <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/storybook-books")} />
+                <Button icon={<ArrowLeftOutlined />} onClick={() => navigateGuarded("/storybook-books")} />
                 <span style={{ fontWeight: 700 }}>{config.title || canvas.title}</span>
                 {config.subtitle ? <span style={{ opacity: 0.6, fontSize: 13 }}>{config.subtitle}</span> : null}
                 <Tag>{doneImages}/{panels.size} 页图</Tag>
@@ -1158,7 +1205,7 @@ export default function StorybookBookPage() {
                     ) : (
                         <Button icon={<ThunderboltOutlined />} disabled={saving} onClick={() => void generateMissing()}>生成缺帧{missingPanels.length ? `（${missingPanels.length}）` : ""}</Button>
                     )}
-                    <Button onClick={() => navigate(`/canvas/${encodeURIComponent(id ?? "")}`)}>打开画布</Button>
+                    <Button onClick={() => navigateGuarded(`/canvas/${encodeURIComponent(id ?? "")}`)}>打开画布</Button>
                     <Button icon={<ReloadOutlined />} onClick={() => void load()} />
                     <Button icon={<SaveOutlined />} type="primary" loading={saving} disabled={!dirty} onClick={() => void save()}>保存</Button>
                     <Button icon={<DownloadOutlined />} onClick={() => void exportPagePng()}>本页 PNG</Button>
@@ -1399,7 +1446,7 @@ export default function StorybookBookPage() {
                                     ) : (
                                         <Button icon={<ThunderboltOutlined />} onClick={() => void regeneratePanel(pagePanel.id)}>重新生成本页图</Button>
                                     )}
-                                    <Button onClick={() => navigate(`/canvas/${encodeURIComponent(id ?? "")}`)}>在画布中打开</Button>
+                                    <Button onClick={() => navigateGuarded(`/canvas/${encodeURIComponent(id ?? "")}`)}>在画布中打开</Button>
                                 </>
                             ) : null}
                         </Space>

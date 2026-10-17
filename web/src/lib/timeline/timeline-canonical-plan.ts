@@ -67,6 +67,16 @@ export type CanonicalPlanOptions = {
     fps?: number;
     sampleRate?: number;
     burnSubtitles?: boolean;
+    /** 图片叠加层（如口播信息卡）：压在视觉轨之上、字幕之下；坐标为相对输出画幅的归一化值 */
+    overlays?: Array<{
+        sourceId: string;
+        startMs: number;
+        durationMs: number;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+    }>;
 };
 
 export const DURATION_TOLERANCE_MS = 100;

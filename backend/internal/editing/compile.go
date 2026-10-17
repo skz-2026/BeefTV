@@ -186,6 +186,11 @@ func Compile(project Project, sources []SourceMeta, opts Options) (*Plan, error)
 		}
 		plan.DurationMs = sum
 	}
+	overlays, err := compileOverlays(opts.Overlays, plan.DurationMs)
+	if err != nil {
+		return plan, err
+	}
+	plan.Overlays = overlays
 	if *opts.BurnSubtitles {
 		plan.SubtitleSRT = buildSubtitleSRT(plan.Subtitles)
 	} else {
@@ -200,6 +205,61 @@ func Compile(project Project, sources []SourceMeta, opts Options) (*Plan, error)
 
 func gapSegment(startMs, durationMs int64) Segment {
 	return Segment{Kind: KindGap, StartMs: startMs, DurationMs: durationMs, Volume: 1}
+}
+
+// compileOverlays 校验并归一化叠加层：坐标 clamp 到 0-1、时间窗裁剪到成片时长内；
+// 完全出窗或无时长的项直接丢弃（叠加层是增强信息，不阻塞成片）。
+func compileOverlays(specs []OverlaySpec, totalMs int64) ([]Overlay, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	var overlays []Overlay
+	for _, spec := range specs {
+		id := strings.TrimSpace(spec.SourceID)
+		if id == "" {
+			return nil, fmt.Errorf("%w：叠加层缺少媒体引用", ErrInvalidOverlay)
+		}
+		if spec.StartMs < 0 || spec.DurationMs <= 0 {
+			return nil, fmt.Errorf("%w：%s", ErrInvalidOverlay, id)
+		}
+		if spec.W <= 0 || spec.H <= 0 || math.IsNaN(spec.W) || math.IsNaN(spec.H) {
+			continue // 零尺寸叠加层不可见，直接丢弃
+		}
+		start := spec.StartMs
+		end := spec.StartMs + spec.DurationMs
+		if start >= totalMs {
+			continue
+		}
+		if end > totalMs {
+			end = totalMs
+		}
+		overlays = append(overlays, Overlay{
+			SourceID:   id,
+			StartMs:    start,
+			DurationMs: end - start,
+			X:          clampUnit(spec.X),
+			Y:          clampUnit(spec.Y),
+			W:          clampUnit(spec.W),
+			H:          clampUnit(spec.H),
+		})
+	}
+	sort.SliceStable(overlays, func(i, j int) bool {
+		if overlays[i].StartMs == overlays[j].StartMs {
+			return overlays[i].SourceID < overlays[j].SourceID
+		}
+		return overlays[i].StartMs < overlays[j].StartMs
+	})
+	return overlays, nil
+}
+
+func clampUnit(v float64) float64 {
+	if math.IsNaN(v) || v < 0 {
+		return 0
+	}
+	if math.IsInf(v, 0) || v > 1 {
+		return 1
+	}
+	return v
 }
 
 func indexSources(sources []SourceMeta) (map[string]SourceMeta, bool, error) {

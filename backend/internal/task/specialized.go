@@ -22,6 +22,9 @@ type localExecutorKind struct {
 	Log      string
 }
 
+// maxMotionParamsBytes 限制模板参数体量，避免异常输入直接进任务队列。
+const maxMotionParamsBytes = 2 << 20
+
 func localExecutorSchema(taskType string) (localExecutorKind, error) {
 	if err := ValidateLocalExecutorType(taskType); err != nil {
 		return localExecutorKind{}, kernel.BadAuthRequest(err.Error())
@@ -56,6 +59,16 @@ func localExecutorSchema(taskType string) (localExecutorKind, error) {
 			Stage:    depthcapture.InitialStage,
 			Progress: 0,
 			Log:      "深度动作捕捉任务已进入队列",
+		}, nil
+	case model.TaskTypeMotionRender:
+		return localExecutorKind{
+			Type:     model.TaskTypeMotionRender,
+			Prompt:   LocalExecutorMotionRenderPrompt,
+			Provider: LocalExecutorMotionRenderProvider,
+			Model:    LocalExecutorMotionRenderModel,
+			Stage:    LocalExecutorQueuedStage,
+			Progress: 5,
+			Log:      "动效模板渲染任务已进入队列",
 		}, nil
 	default:
 		return localExecutorKind{}, kernel.BadAuthRequest(errUnsupportedLocalExecutor(taskType))
@@ -165,6 +178,46 @@ func (s *Service) CreateDepthCaptureTask(userID string, req DepthCaptureCreateRe
 		return nil, kernel.BadAuthRequest(err.Error())
 	}
 	input, err := decodeObject(prepared)
+	if err != nil {
+		return nil, err
+	}
+	return s.admitSpecialized(userID, specializedAdmission{
+		kind:      kind,
+		projectID: strings.TrimSpace(req.ProjectID),
+		input:     withClientOperation(input, req.ClientOperationID),
+		traceID:   req.TraceID,
+		requestID: req.RequestID,
+	})
+}
+
+// CreateMotionRenderTask admits a local .motion template render. The template
+// pin is shape-validated here; file-level integrity is verified by the worker
+// immediately before execution, so a tampered template can never replay.
+func (s *Service) CreateMotionRenderTask(userID string, req MotionRenderCreateRequest) (*model.Task, error) {
+	kind, err := localExecutorSchema(model.TaskTypeMotionRender)
+	if err != nil {
+		return nil, err
+	}
+	pin := TemplatePin{
+		TemplateID:    strings.TrimSpace(req.TemplateID),
+		VersionID:     strings.TrimSpace(req.VersionID),
+		ContentDigest: strings.TrimSpace(req.ContentDigest),
+	}
+	if pin.TemplateID == "" || pin.VersionID == "" || pin.ContentDigest == "" {
+		return nil, kernel.BadAuthRequest(MotionTemplatePinIncompleteMessage)
+	}
+	if len(req.Params) > maxMotionParamsBytes {
+		return nil, kernel.BadAuthRequest(MotionParamsTooLargeMessage)
+	}
+	var paramsObject map[string]any
+	if err := json.Unmarshal(req.Params, &paramsObject); err != nil || paramsObject == nil {
+		return nil, kernel.BadAuthRequest(MotionParamsNotObjectMessage)
+	}
+	input, err := marshalLocalExecutorInput(MotionRenderInput{
+		ProjectID: strings.TrimSpace(req.ProjectID),
+		Template:  pin,
+		Params:    req.Params,
+	})
 	if err != nil {
 		return nil, err
 	}

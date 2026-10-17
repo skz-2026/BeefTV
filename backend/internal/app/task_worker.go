@@ -92,6 +92,9 @@ func (w *taskWorkerCoordinator) executeClaimed(session taskruntime.Session) task
 	if task.Type == model.TaskTypeDepthCapture {
 		return w.specialTaskOutcome(session, w.processDepthCapture)
 	}
+	if task.Type == model.TaskTypeMotionRender {
+		return w.specialTaskOutcome(session, w.processMotionRender)
+	}
 
 	task.Stage = "调用生成模型"
 	task.Progress = 35
@@ -298,6 +301,9 @@ func taskExecutionTimeoutWithPolicy(taskType string, policy RuntimeTaskPolicy) t
 		return 20 * time.Minute
 	case taskType == model.TaskTypeTimelineRender:
 		// 渲染是整条时间线的重编码，耗时随长度线性增长。
+		return 60 * time.Minute
+	case taskType == model.TaskTypeMotionRender:
+		// 模板逐帧渲染耗时随成片时长线性增长；对齐时间线渲染的宽松超时。
 		return 60 * time.Minute
 	case taskType == model.TaskTypeDepthCapture:
 		// 首次执行包含可选 Runtime 和模型下载。

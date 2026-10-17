@@ -25,7 +25,7 @@ export function segmentSecondsFor(audioMs: number): number {
 }
 
 /** 渠道端点（任务 input.config 用）：从工作区模型配置解析 baseUrl/interfaceType，模块级缓存 */
-export type ChannelEndpoint = { baseUrl: string; interfaceType: string };
+export type ChannelEndpoint = { baseUrl: string; interfaceType?: string };
 let channelEndpointCache: { at: number; channels: Array<{ id: string; baseUrl?: string; interfaceType?: string }> } | null = null;
 
 export async function resolveChannelEndpoint(channelId: string): Promise<ChannelEndpoint | null> {
@@ -40,13 +40,15 @@ export async function resolveChannelEndpoint(channelId: string): Promise<Channel
     }
     const channel = channelEndpointCache.channels.find((c) => c.id === channelId);
     if (!channel?.baseUrl) return null;
-    return { baseUrl: channel.baseUrl, interfaceType: channel.interfaceType || "openai" };
+    // interfaceType 为空的渠道（本机网关常见）不兜底——后端内置目录按渠道/模型自动解析协议，
+    // 显式传 "openai" 反而会压坏解析（真机实测：报「接口类型 openai 未安装」）。
+    return { baseUrl: channel.baseUrl, ...(channel.interfaceType ? { interfaceType: channel.interfaceType } : {}) };
 }
 
 function taskConfig(endpoint: ChannelEndpoint | null, modelName: string, extra: Record<string, unknown>) {
     if (!endpoint) return {};
     const local = /127\.0\.0\.1|localhost|::1/i.test(endpoint.baseUrl);
-    return { baseUrl: endpoint.baseUrl, apiKey: local ? "local-gateway" : "", interfaceType: endpoint.interfaceType, model: modelName, ...extra };
+    return { baseUrl: endpoint.baseUrl, apiKey: local ? "local-gateway" : "", ...(endpoint.interfaceType ? { interfaceType: endpoint.interfaceType } : {}), model: modelName, ...extra };
 }
 
 /** 轮询任务到终态（本地 GPU 视频一档 15-20 分钟，超时按场景传） */
@@ -255,6 +257,8 @@ export type ComposeSegment = {
     durationMs: number;
     /** 说话时长（去尾静音），字幕显示窗口 */
     speechMs: number;
+    /** 信息卡（本段讲话时浮出的文字卡，合成时渲染叠加） */
+    cards?: import("./digital-human-doc").SegmentCard[];
 };
 
 /** 段序列 → 时间线：视频轨顺序拼接 + 字幕轨逐段一句话（directMedia 引用资源） */
@@ -309,13 +313,15 @@ export async function composeEpisodeVideo(opts: {
     projectId: string;
     segments: ComposeSegment[];
     aspect: DigitalHumanAspect;
+    /** 图片叠加层（信息卡 PNG 资源，前端渲染后上传）；时间与坐标为成片绝对值/归一化 */
+    overlays?: NonNullable<Parameters<typeof createTimelineRenderTask>[0]["options"]>["overlays"];
     signal?: AbortSignal;
     onTaskUpdate?: (task: { id: string; status: string; progress?: number }) => void;
 }): Promise<TimelineRenderResult> {
     const timeline = buildEpisodeTimeline(opts.segments, opts.aspect);
     const geo = DIGITAL_HUMAN_ASPECTS[opts.aspect];
     const created = await createTimelineRenderTask(
-        { projectId: opts.projectId, timeline, options: { width: geo.width, height: geo.height, fps: 24, burnSubtitles: true } },
+        { projectId: opts.projectId, timeline, options: { width: geo.width, height: geo.height, fps: 24, burnSubtitles: true, ...(opts.overlays?.length ? { overlays: opts.overlays } : {}) } },
         { signal: opts.signal },
     );
     const done = await waitForGenerationTask(created.id, {

@@ -3,6 +3,7 @@ package editing
 import (
 	"fmt"
 	"infinite-canvas/backend/internal/mediatools"
+	"math"
 	"strings"
 )
 
@@ -83,11 +84,34 @@ func BuildFFmpegArgs(plan Plan, files map[string]string, target string) []string
 		mix += fmt.Sprintf("[extra%d]", i)
 	}
 	filters = append(filters, fmt.Sprintf("%samix=inputs=%d:duration=first:normalize=0,atrim=duration=%.3f[aout]", mix, len(plan.Audio)+1, float64(plan.DurationMs)/1000))
+	// 图片叠加层（信息卡等）：输入接在视觉/音频输入之后，逐层 overlay 在 [vbase] 上，
+	// 再烧字幕——字卡在画面上方、字幕保持在最顶层。
+	overlayBase := 2*len(plan.Segments) + len(plan.Audio)
+	for i := range plan.Overlays {
+		path := files[plan.Overlays[i].SourceID]
+		if path == "" {
+			return nil
+		}
+		args = append(args, "-loop", "1", "-i", path)
+	}
+	videoChain := "[vbase]"
+	for i, ov := range plan.Overlays {
+		ow := max(1, int(math.Round(float64(width)*ov.W)))
+		oh := max(1, int(math.Round(float64(height)*ov.H)))
+		ox := int(math.Round(float64(width) * ov.X))
+		oy := int(math.Round(float64(height) * ov.Y))
+		start := float64(ov.StartMs) / 1000
+		end := float64(ov.StartMs+ov.DurationMs) / 1000
+		out := fmt.Sprintf("[vo%d]", i)
+		filters = append(filters, fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1,format=rgba[ovl%d]", overlayBase+i, ow, oh, i))
+		filters = append(filters, fmt.Sprintf("%s[ovl%d]overlay=x=%d:y=%d:enable='between(t,%.3f,%.3f)'%s", videoChain, i, ox, oy, start, end, out))
+		videoChain = out
+	}
 	if plan.Output.BurnSubtitles && plan.SubtitleSRT != "" {
 		// 固定相对文件名避免工作目录/字幕文本进入滤镜表达式。
-		filters = append(filters, fmt.Sprintf("[vbase]subtitles=filename=%s[vout]", SubtitleFileName))
+		filters = append(filters, fmt.Sprintf("%ssubtitles=filename=%s[vout]", videoChain, SubtitleFileName))
 	} else {
-		filters = append(filters, "[vbase]null[vout]")
+		filters = append(filters, videoChain+"null[vout]")
 	}
 	args = append(args, "-filter_complex", strings.Join(filters, ";"), "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-t", fmt.Sprintf("%.3f", float64(plan.DurationMs)/1000), target)
 	return args

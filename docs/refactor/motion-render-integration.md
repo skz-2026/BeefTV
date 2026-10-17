@@ -1,6 +1,6 @@
 # Motion 模板本地渲染接入设计
 
-状态:设计稿(基于 2026-10-15 Windows 本机原型验证,未实现)。原型证据:kinetic-tech 0.2.7 模板在 Edge headless + ffmpeg 8 下渲染 18s 中文片头成功,产物已经 `PUT /api/canvas-projects/:id/generated-assets` 入 bazong-pets-e01 画布(rev 673,节点 `title-card-E01`)。
+状态:切片 A 已实现并通过本机冒烟验收(2026-10-15,证据见文末);切片 B/C 未开始。早期原型证据:kinetic-tech 0.2.7 模板在 Edge headless + ffmpeg 8 下渲染 18s 中文片头成功,产物已经 `PUT /api/canvas-projects/:id/generated-assets` 入 bazong-pets-e01 画布(rev 673,节点 `title-card-E01`)。
 
 ## 目标与边界
 
@@ -64,3 +64,30 @@
 - 模板 runtime 依赖(Python/uv)对桌面打包的重量;方案 B 可消除但工作量另计。
 - `.motion` 规范仍是 0.1.0-draft:导入层按 templateId+specVersion 白名单放行,未知 specVersion 拒绝并提示。
 - 第三方模板 JS 是不可信代码:沙箱边界(无凭据、无外网、目录受限)是硬要求,评审时逐条对照。
+
+## 切片 A 实现落点(2026-10-15)
+
+| 层 | 文件 |
+| --- | --- |
+| 模板库 | `backend/internal/motion/{types,store,runner}.go`(导入/列表/校验/子进程渲染)、`store_test.go` |
+| 任务域 | `model/timeline_task_type.go`、`task/contracts.go`(MotionRenderCreateRequest/Input/TemplatePin)、`task/specialized.go`(CreateMotionRenderTask)、`task/identity.go` |
+| 操作层 | `operations/canvas_motion.go`(canvas.motion.render)、`operations/ops.go` 注册、`agentops/scope.go` 白名单(canvas 写集合) |
+| 执行器 | `app/task_motion.go`(processMotionRender + RecoverOwned 物化)、`app/task_worker.go` 分叉与 60 分钟超时、`app/operations_motion_adapter.go`(操作事务内建任务,admission 前先 Verify 模板) |
+| HTTP | `app/motion_templates.go`、`handler/motion_templates.go`(POST/GET /api/motion-templates,256MB 上限)、`handler/api.go` 挂载 |
+
+实现中确定的设计决策:
+
+- 模板目录保持纯净:Node 依赖安装在 `<dataDir>/motion-runtime/<user>/<templateId>--<versionId>/`(首次渲染 npm ci),经 NODE_PATH 注入;不进模板目录,内容摘要才可校验。
+- 幂等导入语义:同版本重导入仅在"磁盘版本完整 + 新包摘要与已装一致"时幂等返回;不一致或已装版本被改动一律拒绝覆盖。
+- 执行前完整性:worker 在渲染前重算模板文件摘要,pin 不匹配直接失败,不重放被改动的模板。
+- 子进程环境最小白名单 + ffmpeg 目录前置 PATH;不透传后端凭据。
+- 素材槽位(slots)未实现:首版 params 只支持媒体 mode:none 的纯文字动效;槽位绑定与归属校验留切片 A2。
+
+## 切片 A 冒烟验收记录(2026-10-15,本机 Windows)
+
+- `go build ./internal/motion/... ./internal/operations/... ./internal/task/... ./internal/agentops/... ./internal/handler/... ./cmd/server` 通过;`go test ./internal/motion/` 8 项全过(导入往返、幂等、同版本内容不一致拒绝、篡改拒绝、摘要不匹配拒绝、未知 spec 拒绝、zip-slip 拒绝、顶层目录剥离)。
+- `go test ./internal/task/...` 通过;`./internal/operations/...` 与 `./internal/agentops/...` 仅有 t.TempDir 清理时 sqlite 文件锁的既有 Windows 抖动(在干净 HEAD worktree 复跑同样失败,与本改动无关);agentops 目录计数测试已随新操作更新(27→28 / 23→24 / 26→27)。
+- 真实链路:重建 `infinite-canvas-backend.exe`(CANVAS_FFMPEG_PATH 指向 ffmpeg 8)→ POST /api/motion-templates 导入 kinetic-tech 0.2.7(digest 6d5e68d6…)→ POST /api/ops/canvas.motion.render(8s B1 单场景中文参数)→ 任务 55s 走完"依赖准备→逐帧渲染→succeeded",19.3MB mp4 物化,资源可下载(HTTP 200),resultState READY,outputs 带 materializedAssetId。
+- 幂等:同 opId 重放返回 replayed=true 与原 taskId,不重复渲染。
+- 确定性:同参数两个独立任务,产物资源 SHA256 逐字节一致(9fa41720…)。
+- 未验证:桌面应用点击路径、前端 UI、多模板并存、断点续跑后的恢复执行。

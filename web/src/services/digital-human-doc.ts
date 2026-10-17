@@ -49,6 +49,15 @@ export type SegmentAudio = {
     bytes?: number;
 };
 
+/** 成片发布包：标题/简介/标签/封面，导出 zip（MP4+SRT+封面+文案）用 */
+export type PublishInfo = {
+    title: string;
+    description: string;
+    /** 逗号分隔 */
+    tags: string;
+    coverStorageKey?: string;
+};
+
 /** 建册时从数字人画布快照的人物+音色档案；后续改数字人不影响已建期 */
 export type PersonaSnapshot = {
     canvasId: string;
@@ -74,8 +83,10 @@ export type DigitalHumanConfig = {
     videoChannel: string;
     videoModel: string;
     persona: PersonaSnapshot;
-    /** 段顺序（seg-P* 节点 id）；重排只改这里 */
+    /** 段顺序（seg-P* 节点 id 列表）；重排只改这里 */
     segmentOrder: string[];
+    /** 发布包（封面/标题/简介/标签） */
+    publish?: PublishInfo;
 };
 
 export type PersonaConfig = {
@@ -109,6 +120,22 @@ export type SegmentTake = {
     createdAt?: string;
 };
 
+/** 信息卡附加行：gold=true 时用金色强调 */
+export type SegmentCardLine = { text: string; gold?: boolean };
+
+/**
+ * 信息卡：主播讲话时浮在画面上的文字卡片（标题+金色强调词+附加行）。
+ * 编辑态存段 metadata；合成成片时前端渲染成透明 PNG，经服务端 overlay 层压在段视频上。
+ */
+export type SegmentCard = {
+    id: string;
+    /** 主标题（白色大字） */
+    title: string;
+    /** 金色强调词（拼在标题后，带金色下划线） */
+    highlight?: string;
+    lines?: SegmentCardLine[];
+};
+
 export type SegmentNodeInfo = {
     id: string;
     line: string;
@@ -120,6 +147,10 @@ export type SegmentNodeInfo = {
     videoPrompt: string;
     /** 本段自定义参考图（上传素材，生成时追加在人物稿之后） */
     extraRefs?: Array<{ storageKey: string; name: string }>;
+    /** 信息卡（讲话时浮出的文字卡片，合成时叠加） */
+    cards?: SegmentCard[];
+    /** 画面来源说明（回档导入时记录：真人原片 / 插画成品段） */
+    source?: string;
     audio?: SegmentAudio;
     videoStorageKey: string | null;
     videoResourceId: string | null;
@@ -162,6 +193,30 @@ function parseConfigNode<T>(node: { metadata?: unknown }, kind: string): T | nul
     }
 }
 
+function parseSegmentCards(raw: unknown): SegmentCard[] {
+    if (!Array.isArray(raw)) return [];
+    const cards: SegmentCard[] = [];
+    for (const item of raw) {
+        const c = item as { id?: unknown; title?: unknown; highlight?: unknown; lines?: unknown };
+        const id = typeof c?.id === "string" ? c.id : "";
+        // 编辑中间态（刚添加的空卡、清空标题）不丢卡：有 id 即保留，合成时空卡另行跳过
+        if (!id) continue;
+        const title = typeof c?.title === "string" ? c.title : "";
+        const highlight = typeof c?.highlight === "string" ? c.highlight : "";
+        cards.push({
+            id,
+            title,
+            ...(highlight.trim() ? { highlight } : {}),
+            ...(Array.isArray(c.lines) ? {
+                lines: (c.lines as Array<{ text?: unknown; gold?: unknown }>)
+                    .filter((l) => typeof l?.text === "string" && l.text.trim())
+                    .map((l) => ({ text: String(l.text), ...(l.gold === true ? { gold: true } : {}) })),
+            } : {}),
+        });
+    }
+    return cards;
+}
+
 export function parseDigitalHumanCanvas(canvas: CanvasProject): DigitalHumanEpisode {
     const scenes = new Map<string, SceneNodeInfo>();
     const segmentNodes = new Map<string, SegmentNodeInfo>();
@@ -197,7 +252,9 @@ export function parseDigitalHumanCanvas(canvas: CanvasProject): DigitalHumanEpis
                 sceneKey: String(md.sceneKey ?? ""),
                 secondsHint: Number(md.secondsHint) > 0 ? Number(md.secondsHint) : estimateSegmentSeconds(String(md.line ?? "")),
                 videoPrompt: String(md.videoPrompt ?? ""),
+                ...(typeof md.composition === "string" && md.composition ? { source: md.composition } : {}),
                 ...(Array.isArray(md.extraRefs) ? { extraRefs: (md.extraRefs as Array<{ storageKey?: unknown; name?: unknown }>).filter((r) => typeof r?.storageKey === "string").map((r) => ({ storageKey: String(r.storageKey), name: String(r.name ?? "ref.png") })) } : {}),
+                ...(() => { const cards = parseSegmentCards(md.cards); return cards.length ? { cards } : {}; })(),
                 ...(audio?.storageKey ? { audio } : {}),
                 videoStorageKey: typeof md.storageKey === "string" ? md.storageKey : null,
                 videoResourceId: typeof md.videoResourceId === "string" ? md.videoResourceId : null,
@@ -254,8 +311,8 @@ export function parsePersonaCanvas(canvas: CanvasProject): PersonaDoc | null {
 }
 
 /** 人物参考图提示词：正面半身、素背景，身份锚点 + 画风后缀程序化拼装 */
-export function personaPortraitPrompt(config: Pick<PersonaConfig, "appearanceEn" | "style">): string {
-    const style = DIGITAL_HUMAN_STYLES[config.style] ?? DIGITAL_HUMAN_STYLES.realistic;
+export function personaPortraitPrompt(config: { appearanceEn: string; style?: DigitalHumanStyleId }): string {
+    const style = DIGITAL_HUMAN_STYLES[config.style ?? "realistic"] ?? DIGITAL_HUMAN_STYLES.realistic;
     return `character reference portrait, front-facing head-and-shoulders, neutral friendly expression, looking straight at the camera, plain gradient studio background, even soft lighting, ${config.appearanceEn}, ${style.portraitSuffix}`;
 }
 

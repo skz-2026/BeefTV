@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { App, Button, Input, Progress, Space, Tabs, Tag, Upload } from "antd";
-import { AudioOutlined, PictureOutlined, SearchOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { AudioOutlined, PauseCircleOutlined, PictureOutlined, PlayCircleOutlined, SearchOutlined, ThunderboltOutlined } from "@ant-design/icons";
 
 import { AppModal } from "@/components/ui/product/app-modal/app-modal";
 import { http } from "@/services/api/request";
@@ -45,6 +45,33 @@ export function AssetPickerModal({ open, kind, title, projectId, imageModel, gen
     const [prompt, setPrompt] = useState("");
     const [generating, setGenerating] = useState(false);
     const [uploading, setUploading] = useState(false);
+    /** 音频试听：单例播放器，playingId 标记当前行 */
+    const [playingId, setPlayingId] = useState<string | null>(null);
+    const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    const stopPreview = useCallback(() => {
+        previewAudioRef.current?.pause();
+        previewAudioRef.current = null;
+        setPlayingId(null);
+    }, []);
+
+    const togglePreview = useCallback((asset: PickerAsset) => {
+        const key = storageKeyOf(asset);
+        if (!key) return;
+        if (playingId === asset.id) { stopPreview(); return; }
+        previewAudioRef.current?.pause();
+        const audio = new Audio(`/api/resources/${key.replace(/^resource:/, "")}/file`);
+        previewAudioRef.current = audio;
+        audio.onended = () => setPlayingId(null);
+        audio.onerror = () => setPlayingId(null);
+        setPlayingId(asset.id);
+        audio.play().catch(() => setPlayingId(null));
+    }, [playingId, stopPreview]);
+
+    useEffect(() => {
+        if (!open) stopPreview();
+    }, [open, stopPreview]);
+    useEffect(() => () => { previewAudioRef.current?.pause(); }, []);
 
     const load = useCallback(async (p: number, q: string) => {
         try {
@@ -184,13 +211,26 @@ export function AssetPickerModal({ open, kind, title, projectId, imageModel, gen
                                 ) : (
                                     <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "46vh", overflowY: "auto" }}>
                                         {(assets ?? []).map((a) => (
-                                            <button type="button" key={a.id} onClick={() => pick(a)} className="cursor-interaction"
-                                                style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--user-border, var(--border))", background: "transparent", borderRadius: 10, padding: "8px 12px", cursor: "pointer", textAlign: "left" }}>
-                                                <AudioOutlined style={{ opacity: 0.6 }} />
+                                            <div
+                                                key={a.id}
+                                                role="button"
+                                                tabIndex={0}
+                                                onClick={() => pick(a)}
+                                                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(a); } }}
+                                                className="cursor-interaction"
+                                                style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--user-border, var(--border))", background: "transparent", borderRadius: 10, padding: "6px 12px", cursor: "pointer", textAlign: "left" }}
+                                            >
+                                                <Button
+                                                    type="text"
+                                                    size="small"
+                                                    aria-label={playingId === a.id ? "停止试听" : "试听"}
+                                                    icon={playingId === a.id ? <PauseCircleOutlined style={{ color: "var(--ant-color-primary, #4f7cff)" }} /> : <PlayCircleOutlined />}
+                                                    onClick={(e) => { e.stopPropagation(); togglePreview(a); }}
+                                                />
                                                 <span style={{ flex: 1, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.title ?? a.id}</span>
                                                 {a.data?.durationMs ? <Tag>{(a.data.durationMs / 1000).toFixed(1)}s</Tag> : null}
                                                 <span style={{ fontSize: 12, color: "var(--primary, #4f7cff)" }}>选择</span>
-                                            </button>
+                                            </div>
                                         ))}
                                     </div>
                                 )}

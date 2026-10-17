@@ -86,6 +86,12 @@ const FILL_SYS = `你是 AI 视频表演提示词工程师。为一段数字人�
 4. 不要输出对白标签 <d>、不要 <Picture>/<Audio> 引用、不要画风后缀（系统统一拼装）；不要换行；
 5. 只输出 JSON。输出：{"prompt":"英文表演提示词"}`;
 
+const CARDS_SYS = `你给一段中文口播台词提取"信息卡"——主播讲话时浮在画面上的重点文字。铁律：
+1. 每张卡一个信息点：title 是白色大标题（≤10 汉字），highlight 是金色强调词（≤8 汉字，可空），lines 是 0-3 条补充行（每条 ≤16 汉字，关键数字/结论用 gold=true）；
+2. 台词里有几个不同重点就出几张卡（1-3 张），顺序与台词出现顺序一致；没有明确重点时只出 1 张概括卡；
+3. 不要复述整句台词，提炼关键词与数字；不要编造台词里没有的信息；
+4. 只输出 JSON。输出：{"cards":[{"title":"...","highlight":"...","lines":[{"text":"...","gold":true}]}]}`;
+
 /**
  * 段视频提示词：按 H3 dub-flf 模板的媒体标签契约程序化拼装（真机验证 2026-10-16）。
  * flf 的 <Picture N> 编号 = [首帧, 尾帧, 参考1...]，尾帧=首帧（口播结束回静息），
@@ -105,6 +111,12 @@ export function buildSegmentVideoPrompt(segment: Pick<SplitSegment, "line" | "ca
     ].join(" ");
 }
 
+/** 改台词后同步 videoPrompt 内嵌的 <d> 台词段（表演与镜头描述保持不动）；非本管线拼装的提示词原样返回 */
+export function syncLineIntoVideoPrompt(prompt: string, line: string): string {
+    if (!/<d>\[Mandarin\]/.test(prompt)) return prompt;
+    return prompt.replace(/<d>\[Mandarin\][\s\S]*?<\/d>/, () => `<d>[Mandarin]${line}</d>`);
+}
+
 export type SplitProgress = { stage: "outline" | "fill"; done: number; total: number; detail?: string };
 
 /** 单段重生成表演提示词（生产页「重写表演」按钮）：Pass2 同款 system，程序化拼装绑定 */
@@ -122,6 +134,30 @@ export async function fillSegmentVideoPrompt(opts: {
     const performance = String(filled.prompt || "").trim()
         || `The presenter talks to camera with a ${opts.expression || "focused"} expression, ${opts.action || "subtle hand gestures emphasizing key words"}.`;
     return buildSegmentVideoPrompt({ line: opts.line, camera: opts.camera }, performance, "the presenter");
+}
+
+/** 从台词提取信息卡（生产页「AI 提取字卡」按钮）：返回可空数组，调用方决定是否覆盖 */
+export async function extractSegmentCards(opts: {
+    config: AiConfig;
+    model: string;
+    line: string;
+    signal?: AbortSignal;
+}): Promise<Array<{ title: string; highlight?: string; lines?: Array<{ text: string; gold?: boolean }> }>> {
+    const result = (await llmJSON(opts.config, opts.model, CARDS_SYS, `台词：\n${opts.line}`, opts.signal)) as {
+        cards?: Array<{ title?: unknown; highlight?: unknown; lines?: unknown }>;
+    };
+    return (result.cards ?? [])
+        .map((c) => ({
+            title: String(c.title ?? "").trim().slice(0, 12),
+            ...(typeof c.highlight === "string" && c.highlight.trim() ? { highlight: c.highlight.trim().slice(0, 10) } : {}),
+            ...(Array.isArray(c.lines) ? {
+                lines: (c.lines as Array<{ text?: unknown; gold?: unknown }>)
+                    .filter((l) => typeof l?.text === "string" && l.text.trim())
+                    .slice(0, 3)
+                    .map((l) => ({ text: String(l.text).trim().slice(0, 18), ...(l.gold === true ? { gold: true } : {}) })),
+            } : {}),
+        }))
+        .filter((c) => c.title);
 }
 
 export async function splitDigitalHumanEpisode(opts: {
@@ -201,11 +237,11 @@ type CanvasDoc = {
     createdAt: string; updatedAt: string; revision: number;
 };
 
-function imageGenMeta(model: string, prompt: string, size: string, extra: Record<string, unknown> = {}) {
+export function imageGenMeta(model: string, prompt: string, size: string, extra: Record<string, unknown> = {}) {
     return { prompt, composerContent: prompt, count: 1, generationMode: "image", generationType: "generation", model, nodeRole: "generator", quality: "auto", references: [], size, status: "idle", transparentBackground: "false", workflowProvider: "model", ...extra };
 }
 
-function videoGenMeta(model: string, prompt: string, size: string, extra: Record<string, unknown> = {}) {
+export function videoGenMeta(model: string, prompt: string, size: string, extra: Record<string, unknown> = {}) {
     return { prompt, composerContent: prompt, count: 1, generationMode: "video", generationType: "generation", model, nodeRole: "generator", quality: "auto", references: [], size, status: "idle", workflowProvider: "model", ...extra };
 }
 

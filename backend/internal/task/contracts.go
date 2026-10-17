@@ -1,6 +1,7 @@
 package task
 
 import (
+	"encoding/json"
 	"time"
 
 	"infinite-canvas/backend/internal/editing"
@@ -61,6 +62,20 @@ type DepthCaptureCreateRequest struct {
 	RequestID         string `json:"-"`
 }
 
+// MotionRenderCreateRequest is the local-port command for rendering an
+// imported .motion template. Params stays raw so the template's own params
+// schema is the single validation authority. ClientOperationID is optional.
+type MotionRenderCreateRequest struct {
+	ProjectID         string          `json:"projectId"`
+	TemplateID        string          `json:"templateId"`
+	VersionID         string          `json:"versionId"`
+	ContentDigest     string          `json:"contentDigest"`
+	Params            json.RawMessage `json:"params"`
+	ClientOperationID string          `json:"clientOperationId"`
+	TraceID           string          `json:"-"`
+	RequestID         string          `json:"-"`
+}
+
 // TimelineRenderInput is the durable local-executor payload for render tasks.
 type TimelineRenderInput struct {
 	ProjectID string          `json:"projectId"`
@@ -75,6 +90,21 @@ type TimelineTranscriptionInput struct {
 	Language   string `json:"language"`
 }
 
+// MotionRenderInput is the durable local-executor payload for .motion
+// template render tasks.
+type MotionRenderInput struct {
+	ProjectID string          `json:"projectId"`
+	Template  TemplatePin     `json:"template"`
+	Params    json.RawMessage `json:"params"`
+}
+
+// TemplatePin identifies the immutable template version a render task replays.
+type TemplatePin struct {
+	TemplateID    string `json:"templateId"`
+	VersionID     string `json:"versionId"`
+	ContentDigest string `json:"contentDigest"`
+}
+
 const (
 	LocalExecutorRenderPrompt              = "时间线渲染"
 	LocalExecutorRenderProvider            = "local"
@@ -82,12 +112,18 @@ const (
 	LocalExecutorTranscriptionPrompt       = "字幕转写"
 	LocalExecutorTranscriptionProvider     = "local"
 	LocalExecutorTranscriptionModel        = "whisper.cpp"
+	LocalExecutorMotionRenderPrompt        = "动效模板渲染"
+	LocalExecutorMotionRenderProvider      = "local"
+	LocalExecutorMotionRenderModel         = "motion-template"
 	LocalExecutorQueuedStage               = "等待队列调度"
 	TimelineTranscriptionFeature           = "timelineTranscription"
 	NeedTranscribableMediaMessage          = "必须指定待转写媒体"
 	MissingTranscribableMediaMessage       = "无法读取待转写媒体，可能已被删除"
 	OnlyAudioVideoTranscriptionMessage     = "仅支持音视频文件转写"
 	NoRenderableMediaMessage               = "时间线没有可渲染的媒体片段"
+	MotionParamsNotObjectMessage           = "模板参数必须是 JSON 对象"
+	MotionParamsTooLargeMessage            = "模板参数超过大小上限"
+	MotionTemplatePinIncompleteMessage     = "模板版本标识不完整"
 	UnsupportedLocalExecutorTypeMessageFmt = "不支持的本地执行任务类型：%s"
 )
 

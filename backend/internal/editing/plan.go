@@ -95,11 +95,24 @@ type SourceMeta struct {
 }
 
 type Options struct {
-	Width         int   `json:"width"`
-	Height        int   `json:"height"`
-	FPS           int   `json:"fps"`
-	SampleRate    int   `json:"sampleRate"`
-	BurnSubtitles *bool `json:"burnSubtitles"`
+	Width         int           `json:"width"`
+	Height        int           `json:"height"`
+	FPS           int           `json:"fps"`
+	SampleRate    int           `json:"sampleRate"`
+	BurnSubtitles *bool         `json:"burnSubtitles"`
+	Overlays      []OverlaySpec `json:"overlays,omitempty"`
+}
+
+// OverlaySpec 是渲染请求里的图片叠加层（如口播信息卡：前端 Canvas 渲染的透明 PNG）。
+// X/Y/W/H 为相对输出画幅的归一化坐标（0-1），左上角锚点；时间窗会被裁剪到成片时长内。
+type OverlaySpec struct {
+	SourceID   string  `json:"sourceId"`
+	StartMs    int64   `json:"startMs"`
+	DurationMs int64   `json:"durationMs"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	W          float64 `json:"w"`
+	H          float64 `json:"h"`
 }
 
 type Output struct {
@@ -118,7 +131,19 @@ type Plan struct {
 	Segments    []Segment   `json:"segments"`
 	Audio       []AudioClip `json:"audio"`
 	Subtitles   []Subtitle  `json:"subtitles"`
+	Overlays    []Overlay   `json:"overlays,omitempty"`
 	SubtitleSRT string      `json:"subtitleSrt,omitempty"`
+}
+
+// Overlay 是编译后的图片叠加层：压在视觉轨之上、字幕之下。
+type Overlay struct {
+	SourceID   string  `json:"sourceId"`
+	StartMs    int64   `json:"startMs"`
+	DurationMs int64   `json:"durationMs"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	W          float64 `json:"w"`
+	H          float64 `json:"h"`
 }
 
 type Segment struct {
@@ -217,6 +242,13 @@ func (p Plan) VisualSourceIDs() []string {
 		}
 		seen[clip.SourceID] = true
 		ids = append(ids, clip.SourceID)
+	}
+	for _, ov := range p.Overlays {
+		if ov.SourceID == "" || seen[ov.SourceID] {
+			continue
+		}
+		seen[ov.SourceID] = true
+		ids = append(ids, ov.SourceID)
 	}
 	return ids
 }
