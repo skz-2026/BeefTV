@@ -87,6 +87,23 @@ export type DigitalHumanConfig = {
     segmentOrder: string[];
     /** 发布包（封面/标题/简介/标签） */
     publish?: PublishInfo;
+    /** 背景音乐（合成时混在人声下方） */
+    bgm?: DigitalHumanBgm;
+};
+
+/** 成片背景音乐：只存引用和混音参数，音频本身在资源库里 */
+export type DigitalHumanBgm = {
+    resourceId: string;
+    storageKey?: string;
+    title: string;
+    /** 0–1，人声为主，配乐只垫底；默认 0.12 */
+    volume: number;
+    fadeInMs: number;
+    fadeOutMs: number;
+    /** 成片比音乐长时循环铺满 */
+    loop: boolean;
+    /** 资源时长（秒级探测，用于算循环次数与淡出位置） */
+    durationMs?: number;
 };
 
 export type PersonaConfig = {
@@ -117,6 +134,10 @@ export type SegmentTake = {
     durationMs?: number;
     /** 渲染时的台词指纹：切回旧候选时若台词已改仍能正确标记过期 */
     lineHash?: string;
+    /** 渲染时的场景挂载：切回旧候选时场景变化仍能正确标记过期 */
+    sceneKey?: string;
+    /** 渲染时的站位首帧：切回旧候选时首帧已重画仍能正确标记过期 */
+    frameKey?: string;
     createdAt?: string;
 };
 
@@ -155,8 +176,15 @@ export type SegmentNodeInfo = {
     videoStorageKey: string | null;
     videoResourceId: string | null;
     videoDurationMs?: number;
+    /** 手动剪辑入点/出点（ms，相对原片）。不写文件，只影响预览与合成的取用区间 */
+    videoTrimStartMs?: number;
+    videoTrimEndMs?: number;
     /** 生成视频时的台词指纹；台词改动后标记成片过期 */
     videoLineHash?: string;
+    /** 生成视频时的场景挂载；换场景后视频画面不再匹配，标记过期（旧数据无此字段不回溯） */
+    videoSceneKey?: string;
+    /** 生成视频时用的站位首帧；首帧重画后视频画面不再匹配，标记过期（旧数据无此字段不回溯） */
+    videoFrameKey?: string;
     /** 本段全部候选（含当前选中张），供切换/对比/重抽 */
     takes?: SegmentTake[];
     nodeIndex: number;
@@ -173,9 +201,18 @@ export function segmentAudioStale(audio: SegmentAudio | undefined, line: string,
     return !audio || !audio.storageKey || audio.textHash !== storybookLineHash(line, audio.voice || voice);
 }
 
-export function segmentVideoStale(segment: SegmentNodeInfo): boolean {
+/**
+ * 成片是否过期：台词/场景/站位首帧任一变了，画面或口型就对不上。
+ *
+ * `frameKey` 是这一镜**当前**该用的站位首帧（首帧在画布上重画过就会变）。
+ * 只在段里记了 videoFrameKey 时比对——老批次没这个指纹，不做回溯，避免全量飘红。
+ */
+export function segmentVideoStale(segment: SegmentNodeInfo, frameKey?: string): boolean {
     if (!segment.videoStorageKey || !segment.videoResourceId) return true;
-    return segment.videoLineHash !== storybookLineHash(segment.line);
+    if (segment.videoLineHash !== storybookLineHash(segment.line)) return true;
+    if (segment.videoSceneKey && segment.videoSceneKey !== segment.sceneKey) return true;
+    if (segment.videoFrameKey && frameKey && segment.videoFrameKey !== frameKey) return true;
+    return false;
 }
 
 /** 台词字数 → 预估口播秒数（≈4字/秒），下限 4 秒避免超短段 */
@@ -259,14 +296,20 @@ export function parseDigitalHumanCanvas(canvas: CanvasProject): DigitalHumanEpis
                 videoStorageKey: typeof md.storageKey === "string" ? md.storageKey : null,
                 videoResourceId: typeof md.videoResourceId === "string" ? md.videoResourceId : null,
                 ...(Number(md.videoDurationMs) > 0 ? { videoDurationMs: Number(md.videoDurationMs) } : {}),
+                ...(Number(md.videoTrimStartMs) > 0 ? { videoTrimStartMs: Number(md.videoTrimStartMs) } : {}),
+                ...(Number(md.videoTrimEndMs) > 0 ? { videoTrimEndMs: Number(md.videoTrimEndMs) } : {}),
                 ...(typeof md.videoLineHash === "string" ? { videoLineHash: md.videoLineHash } : {}),
+                ...(typeof md.videoSceneKey === "string" ? { videoSceneKey: md.videoSceneKey } : {}),
+                ...(typeof md.videoFrameKey === "string" && md.videoFrameKey ? { videoFrameKey: md.videoFrameKey } : {}),
                 ...(Array.isArray(md.takes) ? {
-                    takes: (md.takes as Array<{ resourceId?: unknown; durationMs?: unknown; lineHash?: unknown; createdAt?: unknown }>)
+                    takes: (md.takes as Array<{ resourceId?: unknown; durationMs?: unknown; lineHash?: unknown; sceneKey?: unknown; frameKey?: unknown; createdAt?: unknown }>)
                         .filter((t) => typeof t?.resourceId === "string")
                         .map((t) => ({
                             resourceId: String(t.resourceId),
                             ...(Number(t.durationMs) > 0 ? { durationMs: Number(t.durationMs) } : {}),
                             ...(typeof t.lineHash === "string" ? { lineHash: t.lineHash } : {}),
+                            ...(typeof t.sceneKey === "string" ? { sceneKey: t.sceneKey } : {}),
+                            ...(typeof t.frameKey === "string" && t.frameKey ? { frameKey: t.frameKey } : {}),
                             ...(typeof t.createdAt === "string" ? { createdAt: t.createdAt } : {}),
                         })),
                 } : {}),

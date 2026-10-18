@@ -1,4 +1,4 @@
-import { BookOpen, ChevronLeft, ChevronRight, Home, Images, Megaphone, Palette, Plug, Plus, Settings2, HardDrive, Sun, Moon } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Home, Images, Megaphone, Palette, Plug, Plus, QrCode, Settings2, HardDrive, Sun, Moon } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
@@ -59,6 +59,8 @@ function buildNav(features: FeatureAvailability): { groups: WorkspaceNavGroup[];
                 { ...toolItem("skills", "/skills"), title: "扩展" },
                 { id: "settings:channels", title: "模型配置", icon: Settings2, to: "/settings?section=channels" },
                 ...(getDesktopAppBinding()?.StorageSettings ? [{ id: "settings:storage", title: "存储设置", icon: HardDrive, to: "/settings?section=storage" }] : []),
+                // 手机访问：显示 tailnet 地址和二维码，扫码即可在手机浏览器打开同一工作区。
+                { id: "remote", title: "手机访问", icon: QrCode, to: "/remote" },
                 { id: "agents", title: "BeefTV MCP", icon: Plug, to: "/agents" },
             ],
         },

@@ -7,6 +7,7 @@ BeefTV 是一个本地优先、轻量、AI Native 的视频工作台。本页只
 - [项目首页与快速开始](../README.md)
 - [功能概览](content/docs/overview/features.mdx)
 - [本地优先架构](local-first-architecture.md)
+- [手机与远程访问](remote-access.md)
 - [桌面端本地开发](desktop-local-development.md)
 - [创作助手测试分支安装与试用](agent-branch-testing.md)
 - [桌面端发布](desktop-release.md)

@@ -104,7 +104,9 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
 
     const isStoryboardMedia = sourceNode?.type === CanvasNodeType.Image || sourceNode?.type === CanvasNodeType.Video;
     const basePrompt = isStoryboardMedia && storyboardInputs.length ? removeTrailingInputBlocks(prompt, storyboardInputs) : prompt;
-    const textInputs = connectedInputs.filter((input) => input.type === "text");
+    // 叠加层文本（信息卡、字幕）不参与提示词：它们由成片合成叠加，
+    // 混进提示词会让模型把卡片文字当成要念的台词或要画的文字。
+    const textInputs = connectedInputs.filter((input) => input.type === "text" && !nodes.find((node) => node.id === input.nodeId)?.metadata?.dhOverlayText);
     const characterReferences = connectedInputs.map((input) => input.character).filter((item): item is CharacterGenerationReference => Boolean(item));
     const upstreamText = textInputs
         .map((input) => input.text)
@@ -113,6 +115,8 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const referenceImages = connectedInputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
     const referenceVideos = connectedInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
     const referenceAudios = connectedInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
+
+    applyDhFirstLastFrameContract(sourceNode, referenceImages);
 
     return {
         prompt: promptOnly ? prompt : upstreamText ? `${basePrompt}\n\n${upstreamText}` : basePrompt,
@@ -163,8 +167,27 @@ export function findPendingMediaConversionInput(nodeId: string, nodes: CanvasNod
     return null;
 }
 
-function removeTrailingInputBlocks(prompt: string, inputs: NodeGenerationInput[]) {
-    let next = prompt.trim();
+/**
+ * 数字人口播（H3 dub-flf）的首尾帧契约。
+ *
+ * 提示词把槽位写死了：<Picture 1> 首帧 / <Picture 2> 尾帧 / <Picture 3> 身份参考。
+ * 段画布上只连了「站位首帧 → 段视频」「主播形象 → 段视频」两条线，于是入边只翻出
+ * 两张图——H3 会把人物稿当成尾帧，渲出来是"人像从画外飘进来"。
+ * 这里按节点声明的契约把首帧复制到尾帧槽，并保证首帧排在第 1 位。
+ */
+function applyDhFirstLastFrameContract(sourceNode: CanvasNodeData | undefined, referenceImages: ReferenceImage[]) {
+    if (sourceNode?.metadata?.dhVideoTemplate !== "first-last-frame") return;
+    if (referenceImages.length < 2) return;
+    const frameSourceId = String(sourceNode.metadata.dhFrameSourceNodeId ?? "");
+    const frameIndex = frameSourceId ? referenceImages.findIndex((image) => image.sourceNodeId === frameSourceId) : 0;
+    if (frameIndex > 0) {
+        const [frame] = referenceImages.splice(frameIndex, 1);
+        referenceImages.unshift(frame);
+    }
+    referenceImages.splice(1, 0, { ...referenceImages[0], name: "last-frame.png" });
+}
+
+function removeTrailingInputBlocks(prompt: string, inputs: NodeGenerationInput[]) {    let next = prompt.trim();
     let removed = true;
     while (removed) {
         removed = false;

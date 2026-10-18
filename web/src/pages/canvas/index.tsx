@@ -175,6 +175,16 @@ export default function CanvasPage() {
     const hasMore = remoteMode ? libraryQuery.hasNextPage : visibleProjects.length < filteredProjects.length;
     const selectedProjects = projects.filter((project) => selectedIds.includes(project.id));
     const selectedCanvasIds = remoteMode ? selectedIds : canvasIdsForWorkspaceProjects(localProjects, selectedIds);
+    /** 每张卡片的子画布数量：同一个 workspaceProjectId 下除主画布外还有几份 */
+    const subCanvasCounts = useMemo(() => {
+        const counts = new Map<string, number>();
+        for (const canvas of localProjects) {
+            const owner = canvasWorkspaceProjectId(canvas);
+            if (owner === canvas.id) continue;
+            counts.set(owner, (counts.get(owner) || 0) + 1);
+        }
+        return counts;
+    }, [localProjects]);
     // Folder tiles belong to the root library only. Once a folder is opened,
     // the grid represents that folder's contents; rendering the active folder
     // tile again makes an empty folder look like it contains itself.
@@ -360,6 +370,7 @@ export default function CanvasPage() {
                             <CanvasFolderCard
                                 key={project.id}
                                 project={project}
+                                subCanvasCount={subCanvasCounts.get(project.id) || 0}
                                 projectName={project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined}
                                 folders={folders}
                                 onMoveToFolder={async (folderId) => {

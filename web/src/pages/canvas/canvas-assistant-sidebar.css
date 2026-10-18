@@ -310,6 +310,18 @@
     font-size: 12px;
     color: var(--muted-foreground);
 }
+.canvas-assistant-runtime {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    max-width: calc(100% - 4px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 6px;
+    font-size: 12px;
+    color: var(--muted-foreground);
+}
 .canvas-assistant-model.ant-select {
     max-width: calc(100% - 48px);
 }

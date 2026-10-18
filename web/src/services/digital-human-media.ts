@@ -8,9 +8,9 @@ import { resourceFileUrl, resourceStorageKey, uploadResourceFile } from "@/servi
 import { waitForGenerationTask } from "@/services/api/task-center";
 import type { AiConfig } from "@/stores/use-config-store";
 import { storybookLineHash } from "@/services/storybook-audio";
-import { createDefaultTracks, DEFAULT_SUBTITLE_TRACK_ID, DEFAULT_VIDEO_TRACK_ID } from "@/lib/timeline/timeline-tracks";
+import { createDefaultTracks, DEFAULT_AUDIO_TRACK_ID, DEFAULT_SUBTITLE_TRACK_ID, DEFAULT_VIDEO_TRACK_ID } from "@/lib/timeline/timeline-tracks";
 import type { TimelineClip, TimelineProject } from "@/types/timeline";
-import { DIGITAL_HUMAN_ASPECTS, DIGITAL_HUMAN_STYLES, type DigitalHumanAspect, type DigitalHumanStyleId, type SegmentAudio } from "./digital-human-doc";
+import { DIGITAL_HUMAN_ASPECTS, DIGITAL_HUMAN_STYLES, type DigitalHumanAspect, type DigitalHumanBgm, type DigitalHumanStyleId, type SegmentAudio } from "./digital-human-doc";
 
 // 数字人口播媒体链路：逐段配音（IndexTTS-2 + 尾静音填充 + 资源化落库）、
 // 场景图/站位首帧（canvas_image 任务）、口播段视频（canvas_video 任务，首帧+人物稿+
@@ -126,23 +126,37 @@ export async function synthesizeSegmentAudio(opts: {
 
 export type DhImageResult = { resourceId: string; url: string; width?: number; height?: number; bytes?: number };
 
-/** 场景图提示词：无人物 + 画风后缀程序化拼装 */
+/** 场景图提示词：无人物 + 前景留出主播站位 + 画风后缀程序化拼装。
+ *
+ *  为什么强调"前景空地"：早先只写 "empty scene ready for a presenter"，模型会在画面
+ *  正中画一把摆在书桌前的椅子，而书桌前的椅子物理上必然背对镜头——首帧合成时主播
+ *  坐不进去（坐上去就是背影），编辑模型只能另造一把朝镜头的椅子，于是成品里出现
+ *  "两把椅子 + 人像像贴上去"。改成：前景留干净空地，让主播站进来。 */
 export function sceneImagePrompt(promptEn: string, style: DigitalHumanStyleId | undefined, aspect: DigitalHumanAspect): { prompt: string; size: string } {
     const suffix = DIGITAL_HUMAN_STYLES[style ?? "realistic"].sceneSuffix;
     const geo = DIGITAL_HUMAN_ASPECTS[aspect];
-    return { prompt: `${promptEn}, no people, no human figures, empty scene ready for a presenter, ${suffix}`, size: `${geo.width}x${geo.height}` };
+    return {
+        prompt: `${promptEn}, no people, no human figures, empty room. Keep the lower foreground open and uncluttered: no chair, table or furniture blocking the front of the frame, leaving a clear spot where the presenter will stand. ${suffix}`,
+        size: `${geo.width}x${geo.height}`,
+    };
 }
 
-/** 站位首帧提示词：把人物图放入场景（qwen 编辑参考顺序：场景第 1、人物第 2） */
+/** 站位首帧提示词：把人物图放进场景（qwen 编辑参考顺序：场景第 1、人物第 2）。
+ *
+ *  主播**站在前景空地**，而不是"坐着"：编辑模型处理"坐在已有的椅子上"很差——
+ *  它要么把场景里那把椅子保留下来再另造一把（双椅子），要么让人悬空。站着不需要
+ *  和任何家具对齐，构图稳定，H3 从首帧继续做口型也最稳。 */
 export function placementFramePrompt(style: DigitalHumanStyleId | undefined, aspect: DigitalHumanAspect): { prompt: string; size: string } {
     const suffix = DIGITAL_HUMAN_STYLES[style ?? "realistic"].sceneSuffix;
     const geo = DIGITAL_HUMAN_ASPECTS[aspect];
     return {
         prompt: [
-            "Place the presenter from the second reference image into the scene of the first reference image.",
-            "Keep the scene environment, camera angle and lighting exactly as the first reference image;",
-            "keep the presenter's face, hairstyle and outfit exactly as the second reference image.",
-            "The presenter stands or sits facing the camera at a natural medium distance, relaxed and ready to speak, with scene-consistent lighting on the body.",
+            "Composite the presenter from the second reference image into the first reference image.",
+            "She stands in the open foreground of the scene, facing the camera, framed from the waist up as a medium shot.",
+            "Keep the background, furniture, camera angle and lighting exactly as the first reference image;",
+            "add no new chair or furniture, do not duplicate objects already in the scene.",
+            "Keep the presenter's face, hairstyle and outfit exactly as the second reference image.",
+            "Match the scene's light direction and color temperature on her body, with a natural contact shadow at her feet.",
             `No other people, no text. ${suffix}`,
         ].join(" "),
         size: `${geo.width}x${geo.height}`,
@@ -257,17 +271,37 @@ export type ComposeSegment = {
     durationMs: number;
     /** 说话时长（去尾静音），字幕显示窗口 */
     speechMs: number;
+    /** 参考配音总长（含尾静音）。成片要剪到这里，见 buildEpisodeTimeline 的说明 */
+    narrationMs?: number;
+    /** 手动剪辑入点（ms，相对原片）。用户拖过就按用户的来 */
+    trimStartMs?: number;
+    /** 手动剪辑出点（ms，相对原片）。不填则按配音长度自动收尾 */
+    trimEndMs?: number;
     /** 信息卡（本段讲话时浮出的文字卡，合成时渲染叠加） */
     cards?: import("./digital-human-doc").SegmentCard[];
 };
 
 /** 段序列 → 时间线：视频轨顺序拼接 + 字幕轨逐段一句话（directMedia 引用资源） */
-export function buildEpisodeTimeline(segments: ComposeSegment[], aspect: DigitalHumanAspect): TimelineProject {
+export function buildEpisodeTimeline(segments: ComposeSegment[], aspect: DigitalHumanAspect, bgm?: DigitalHumanBgm): TimelineProject {
     const geo = DIGITAL_HUMAN_ASPECTS[aspect];
     const clips: TimelineClip[] = [];
     let cursorMs = 0;
     segments.forEach((seg, index) => {
-        const durationMs = Math.max(500, Math.round(seg.durationMs));
+        const videoMs = Math.max(500, Math.round(seg.durationMs));
+        /**
+         * 取用区间：手动剪辑的入点/出点优先；没剪过的按配音长度自动收尾。
+         *
+         * H3 是按"整数秒"出片的（配音 6.7s → 要 7s → 实际 7.29s），但音频条件只覆盖到
+         * 配音结束（6.7s）。超出去的那 0.6s 没有音频条件，模型会自由发挥，实测是一段
+         * -26dB 的电流噪声（真机 P01/P02 都在 6.65s 处突然起噪）。
+         * 那 0.6s 本来也是静音，剪掉不丢台词，所以默认上限就是配音长度-150ms。
+         */
+        const autoEndMs = seg.narrationMs
+            ? Math.max(500, Math.round(seg.narrationMs) - 150, Math.round(seg.speechMs) + 200)
+            : videoMs;
+        const startMs = Math.min(Math.max(0, Math.round(seg.trimStartMs ?? 0)), Math.max(0, videoMs - 200));
+        const endMs = Math.min(videoMs, Math.max(startMs + 200, Math.round(seg.trimEndMs ?? autoEndMs)));
+        const durationMs = Math.max(200, endMs - startMs);
         clips.push({
             id: `dh-clip-${seg.id}`,
             kind: "video",
@@ -276,7 +310,7 @@ export function buildEpisodeTimeline(segments: ComposeSegment[], aspect: Digital
             startMs: cursorMs,
             durationMs,
             title: `${seg.id}`,
-            sourceStartMs: 0,
+            sourceStartMs: startMs,
             sourceDurationMs: durationMs,
             directMedia: { id: seg.resourceId, kind: "video", title: `${seg.id} 口播段`, storageKey: `resource:${seg.resourceId}`, durationMs },
         });
@@ -300,6 +334,42 @@ export function buildEpisodeTimeline(segments: ComposeSegment[], aspect: Digital
         }
         cursorMs += durationMs;
     });
+    // 配乐轨：铺在人声下面。比成片短就首尾相接循环（只在第一段淡入、最后一段淡出），
+    // 够长就只用一段并在片尾淡出。音量由调用方给（默认只垫底，人声为主）。
+    if (bgm?.resourceId && cursorMs > 0) {
+        const volume = Math.min(1, Math.max(0, bgm.volume));
+        const musicMs = Math.max(1000, Math.round(bgm.durationMs ?? 0) || cursorMs);
+        const media = {
+            id: bgm.resourceId,
+            kind: "audio" as const,
+            title: bgm.title || "背景音乐",
+            storageKey: bgm.storageKey ?? `resource:${bgm.resourceId}`,
+            durationMs: musicMs,
+        };
+        const slices = bgm.loop ? Math.min(120, Math.ceil(cursorMs / musicMs)) : 1;
+        for (let i = 0; i < slices; i++) {
+            const startMs = i * musicMs;
+            if (startMs >= cursorMs) break;
+            const durationMs = Math.min(musicMs, cursorMs - startMs);
+            const last = startMs + durationMs >= cursorMs;
+            clips.push({
+                id: `dh-bgm-${i}`,
+                kind: "audio",
+                nodeId: "",
+                trackId: DEFAULT_AUDIO_TRACK_ID,
+                startMs,
+                durationMs,
+                title: `${bgm.title || "背景音乐"}${slices > 1 ? ` #${i + 1}` : ""}`,
+                sourceStartMs: 0,
+                sourceDurationMs: musicMs,
+                volume,
+                // 循环接缝不淡出，否则每段接缝都会掉一下音量；只在整条音乐的首尾做淡入淡出
+                fadeInMs: i === 0 ? Math.max(0, bgm.fadeInMs) : 0,
+                fadeOutMs: last ? Math.max(0, bgm.fadeOutMs) : 0,
+                directMedia: media,
+            });
+        }
+    }
     return {
         version: 2,
         tracks: createDefaultTracks(),
@@ -313,12 +383,14 @@ export async function composeEpisodeVideo(opts: {
     projectId: string;
     segments: ComposeSegment[];
     aspect: DigitalHumanAspect;
+    /** 背景音乐（混在人声下面；不传则纯人声） */
+    bgm?: DigitalHumanBgm;
     /** 图片叠加层（信息卡 PNG 资源，前端渲染后上传）；时间与坐标为成片绝对值/归一化 */
     overlays?: NonNullable<Parameters<typeof createTimelineRenderTask>[0]["options"]>["overlays"];
     signal?: AbortSignal;
     onTaskUpdate?: (task: { id: string; status: string; progress?: number }) => void;
 }): Promise<TimelineRenderResult> {
-    const timeline = buildEpisodeTimeline(opts.segments, opts.aspect);
+    const timeline = buildEpisodeTimeline(opts.segments, opts.aspect, opts.bgm);
     const geo = DIGITAL_HUMAN_ASPECTS[opts.aspect];
     const created = await createTimelineRenderTask(
         { projectId: opts.projectId, timeline, options: { width: geo.width, height: geo.height, fps: 24, burnSubtitles: true, ...(opts.overlays?.length ? { overlays: opts.overlays } : {}) } },

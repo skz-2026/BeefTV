@@ -80,7 +80,9 @@ export function useCanvasViewportController({
     const focusNodesInView = useCallback((targetNodes: CanvasNodeData[], maxScale = 1) => {
         const bounds = getCanvasNodesBounds(targetNodes);
         if (!bounds) return false;
-        transitionViewportTo(viewportForBounds(bounds, size, { padding: 88, maxScale }));
+        // 窄屏留 88px 边距会把 390px 宽的手机压到 28%，内容小到看不清；按屏宽收窄边距。
+        const padding = size.width < 640 ? 32 : 88;
+        transitionViewportTo(viewportForBounds(bounds, size, { padding, maxScale }));
         setContextMenu(null);
         return true;
     }, [setContextMenu, size, transitionViewportTo]);

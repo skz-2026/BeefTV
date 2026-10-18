@@ -103,7 +103,12 @@ func opCanvasNodeBindAsset(ctx *Context, raw json.RawMessage) (any, error) {
 	metadata["storageKey"] = "resource:" + resource.ID
 	metadata["content"] = "/api/resources/" + resource.ID + "/file"
 	metadata["nodeRole"] = "result"
-	metadata["resultOrigin"] = "library"
+	// 绑定素材只是给节点补一份账号名下的 asset 归属，不该抹掉生成溯源——
+	// 生成结果（generated/derived）被盖成 library 后，画布会把它当"素材库图"，
+	// 点节点不再弹生成面板、二次生成入口直接消失。
+	if origin, _ := metadata["resultOrigin"].(string); origin != "generated" && origin != "derived" {
+		metadata["resultOrigin"] = "library"
+	}
 	metadata["status"] = "success"
 	metadata["mimeType"] = resource.MimeType
 	metadata["bytes"] = resource.Size

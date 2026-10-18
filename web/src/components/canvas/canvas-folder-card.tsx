@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
 type CanvasFolderCardProps = {
     project: CanvasLibrarySummary;
     projectName?: string;
+    /** 这张卡里还有几份子画布（0/未传则不显示标记） */
+    subCanvasCount?: number;
     folders?: Array<{ id: string; name: string }>;
     onMoveToFolder?: (folderId?: string) => void;
     onDuplicate?: () => Promise<void>;
@@ -23,7 +25,7 @@ type CanvasFolderCardProps = {
 };
 
 /** 画布库中的文件夹封面：单一卡片表面承载预览和信息，避免相邻卡片互相侵入。 */
-export function CanvasFolderCard({ project, projectName, folders = [], onMoveToFolder, onDuplicate, onDelete, onClick, onPrefetch, opening = false }: CanvasFolderCardProps) {
+export function CanvasFolderCard({ project, projectName, subCanvasCount = 0, folders = [], onMoveToFolder, onDuplicate, onDelete, onClick, onPrefetch, opening = false }: CanvasFolderCardProps) {
     const { message } = App.useApp();
     const renameProject = useCanvasStore((state) => state.renameProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
@@ -94,6 +96,22 @@ export function CanvasFolderCard({ project, projectName, folders = [], onMoveToF
                 <div className="canvas-collection-preview-content">
                     <ProjectPreview project={{ id: project.id, nodes: project.previewNodes }} emptyVariant="libtv" />
                     {coverUrl ? <img className="canvas-collection-custom-cover" src={coverUrl} alt="" /> : null}
+                    {subCanvasCount > 0 ? (
+                        <span
+                            title={`这个项目下还有 ${subCanvasCount} 份子画布，打开后可在顶栏切换`}
+                            style={{
+                                position: "absolute", top: 8, right: 8, zIndex: 3,
+                                display: "inline-flex", alignItems: "center", gap: 4,
+                                padding: "2px 8px", borderRadius: 999, width: "auto", height: "auto",
+                                background: "color-mix(in srgb, var(--user-surface, #14161a) 78%, transparent)",
+                                border: "1px solid var(--user-border, rgba(255,255,255,.18))",
+                                color: "var(--user-ink-soft, rgba(255,255,255,.72))",
+                                fontSize: 11, lineHeight: 1.6, backdropFilter: "blur(6px)", pointerEvents: "none",
+                            }}
+                        >
+                            {subCanvasCount} 个子画布
+                        </span>
+                    ) : null}
                     {opening ? <div className="canvas-collection-opening"><LoaderCircle className="size-5 animate-spin" /><span>正在打开</span></div> : null}
                 </div>
             }

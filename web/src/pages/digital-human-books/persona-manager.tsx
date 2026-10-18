@@ -229,7 +229,10 @@ export function PersonaManagerModal({ open, onClose, onSaved, editingCanvasId }:
                     tags: [],
                 };
                 try {
-                    await http.put(`/canvas-projects/${encodeURIComponent(projectId)}/generated-assets`, { project: { ...fresh.project, nodes }, assets: [asset] });
+                    // 两步写回（后端已退役 generated-assets 原子通道）：
+                    // 素材先登记成账号名下 asset，媒体节点带 assetId 才能过画布素材归属校验
+                    await http.put(`/assets/${encodeURIComponent(assetId)}`, { asset });
+                    await http.put(`/canvas-projects/${encodeURIComponent(projectId)}`, { project: { ...fresh.project, nodes }, assets: [] });
                     portraitKeyRef.current = `resource:${result.resourceId}`;
                     setPortraitUrl(result.url);
                     message.success(isRetouch ? "人物图已精修" : "人物图已生成");

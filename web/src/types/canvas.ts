@@ -383,6 +383,18 @@ export type CanvasNodeMetadata = {
     videoReferenceOrder?: string[];
     videoFrameSourceNodeId?: string;
     videoFrameTimeMs?: number;
+    /**
+     * 数字人口播的画布契约：`first-last-frame` 表示提示词里的 <Picture 1/2/3> 是
+     * 首帧/尾帧/身份参考，画布只连两张图时要自动把首帧复制进尾帧槽。
+     */
+    dhVideoTemplate?: "first-last-frame";
+    /** 上面契约里「首帧」来自哪个节点（保证它排在第 1 个参考图槽） */
+    dhFrameSourceNodeId?: string;
+    /** 叠加层文本（信息卡/字幕）：连到生成节点上但不许拼进提示词 */
+    dhOverlayText?: boolean;
+    /** 段画布的归属：`dh-note` 节点上记录它属于哪本册的哪一段（画布页据此提供"返回生产页"） */
+    dhBookId?: string;
+    dhSegmentId?: string;
     /** Traceability for media operations created from an existing video node. */
     videoSegmentSourceNodeId?: string;
     videoSegmentStartMs?: number;

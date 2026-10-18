@@ -1437,6 +1437,18 @@
     flex-shrink: 0;
 }
 
+/* 窄屏下设置页头部的操作按钮会撑出视口（412px > 390px），允许换行并收缩。 */
+@media (max-width: 767px) {
+    .app-product-workspace .app-section-page .settings-pane-header-actions {
+        width: 100%;
+        flex-shrink: 1;
+        flex-wrap: wrap;
+    }
+    .app-product-workspace .app-section-page .settings-pane-header-actions .ant-btn {
+        flex: 1 1 auto;
+    }
+}
+
 .app-product-workspace .app-section-page .app-page-header-leading .libtv-project-back {
     width: 24px;
     height: 28px;

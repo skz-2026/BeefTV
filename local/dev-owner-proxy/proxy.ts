@@ -7,7 +7,7 @@
 //
 // 用法：node proxy.js  （默认 8090 -> 8080，令牌从数据目录读取）
 // 然后 Vite 用 VITE_API_PROXY_TARGET=http://127.0.0.1:8090 启动。
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -26,34 +26,24 @@ function log(message: string) {
 const server = createServer((req: IncomingMessage, res) => {
     const headers = { ...req.headers, "x-beeftv-owner": ownerToken };
     delete headers.host;
-    delete headers["content-length"];
-    const upstream = fetch(`http://${UPSTREAM_HOST}:${UPSTREAM_PORT}${req.url}`, {
+    // 用 http.request 直接转发流：fetch 不接受 IncomingMessage，
+    // 而先缓冲再 fetch 在本机 Node 24 上仍会 fetch failed（PUT 502）。
+    const upstream = httpRequest({
+        host: UPSTREAM_HOST,
+        port: UPSTREAM_PORT,
+        path: req.url,
         method: req.method,
         headers,
-        body: req.method === "GET" || req.method === "HEAD" ? undefined : req,
-        // @ts-expect-error Node 专用流式选项
-        duplex: "half",
+    }, (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+        upstreamRes.pipe(res);
     });
-
-    upstream.then(async (upstreamRes) => {
-        const headersOut: Record<string, string> = {};
-        upstreamRes.headers.forEach((value, key) => {
-            if (key !== "transfer-encoding" && key !== "content-encoding") headersOut[key] = value;
-        });
-        res.writeHead(upstreamRes.status, headersOut);
-        const reader = upstreamRes.body?.getReader();
-        if (!reader) return res.end();
-        for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
-        }
-        res.end();
-    }).catch((error) => {
+    upstream.on("error", (error) => {
         log(`转发失败 ${req.method} ${req.url}: ${error.message}`);
         if (!res.headersSent) res.writeHead(502, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ code: 502, data: null, msg: "owner proxy upstream error" }));
     });
+    req.pipe(upstream);
 });
 
 server.listen(PORT, "127.0.0.1", () => {

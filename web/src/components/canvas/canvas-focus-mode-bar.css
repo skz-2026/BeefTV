@@ -1,0 +1,7 @@
+/* 触摸端把专注模式工具栏的点击目标放大到 40px；桌面保持原有的 32px 紧凑尺寸。 */
+@media (pointer: coarse) {
+    .canvas-focus-mode-bar button {
+        min-width: 40px;
+        min-height: 40px;
+    }
+}

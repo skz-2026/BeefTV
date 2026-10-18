@@ -106,7 +106,7 @@ export function AssetPickerModal({ open, kind, title, projectId, imageModel, gen
         onClose();
     };
 
-    /** 生成并注册进资产库（generated-assets 通道提交 asset 记录，不动节点） */
+    /** 生成并登记进资产库（PUT /assets/:id 幂等 upsert，不动画布节点） */
     const generate = async () => {
         if (!imageModel || !prompt.trim()) return;
         setGenerating(true);
@@ -118,9 +118,7 @@ export function AssetPickerModal({ open, kind, title, projectId, imageModel, gen
                 size: genSize || "960x960",
                 nodeId: `asset-picker-${Date.now()}`,
             });
-            // 注册到资产库：拉最新画布，仅附 asset 记录
             for (let attempt = 0; attempt < 3; attempt++) {
-                const fresh = await http.get<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(projectId)}`);
                 const now = new Date().toISOString();
                 const assetId = "generation_" + Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
                 const asset = {
@@ -139,9 +137,11 @@ export function AssetPickerModal({ open, kind, title, projectId, imageModel, gen
                     tags: [],
                 };
                 try {
-                    await http.put(`/canvas-projects/${encodeURIComponent(projectId)}/generated-assets`, { project: fresh.project, assets: [asset] });
+                    // 只登记素材（不动节点）：PUT /assets/:id 是幂等 upsert，
+                    // 后端已退役 /canvas-projects/:id/generated-assets 原子通道
+                    await http.put(`/assets/${encodeURIComponent(assetId)}`, { asset });
                     break;
-                } catch { /* revision 冲突重试 */ }
+                } catch { /* 冲突重试 */ }
             }
             message.success("已生成并入库");
             onPick({ storageKey: resourceStorageKey(result.resourceId), name: prompt.trim().slice(0, 24) });

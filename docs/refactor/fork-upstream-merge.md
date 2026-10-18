@@ -26,6 +26,9 @@ git diff upstream/main main --name-status   # M=就地修改（冲突面），A=
 | `backend/internal/mediatools/ffmpeg.go` | `ResolveFFprobe` 的"与 CANVAS_FFMPEG_PATH 同目录优先"语义 | 融合口径：我们的同目录探测在前，上游 `resolveTool` 通用链在后；`process_*.go`（HideConsole）必须保留 |
 | `backend/go.mod` | gopsutil 等自有依赖 | 取上游版本号 + 保留自有依赖，`go mod tidy` 收敛 |
 | `backend/internal/generation/image_recovery.go` | `PaidImageHost` 计费保护（被 `app/image_submission.go` 使用） | `RecoverableImageEndpoint` 用上游协议协商版，`PaidImageHost` 保留 |
+| `backend/internal/assistantruntime/config.go` + `handler/agent_proxy.go` + `handler/agent_host_lifecycle.go` | ACP 运行时检测（`Host.ACPRuntime`）、provider 门禁放宽与 ACP 模型显示 | 默认 pi 路径不变；保留 `ACPRuntime` 与三处 `!acp` 守卫，不要扩散成全局运行时开关 |
+| `web/src/pages/canvas/canvas-assistant-composer.tsx`、`canvas-assistant-sidebar.tsx`、`canvas-assistant-sidebar.css` | ACP 模式下用 `ACP · <model>` 标签替换 BeefTV 模型选择器 | 保留 `runtimeModel` 条件（`status.model.channelId === "acp"`），与上游 composer 布局改动叠加 |
+| `scripts/package-agent-host.mjs` | 把 `agent-host/ACP/` 打进发行包 | 保留 `sourceFiles` 里的 `'ACP'` 和 `cpSync(..., { recursive: true })`；少任一项会导致缺文件或 EISDIR |
 
 ### B 级：计数/夹具漂移（机械修复）
 
@@ -39,7 +42,7 @@ git diff upstream/main main --name-status   # M=就地修改（冲突面），A=
 
 ### C 级：fork 独有（新增文件，零冲突）
 
-`backend/internal/motion/`、`app/motion_templates.go`、`task_motion.go`、`operations_motion_adapter.go`、`handler/motion_templates.go`、`operations/canvas_motion.go`、`operations/canvas_render.go`、`canvas_timeline.go`；`web/src/pages/digital-human-book/`、`storybook-book/`、`prompt-library/`、`comic-books/`、`lib/dh-cards.ts`；`.local/` 本地短片流水线。
+`backend/internal/motion/`、`app/motion_templates.go`、`task_motion.go`、`operations_motion_adapter.go`、`handler/motion_templates.go`、`operations/canvas_motion.go`、`operations/canvas_render.go`、`canvas_timeline.go`；`web/src/pages/digital-human-book/`、`storybook-book/`、`prompt-library/`、`comic-books/`、`lib/dh-cards.ts`；`agent-host/ACP/`（自有 ACP 宿主，复用上游 host 模块）；`.local/` 本地短片流水线。
 
 ## 结构原则（让 A 级不再增长）
 

@@ -27,6 +27,7 @@ const EagleLibraryPage = lazy(() => import("@/pages/plugins/eagle"));
 const ProjectDetailPage = lazy(loadProjectDetailPage);
 const PromptLibraryPage = lazy(() => import("@/pages/prompt-library"));
 const SettingsPage = lazy(() => import("@/pages/settings"));
+const RemoteAccessPage = lazy(() => import("@/pages/remote"));
 const TestVoiceRecording = lazy(() => import("@/pages/test-voice-recording"));
 const UserLayout = lazy(() => import("@/layouts/user-layout"));
 const RequireFeature = lazy(() => import("@/components/workspace/require-feature").then((module) => ({ default: module.RequireFeature })));
@@ -79,6 +80,8 @@ function devRoutes() {
 
 export const router = createWorkspaceRouter([
     ...(import.meta.env.DEV ? devRoutes() : []),
+    // 手机访问页不套工作区外壳：它只显示二维码和 tailnet 状态，全屏更像一个“扫码入口”。
+    { path: "/remote", element: fullScreenDeferred(<RemoteAccessPage />), errorElement: <RouteErrorPage /> },
     {
         element: <WorkspaceLayout />,
         errorElement: <RouteErrorPage />,

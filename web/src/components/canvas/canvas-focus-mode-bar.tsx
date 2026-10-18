@@ -7,6 +7,7 @@ import { History, PanelBottom, X, ZoomIn, ZoomOut } from "lucide-react";
 import { aceternityMotion } from "@/lib/aceternity-motion";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
+import "./canvas-focus-mode-bar.css";
 
 type CanvasFocusModeBarProps = {
     versionsOpen: boolean;
@@ -30,7 +31,7 @@ export function CanvasFocusModeBar({ versionsOpen, onToggleVersions, syncStatus,
             initial={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel}
-            className="pointer-events-auto absolute left-1/2 top-2 z-[var(--z-toolbar)] -translate-x-1/2"
+            className="canvas-focus-mode-bar pointer-events-auto absolute left-1/2 top-2 z-[var(--z-toolbar)] -translate-x-1/2"
             role="toolbar"
             aria-label="专注模式工具栏"
         >

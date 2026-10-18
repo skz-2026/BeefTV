@@ -1,9 +1,11 @@
 package assistantruntime
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,35 @@ import (
 
 func testProvider() assistant.Provider {
 	return assistant.Provider{Model: "gpt-5.5", BaseURL: "https://beefapi.com/v1", APIKey: "test-key", Protocol: "chat-completion"}
+}
+
+func TestACPRuntimeDetectsForkHost(t *testing.T) {
+	dataDir := t.TempDir()
+	write := func(config HostConfig) {
+		raw, err := json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "agent_config.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := New(Options{DataDir: dataDir})
+
+	write(HostConfig{Model: "m", HostCommand: "node", HostArgs: []string{`C:\repo\agent-host\ACP\acp-host.mjs`}})
+	if !host.ACPRuntime() {
+		t.Fatal("acp-host.mjs 应被识别为 ACP 运行时")
+	}
+
+	write(HostConfig{Model: "m", HostCommand: "node", HostArgs: []string{`C:\repo\agent-host\server.mjs`}})
+	if host.ACPRuntime() {
+		t.Fatal("pi 宿主不能被当成 ACP")
+	}
+
+	write(HostConfig{Model: "m", HostCommand: "node", HostArgs: []string{`C:\repo\agent-host\ACP\acp-client.mjs`}})
+	if host.ACPRuntime() {
+		t.Fatal("只有宿主入口 acp-host.mjs 才算 ACP 运行时")
+	}
 }
 
 func testPin(opsURL, desktop string) childPin {
@@ -136,9 +167,20 @@ func TestBundledAgentHostCommandFollowsAppLayout(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			acpEntry := filepath.Join(hostDir, "ACP", "acp-host.mjs")
+			if err := os.MkdirAll(filepath.Dir(acpEntry), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(acpEntry, []byte("fixture"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			got := BundledConfig(executable, goos)
 			if got.HostCommand != node || len(got.HostArgs) != 1 || got.HostArgs[0] != entry {
 				t.Fatalf("invalid bundled command: %#v", got)
+			}
+			gotACP := BundledACPConfig(executable, goos)
+			if gotACP.HostCommand != node || len(gotACP.HostArgs) != 1 || gotACP.HostArgs[0] != acpEntry {
+				t.Fatalf("invalid bundled ACP command: %#v", gotACP)
 			}
 			if err := os.Remove(node); err != nil {
 				t.Fatal(err)
@@ -147,6 +189,48 @@ func TestBundledAgentHostCommandFollowsAppLayout(t *testing.T) {
 				t.Fatalf("missing runtime must not fall back to PATH: %#v", got)
 			}
 		})
+	}
+}
+
+func TestEffectiveConfigPrefersBundledACPWhenHostFileExists(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "BeefTV")
+	dataDir := t.TempDir()
+	executable := filepath.Join(root, "BeefTV.exe")
+	hostDir := filepath.Join(root, "agent-host")
+	node := filepath.Join(hostDir, "runtime", "node.exe")
+	if err := os.MkdirAll(filepath.Dir(node), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(node, []byte("node"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"server.mjs", filepath.Join("ACP", "acp-host.mjs")} {
+		target := filepath.Join(hostDir, name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("entry"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := New(Options{
+		DataDir:    dataDir,
+		GOOS:       "windows",
+		Executable: func() (string, error) { return executable, nil },
+	})
+	config, ok := host.EffectiveConfig()
+	if !ok || !strings.Contains(strings.Join(config.HostArgs, " "), "server.mjs") {
+		t.Fatalf("没有 acp_host.json 时应保持 pi：%#v", config)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "acp_host.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, ok = host.EffectiveConfig()
+	if !ok || !strings.Contains(strings.Join(config.HostArgs, " "), "acp-host.mjs") {
+		t.Fatalf("acp_host.json 应选择随包 ACP 宿主：%#v", config)
+	}
+	if !host.ACPRuntime() {
+		t.Fatal("ACP 选择应同时放宽 provider 门禁")
 	}
 }
 

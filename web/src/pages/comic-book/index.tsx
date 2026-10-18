@@ -835,7 +835,9 @@ export default function ComicBookPage() {
                     tags: [],
                 };
                 try {
-                    const res = await http.put<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}/generated-assets`, { project: { ...doc, nodes }, assets: [asset] });
+                    // 两步写回（后端已退役 generated-assets 原子通道）
+                    await http.put(`/assets/${encodeURIComponent(asset.id)}`, { asset });
+                    const res = await http.put<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`, { project: { ...doc, nodes }, assets: [] });
                     const rev = res.project?.revision;
                     // 本地只合并目标帧的图片字段，其余本地编辑原样保留
                     setCanvas((prev) => {

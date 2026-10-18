@@ -69,6 +69,8 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
     const pinchStateRef = useRef<PinchState>({ active: false, pointerIds: [-1, -1], initialDistance: 1, worldX: 0, worldY: 0, initialScale: viewport.k });
     const spacePressedRef = useRef(false);
     const wheelGestureRef = useRef<{ intent: "pan" | "zoom"; at: number; modifiers: number } | null>(null);
+    const longPressRef = useRef<{ timer: number | null; x: number; y: number; fired: boolean }>({ timer: null, x: 0, y: 0, fired: false });
+    const suppressCanvasClickRef = useRef(false);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
     const [isPanning, setIsPanning] = useState(false);
 
@@ -425,6 +427,95 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
         };
     }, [interactive, containerRef, handleWheel]);
 
+    // 触摸端没有右键。长按在落点上补发一次原生 contextmenu，节点、连线、空白处
+    // 各自已有的 onContextMenu 处理会照常打开菜单，不需要为手机另写一套动作表。
+    // 补发放在抬手时：画布空白处的单击取消选择发生在 pointerup，先发菜单会立刻被关掉。
+    const clearLongPress = useCallback(() => {
+        if (longPressRef.current.timer === null) return;
+        window.clearTimeout(longPressRef.current.timer);
+        longPressRef.current.timer = null;
+    }, []);
+
+    const dispatchLongPressMenu = useCallback((x: number, y: number) => {
+        const target = document.elementFromPoint(x, y);
+        if (!target || target.closest(CANVAS_POINTER_IGNORE_SELECTOR)) return;
+        suppressCanvasClickRef.current = true;
+        window.setTimeout(() => {
+            suppressCanvasClickRef.current = false;
+        }, 600);
+        target.dispatchEvent(
+            new MouseEvent("contextmenu", {
+                bubbles: true,
+                cancelable: true,
+                clientX: x,
+                clientY: y,
+                button: 2,
+                buttons: 2,
+            }),
+        );
+    }, []);
+
+    const handleTouchStart = useCallback(
+        (event: React.TouchEvent<HTMLDivElement>) => {
+            if (!interactive) return;
+            clearLongPress();
+            longPressRef.current.fired = false;
+            if (event.touches.length !== 1) return;
+            const startTarget = event.target instanceof Element ? event.target : null;
+            if (startTarget?.closest(CANVAS_POINTER_IGNORE_SELECTOR)) return;
+            const touch = event.touches[0];
+            longPressRef.current = {
+                x: touch.clientX,
+                y: touch.clientY,
+                fired: false,
+                timer: window.setTimeout(() => {
+                    longPressRef.current.timer = null;
+                    longPressRef.current.fired = true;
+                    // 长按已经算一次操作，抬手时不能再被当成空白处点击去取消选择。
+                    panState.current.hasMoved = true;
+                    navigator.vibrate?.(10);
+                }, 480),
+            };
+        },
+        [clearLongPress, interactive],
+    );
+
+    const handleTouchMove = useCallback(
+        (event: React.TouchEvent<HTMLDivElement>) => {
+            if (longPressRef.current.timer === null) return;
+            const touch = event.touches[0];
+            if (!touch || event.touches.length > 1 || Math.hypot(touch.clientX - longPressRef.current.x, touch.clientY - longPressRef.current.y) > 10) {
+                clearLongPress();
+                longPressRef.current.fired = false;
+            }
+        },
+        [clearLongPress],
+    );
+
+    const handleTouchEnd = useCallback(() => {
+        clearLongPress();
+        if (!longPressRef.current.fired) return;
+        longPressRef.current.fired = false;
+        dispatchLongPressMenu(longPressRef.current.x, longPressRef.current.y);
+    }, [clearLongPress, dispatchLongPressMenu]);
+
+    const handleTouchCancel = useCallback(() => {
+        clearLongPress();
+        longPressRef.current.fired = false;
+    }, [clearLongPress]);
+
+    // 长按已经打开菜单时，抬手产生的 click 不应再触发节点编辑或画布取消选择。
+    const handleClickCapture = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        if (!suppressCanvasClickRef.current) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("[data-canvas-context-menu]")) return;
+        suppressCanvasClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+    }, []);
+
+    useEffect(() => clearLongPress, [clearLongPress]);
+
     return (
         <div
             ref={containerRef}
@@ -434,6 +525,7 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
             style={{
                 background: resolvedAppearance.background,
                 overscrollBehavior: "none",
+                WebkitTouchCallout: "none",
                 "--canvas-live-x": `${viewport.x}px`,
                 "--canvas-live-y": `${viewport.y}px`,
                 "--canvas-live-scale": viewport.k,
@@ -442,6 +534,11 @@ export function InfiniteCanvas({ interactive = true, containerRef, viewport, app
                 "--canvas-live-scale-ratio": 1,
             } as React.CSSProperties}
             onPointerDown={handlePointerDown}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onTouchCancel={handleTouchCancel}
+            onClickCapture={handleClickCapture}
             onDoubleClick={(event) => {
                 const target = event.target instanceof Element ? event.target : null;
                 if (!target?.closest("[data-node-id],[data-connection-id],[data-canvas-no-zoom]")) onCanvasDoubleClick?.(event);

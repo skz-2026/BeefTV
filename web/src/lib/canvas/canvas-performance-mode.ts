@@ -28,8 +28,18 @@ export function persistCanvasMediaPerformanceMode(mode: CanvasMediaPerformanceMo
 export function shouldReduceCanvasMediaEffects(mode: CanvasMediaPerformanceMode, nodes: CanvasNodeData[]) {
     if (mode === "performance") return true;
     if (mode === "quality") return false;
+    // 触摸设备默认按低媒体预算渲染：手机屏幕小、解码和带宽都紧张，一屏放不下的大图
+    // 没必要提前加载。鼠标设备仍按节点数量决定。
+    if (isTouchFirstDevice()) return true;
     const mediaCount = nodes.filter((node) => node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio).length;
     return nodes.length >= 80 || mediaCount >= 32;
+}
+
+/** 触摸优先设备：手机、平板，以及带触屏的笔记本。maxTouchPoints 比媒体查询可靠。 */
+export function isTouchFirstDevice() {
+    if (typeof window === "undefined") return false;
+    if (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0) return true;
+    return typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
 }
 
 export function canvasNodeRenderPadding(reduceMediaEffects: boolean, previouslyRendered: boolean) {

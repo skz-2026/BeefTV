@@ -330,7 +330,13 @@ export function CanvasNodeToolbar({
     // Image nodes use a deliberately small, stable action hierarchy. Keep the
     // underlying handlers/tool definitions intact, but only expose the actions
     // that belong to the four image workflows in the primary dock.
-    const imagePrimaryTools = primary.filter((tool) => tool.id === "maskEdit");
+    // 例外：节点自己带着生成信息（prompt / 生成参数）时，必须把「生成设置」留下——
+    // 否则一张已经生成好的图就再也改不了提示词、无法二次生成。
+    const imagePromptTool = isImage ? allTools.find((tool) => tool.id === "edit") : undefined;
+    const imagePrimaryTools = [
+        ...(imagePromptTool ? [imagePromptTool] : []),
+        ...primary.filter((tool) => tool.id === "maskEdit"),
+    ];
     const portraitTools = compact ? [] : isImage ? inGroup("portrait").filter((tool) => tool.id === "emotion") : inGroup("portrait");
     const viewpointLightingTools = compact ? [] : isImage ? [...inGroup("viewpoint"), ...inGroup("lighting")].filter((tool) => tool.id === "angle" || tool.id === "lighting") : [...inGroup("viewpoint"), ...inGroup("lighting")];
     const panoramaTools = compact || isImage ? [] : inGroup("panorama");

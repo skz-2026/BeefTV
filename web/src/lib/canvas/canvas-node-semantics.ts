@@ -80,6 +80,11 @@ export function canvasMediaNodeSemanticLabel(node: CanvasNodeData | null | undef
 export function canOpenCanvasNodePromptPanel(node: CanvasNodeData | null | undefined): boolean {
     if (!node) return false;
     if (isCanvasMediaNode(node)) {
+        // generationType 是"这是 AI 生成结果"的直接标记：即便 resultOrigin 被素材绑定
+        // 等流程改写成 library（历史数据），也不能因此没收它的生成面板。
+        if (node.metadata?.generationType) {
+            return Boolean((node.metadata?.composerContent || node.metadata?.prompt)?.trim());
+        }
         return canvasMediaNodeRole(node) === "generator"
             || (canvasMediaNodeOrigin(node) === "generated" && Boolean((node.metadata?.composerContent || node.metadata?.prompt)?.trim()));
     }

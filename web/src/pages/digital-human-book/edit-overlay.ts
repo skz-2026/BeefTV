@@ -6,7 +6,7 @@ import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 // 不会被本地旧 metadata 整份抹掉；digitalhuman-config 的 content 仍是整体覆盖。
 // 生产页新增可编辑的 seg/scene 字段时必须同步 SEG_EDIT_KEYS / SCENE_EDIT_KEYS。
 
-const SEG_EDIT_KEYS = ["line", "expression", "action", "camera", "sceneKey", "secondsHint", "videoPrompt", "extraRefs", "cards", "audio", "videoResourceId", "videoDurationMs", "videoLineHash", "takes"] as const;
+const SEG_EDIT_KEYS = ["line", "expression", "action", "camera", "sceneKey", "secondsHint", "videoPrompt", "extraRefs", "cards", "audio", "videoResourceId", "videoDurationMs", "videoLineHash", "videoSceneKey", "videoFrameKey", "takes"] as const;
 const SCENE_EDIT_KEYS = ["sceneName", "promptEn", "frameStorageKey"] as const;
 
 type EditOverlay = {

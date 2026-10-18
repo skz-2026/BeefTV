@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import { App, Alert, Button, Collapse, Image, Input, Modal, Progress, Segmented, Select, Space, Tag, Tooltip } from "antd";
-import { ArrowLeftOutlined, ArrowRightOutlined, AudioOutlined, CheckCircleOutlined, CloudUploadOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, ExclamationCircleOutlined, ExpandAltOutlined, PictureOutlined, PlayCircleOutlined, PlusOutlined, RedoOutlined, ReloadOutlined, SaveOutlined, ScissorOutlined, SoundOutlined, StopOutlined, ThunderboltOutlined, UndoOutlined, UserSwitchOutlined, VideoCameraOutlined } from "@ant-design/icons";
+import { useNavigate, useParams, useSearchParams } from "react-router";
+import { App, Alert, Button, Checkbox, Collapse, Dropdown, Image, Input, Modal, Progress, Select, Slider, Space, Tag, Tooltip } from "antd";
+import { ArrowLeftOutlined, ArrowRightOutlined, AudioOutlined, CheckCircleOutlined, ClockCircleOutlined, CloudUploadOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, ExclamationCircleOutlined, ExpandAltOutlined, PictureOutlined, PlayCircleOutlined, PlusOutlined, RedoOutlined, ReloadOutlined, SaveOutlined, ScissorOutlined, SettingOutlined, SoundOutlined, StopOutlined, ThunderboltOutlined, UndoOutlined, UploadOutlined, VideoCameraOutlined } from "@ant-design/icons";
 
 import { http } from "@/services/api/request";
 import { listGenerationTasks, waitForGenerationTask } from "@/services/api/task-center";
 import { resourceFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { getLocalService, startLocalService } from "@/services/api/local-services";
 import { createZip } from "@/lib/zip";
 import { padWavTailBlob } from "@/lib/audio/wav-pad";
 import { probeMediaDurationMs } from "@/lib/media-metadata";
+import "./mobile.css";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { resolveModelRequestConfig, useConfigStore } from "@/stores/use-config-store";
+import { useAssetStore } from "@/stores/use-asset-store";
 import { storybookLineHash } from "@/services/storybook-audio";
 import { saveChannelVoice, fetchChannelVoices, requestAudioGeneration } from "@/services/api/audio";
 import {
@@ -21,7 +24,10 @@ import {
     personaPortraitPrompt,
     segmentAudioStale,
     segmentVideoStale,
+    type DigitalHumanBgm,
     type DigitalHumanPersonaCard,
+    type PersonaSnapshot,
+    type SceneNodeInfo,
     type SegmentCard,
     type SegmentNodeInfo,
 } from "@/services/digital-human-doc";
@@ -40,20 +46,85 @@ import { buildSegmentVideoPrompt, extractSegmentCards, fillSegmentVideoPrompt, i
 import type { TimelineRenderResult } from "@/services/api/timeline-tasks";
 import { AssetPickerModal, type AssetPick } from "./asset-picker-modal";
 import { MediaDraftBar, type MediaDraft } from "./media-draft-bar";
-import { SegmentPipeline, type PipelineStep } from "./segment-pipeline";
+import { compactSegmentLayout, SegmentCanvasView } from "./segment-canvas";
+import { buildSegmentCanvasDoc, loadSegmentCanvasDoc, segmentCanvasId, type SegmentCanvasDoc } from "./segment-canvas-doc";
+import { applySegmentPulls, collectSegmentPulls } from "./segment-canvas-merge";
 import { VideoLightbox } from "./video-lightbox";
+import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { VoiceDesignPanel } from "./voice-design-panel";
 import { applyEditOverlay, collectEditOverlay, withNodeMeta } from "./edit-overlay";
 import { CardPreviewOverlay } from "./card-preview";
-import { renderCardPng } from "@/lib/dh-cards";
+import { renderCardPng, cardCacheKey, getCachedCardResource, setCachedCardResource, clearCardResourceCache } from "@/lib/dh-cards";
+import { AppDrawer } from "@/components/ui/product/app-drawer";
 import { CanvasPromptLibraryModal } from "@/components/canvas/canvas-prompt-library-modal";
 
 // 数字人口播生产页：画布文档的专用视图（与绘本成书同模式）。
-// 顶栏批量操作（串行可停）｜左段导航｜中预览（段视频/站位首帧）｜右 Segmented
-// 台词·音频·场景·成片。链路：逐段 TTS（IndexTTS-2+尾静音）→ 场景图/站位首帧
-// （qwen 车道）→ 段视频（h3 dub：首帧+人物稿+配音口型）→ 服务端拼接烧字幕。
+// 顶栏批量操作（串行可停）｜左段导航｜中预览（段视频/站位首帧）｜右「镜头画布」：
+// 每个镜头一张节点图（台词→配音→段视频，场景→首帧，人物稿/信息卡汇入），点节点
+// 开管理抽屉。链路：逐段 TTS（IndexTTS-2+尾静音）→ 场景图/站位首帧（qwen 车道）
+// → 段视频（h3 dub：首帧+人物稿+配音口型）→ 服务端拼接烧字幕+信息卡叠加。
 
-type RightTab = "script" | "material" | "scene" | "export";
+type WorkflowPanel = "script" | "audio" | "scene" | "frame" | "video" | "cards" | "persona" | "export";
+
+/**
+ * 这个失败是不是"服务根本连不上"（而不是这一段本身有问题）。
+ *
+ * 上游连不上时后端只会回一句很技术的"提交结果尚未确认，上游任务可能仍在执行"，
+ * 批量会把这个错误在每一段上重放一遍，用户看到进度条一闪而过、什么也没生成。
+ * 认出来就立刻停批量，并把原因换成能动手排查的话。
+ */
+/** 服务健康结果的短缓存：批量生成会逐段调用预检，没必要每段都打一次状态接口 */
+let videoServiceHealthyUntil = 0;
+
+function looksLikeUpstreamDown(message: string) {
+    // 后端建连失败时是"未能连接服务，本次请求尚未提交"（transportPhase=connect），
+    // 不是"连接失败"——旧正则匹配不到，批量会继续把同一错误在每段上重放一遍。
+    return /未能连接服务|连接被拒绝|拒绝连接|提交结果尚未确认|submission_uncertain|模型服务暂时不可用|Unable to connect|ECONNREFUSED|connection refused|actively refused|connectex|dial tcp|连接失败|端口/i.test(message);
+}
+
+/** 配乐指纹：换曲、调音量、改淡入淡出都要让旧成片标记过期 */
+function bgmSignature(bgm?: { resourceId: string; volume: number; fadeInMs: number; fadeOutMs: number; loop: boolean }) {
+    return bgm?.resourceId ? `#bgm:${bgm.resourceId}@${bgm.volume}/${bgm.fadeInMs}/${bgm.fadeOutMs}/${bgm.loop ? 1 : 0}` : "";
+}
+
+/** 成片指纹：哪几段、用什么视频、剪了哪一段。剪辑改动也要让旧成片标记过期 */
+function composeSignature(list: ReadonlyArray<{ videoResourceId: string | null; videoTrimStartMs?: number; videoTrimEndMs?: number }>) {
+    return list
+        .filter((seg) => seg.videoResourceId)
+        .map((seg) => `${seg.videoResourceId}@${seg.videoTrimStartMs ?? 0}-${seg.videoTrimEndMs ?? ""}`)
+        .join("|");
+}
+
+
+/**
+ * 同一份册画布文档的写入串行化。
+ *
+ * 自动保存、生成写回、任务恢复补写都会 PUT 同一份文档，并各自"冲突后立刻重试 3 次"。
+ * 三条写同时进来时，重试窗口完全重叠，最后一起报「画布写入连续冲突」——真机上就是
+ * 视频生成完了但写不回去。排队 + 退避比堆重试次数可靠。
+ */
+let canvasWriteChain: Promise<unknown> = Promise.resolve();
+function serializeCanvasWrite<T>(task: () => Promise<T>): Promise<T> {
+    const run = canvasWriteChain.then(task, task);
+    canvasWriteChain = run.catch(() => undefined);
+    return run;
+}
+const writeRetryDelay = (attempt: number) => new Promise<void>((resolve) => setTimeout(resolve, 180 * (attempt + 1)));
+type DrawerPanel = null | { type: WorkflowPanel };
+
+function drawerTitle(drawer: DrawerPanel): string {
+    switch (drawer?.type) {
+        case "script": return "分镜编辑";
+        case "audio": return "配音管理";
+        case "scene": return "场景管理（场景图 → 站位首帧）";
+        case "frame": return "场景管理（站位首帧）";
+        case "video": return "段视频 · 重摇与抽卡";
+        case "cards": return "信息卡 · 讲到重点时浮出画面";
+        case "persona": return "数字人 · 形象与音色";
+        case "export": return "成片与发布";
+        default: return "";
+    }
+}
 
 export default function DigitalHumanBookPage() {
     const { id } = useParams();
@@ -64,18 +135,30 @@ export default function DigitalHumanBookPage() {
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [segIndex, setSegIndex] = useState(0);
-    const [rightTab, setRightTab] = useState<RightTab>("script");
-    /** 右栏宽度（可拖拽分隔条调整，本地记忆） */
+    /** 左栏段落过滤：全部 / 缺配音 / 缺视频 / 已过期 */
+    const [segFilter, setSegFilter] = useState<"all" | "noAudio" | "noVideo" | "stale">("all");
+    /** 左栏拖拽调序：正在拖的段 / 拖到谁身上 */
+    const [dragIndex, setDragIndex] = useState<number | null>(null);
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    /** 镜头画布节点抽屉（null=关闭；type=画布节点类型） */
+    const [drawer, setDrawer] = useState<DrawerPanel>(null);
+    /** 右栏宽度（可拖拽分隔条调整，本地记忆）；默认放宽到 460，工作流才看得清 */
     const [rightWidth, setRightWidth] = useState(() => {
         const saved = Number(localStorage.getItem("dh-right-width"));
-        return Number.isFinite(saved) && saved >= 300 && saved <= 720 ? saved : 380;
+        return Number.isFinite(saved) && saved >= 320 && saved <= 900 ? saved : 460;
     });
+    /** 沉浸画布：右栏吃满中间预览的位置，整块空间放工作流 */
+    const [canvasFocus, setCanvasFocus] = useState(false);
+    /** 剪辑滑块拖动中的临时值：只在松手时落库，否则每拖一格都会触发一次段画布同步 */
+    const [trimDraft, setTrimDraft] = useState<{ segId: string; range: [number, number] } | null>(null);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
     /** 进行中的生成键（audio:P01 / video:P01 / scene:S1 / frame:S1 / prompt:P01）→ taskId|pending */
     const [generating, setGenerating] = useState<Map<string, string>>(new Map());
     const cancelGenRef = useRef(new Set<string>());
     const batchStopRef = useRef(false);
+    /** 最近一次段视频失败的原因：批量流程靠它判断"是不是服务根本连不上"，避免空跑完所有段 */
+    const lastVideoFailureRef = useRef("");
     const [batch, setBatch] = useState<{ label: string; done: number; total: number; current: string; perItemMs?: number } | null>(null);
     const [composing, setComposing] = useState<{ percent: number } | null>(null);
     const [composeResult, setComposeResult] = useState<TimelineRenderResult | null>(null);
@@ -105,7 +188,27 @@ export default function DigitalHumanBookPage() {
     const suppressHistoryRef = useRef(false);
     const canvasRef = useRef<CanvasProject | null>(null);
     canvasRef.current = canvas;
+    /** save 延迟转发（save 定义在 load 之后，load 里迁移后要立即落库） */
+    const saveRef = useRef<(doc?: CanvasProject) => Promise<void>>(async () => undefined);
     const audioRef = useRef<HTMLAudioElement | null>(null);
+
+    /** 回档导入段的指纹迁移：没有 videoLineHash/videoSceneKey 的段会永远显示"过期"，
+     *  加载时按当前台词/场景补算一次——只让状态诚实，不改视频内容；不入撤销栈。 */
+    const migrateLegacyFingerprints = useCallback((project: CanvasProject): { project: CanvasProject; changed: boolean } => {
+        let changed = false;
+        const nodes = project.nodes.map((node) => {
+            if (node.type !== "video" || !node.id.startsWith("seg-")) return node;
+            const md = (node.metadata ?? {}) as Record<string, unknown>;
+            if (typeof md.videoResourceId !== "string" || !md.videoResourceId) return node;
+            const patch: Record<string, unknown> = {};
+            if (typeof md.videoLineHash !== "string" || !md.videoLineHash) patch.videoLineHash = storybookLineHash(String(md.line ?? ""));
+            if (typeof md.videoSceneKey !== "string" || !md.videoSceneKey) patch.videoSceneKey = String(md.sceneKey ?? "");
+            if (!Object.keys(patch).length) return node;
+            changed = true;
+            return { ...node, metadata: { ...md, ...patch } };
+        });
+        return changed ? { project: { ...project, nodes }, changed } : { project, changed };
+    }, []);
 
     const load = useCallback(async () => {
         if (!id) return;
@@ -113,16 +216,39 @@ export default function DigitalHumanBookPage() {
         setLoadError(null);
         try {
             const res = await http.get<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`);
+            // 段画布（画布库里的 P01…P16）是镜头真正的生产现场：用户在那边重出场景图/
+            // 首帧/配音/段视频后，回到生产页必须以画布为准把它们收回册，否则会出现
+            // "画布上生成了、成片还是旧的"。只收回真正变过的产物（见 segment-canvas-merge）。
+            let project = res.project;
+            let pulled = false;
+            if (id) {
+                try {
+                    const now = parseDigitalHumanCanvas(project);
+                    const pulls = await collectSegmentPulls(id, now.segments.map((s) => ({ id: s.id, sceneKey: s.sceneKey })));
+                    if (pulls.length) {
+                        const merged = applySegmentPulls(project.nodes, pulls, (seg) => now.scenes.get(seg.sceneKey)?.key ?? [...now.scenes.keys()][0] ?? seg.sceneKey);
+                        if (merged.changed) {
+                            project = { ...project, nodes: merged.nodes };
+                            pulled = true;
+                        }
+                    }
+                } catch { /* 段画布不可读就当没有产物，不影响整册加载 */ }
+            }
+            const migrated = migrateLegacyFingerprints(project);
             suppressHistoryRef.current = true;
-            setCanvas(res.project);
+            setCanvas(migrated.project);
             setDirty(false);
-            historyRef.current = { stack: [res.project], ptr: 0, lastKey: "", lastAt: 0 };
+            historyRef.current = { stack: [migrated.project], ptr: 0, lastKey: "", lastAt: 0 };
+            if (migrated.changed || pulled) {
+                // 迁移补丁/画布产物立即落库，避免依赖自动保存时序
+                void saveRef.current(migrated.project).catch(() => undefined);
+            }
         } catch (error) {
             setLoadError(error instanceof Error ? error.message : String(error));
         } finally {
             setLoading(false);
         }
-    }, [id, message]);
+    }, [id, message, migrateLegacyFingerprints]);
 
     useEffect(() => { void load(); }, [load]);
     useEffect(() => { void listDigitalHumanPersonas().then(setPersonas).catch(() => undefined); }, []);
@@ -133,12 +259,132 @@ export default function DigitalHumanBookPage() {
     const aspect = config?.aspect ?? "9:16";
     const geo = DIGITAL_HUMAN_ASPECTS[aspect];
     const current = segments[Math.min(segIndex, Math.max(0, segments.length - 1))];
+    const currentScene = current ? (scenes.get(current.sceneKey) ?? [...scenes.values()][0]) : undefined;
+    /** 这一镜当前该用的站位首帧：画布上重画首帧后指纹变了，已有成片就该标记过期 */
+    const frameKeyOf = (sceneKey?: string) => (sceneKey ? scenes.get(sceneKey)?.frameStorageKey ?? "" : "");
+    /** 成片过期判定（台词/场景/首帧任一变了都算） */
+    const videoStale = (s: (typeof segments)[number]) => segmentVideoStale(s, frameKeyOf(s.sceneKey));
+    /** 这一镜原片时长，以及没手动剪过时的默认取用区间（0 → 配音结束前 150ms） */
+    const currentVideoMs = Math.max(0, Math.round(current?.videoDurationMs ?? 0));
+    const autoTrimEndMs = current?.audio?.durationMs
+        ? Math.max(500, current.audio.durationMs - 150, (current.audio.speechMs ?? 0) + 200)
+        : currentVideoMs;
+    const trimRange: [number, number] = trimDraft && trimDraft.segId === current?.id
+        ? trimDraft.range
+        : [
+            Math.max(0, Math.min(current?.videoTrimStartMs ?? 0, Math.max(0, currentVideoMs - 200))),
+            Math.min(currentVideoMs || autoTrimEndMs, current?.videoTrimEndMs ?? autoTrimEndMs),
+        ];
+    const trimActive = Boolean(current?.videoTrimStartMs || current?.videoTrimEndMs);
     const busy = generating.size > 0 || !!batch || !!composing;
     /** 编辑锁：批量/合成进行中才锁编辑；单段生成时仍可继续改台词/提示词（overlay 合并保证写回不冲突） */
     const editLocked = !!batch || !!composing;
 
+    // 从段画布"返回生产页"时带 ?seg=P01：定位到那一段，避免回来后停在第一段。
+    const [searchParams, setSearchParams] = useSearchParams();
+    useEffect(() => {
+        const segId = searchParams.get("seg");
+        if (!segId || !segments.length) return;
+        const idx = segments.findIndex((s) => s.id === segId);
+        if (idx >= 0) setSegIndex(idx);
+        // 用完即清：否则用户手动切段后会被这个参数反复拉回
+        const next = new URLSearchParams(searchParams);
+        next.delete("seg");
+        setSearchParams(next, { replace: true });
+    }, [segments, searchParams, setSearchParams]);
+
+    // 段画布文档：一个镜头一份真实画布（右栏渲染它，画布库里也是它）。
+    // 内容以册画布为准：指纹变了才刷新，用户自己调过的排版位置保留。
+    const segmentDocInput = useMemo(() => (
+        id && config && current
+            ? {
+                bookId: id,
+                bookTitle: config.title,
+                seg: current,
+                scene: currentScene,
+                persona,
+                aspect,
+                // 必须带 `channel::model`：通用画布生成面板读 metadata.model 预填
+                imageModel: config.imageChannel ? `${config.imageChannel}::qwen-image-2.1` : undefined,
+                // 首帧是"主播 + 场景"两图合成，挂图生图模型（qwen-edit-plus）
+                frameModel: config.imageChannel ? `${config.imageChannel}::qwen-edit-plus` : undefined,
+                videoModel: config.videoChannel && config.videoModel ? `${config.videoChannel}::${config.videoModel}` : undefined,
+                sourceNodes: canvas?.nodes ?? [],
+            }
+            : null
+    ), [aspect, canvas, current, currentScene, config, id, persona]);
+    const segmentDocHash = useMemo(() => (segmentDocInput ? buildSegmentCanvasDoc(segmentDocInput).hash : ""), [segmentDocInput]);
+    const [segmentDoc, setSegmentDoc] = useState<SegmentCanvasDoc | null>(null);
+    useEffect(() => {
+        if (!segmentDocInput) { setSegmentDoc(null); return; }
+        let cancelled = false;
+        void loadSegmentCanvasDoc(segmentDocInput)
+            .then((doc) => { if (!cancelled) setSegmentDoc(doc); })
+            .catch(() => { if (!cancelled) setSegmentDoc(null); });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [segmentDocHash]);
+
+    // 补齐其余段：画布库里应当 P01…P16 各一份，而不是只建"看过的那段"。
+    // 串行后台补，不阻塞首屏；已经建过的段跳过（本地记忆 + 服务端 GET 都存在即直接返回）。
+    const segBackfill = useRef<{ done: Set<string>; running: boolean }>({ done: new Set(), running: false });
+    const segSource = useRef<{
+        bookTitle: string;
+        persona?: PersonaSnapshot;
+        scenes: Map<string, SceneNodeInfo>;
+        nodes: CanvasNodeData[];
+        aspect: string;
+        imageModel?: string;
+        frameModel?: string;
+        videoModel?: string;
+    }>({
+        bookTitle: "", scenes: new Map(), nodes: [], aspect: "9:16",
+    });
+    segSource.current = {
+        bookTitle: config?.title ?? "",
+        persona,
+        scenes,
+        nodes: canvas?.nodes ?? [],
+        aspect,
+        imageModel: config?.imageChannel ? `${config.imageChannel}::qwen-image-2.1` : undefined,
+        frameModel: config?.imageChannel ? `${config.imageChannel}::qwen-edit-plus` : undefined,
+        videoModel: config?.videoChannel && config?.videoModel ? `${config.videoChannel}::${config.videoModel}` : undefined,
+    };
+    const segmentIdsKey = useMemo(() => segments.map((s) => s.id).join(","), [segments]);
+    const liveSegId = current?.id ?? "";
+    useEffect(() => {
+        if (!id || !segmentIdsKey) return;
+        const state = segBackfill.current;
+        if (state.running) return;
+        // 当前段由上面的 effect 负责，避免同一份画布并发 PUT 抢 revision
+        const todo = segments.filter((s) => s.id !== liveSegId && !state.done.has(s.id));
+        if (!todo.length) return;
+        state.running = true;
+        void (async () => {
+            try {
+                for (const seg of todo) {
+                    const src = segSource.current;
+                    const scene = src.scenes.get(seg.sceneKey) ?? [...src.scenes.values()][0];
+                    await loadSegmentCanvasDoc({
+                        bookId: id, bookTitle: src.bookTitle, seg, scene, persona: src.persona, sourceNodes: src.nodes,
+                        aspect: src.aspect, imageModel: src.imageModel, frameModel: src.frameModel, videoModel: src.videoModel,
+                    }).catch(() => null);
+                    state.done.add(seg.id);
+                }
+            } finally {
+                state.running = false;
+            }
+        })();
+    }, [id, liveSegId, segmentIdsKey, segments]);
+
     const audioReady = segments.filter((s) => s.audio?.storageKey).length;
-    const videoReady = segments.filter((s) => !segmentVideoStale(s)).length;
+    const videoReady = segments.filter((s) => !videoStale(s)).length;
+    /** 全片时长：已配音段用真实音频时长，未配音段按台词估算 */
+    const totalSeconds = Math.round(segments.reduce(
+        (sum, s) => sum + (s.audio?.durationMs ? s.audio.durationMs / 1000 : s.secondsHint || estimateSegmentSeconds(s.line)),
+        0,
+    ));
+    const totalLabel = `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
 
     // 人物形象提示词预填（快照锚点+画风后缀），可改后重新生成预览
     useEffect(() => {
@@ -147,25 +393,30 @@ export default function DigitalHumanBookPage() {
 
     // ---------- 保存（overlay 逐字段合并，409 重拉重试） ----------
     const save = useCallback(async (docArg?: CanvasProject) => {
-        const doc0 = docArg ?? canvas;
+        // 取执行时的最新文档，不用闭包里捕获的那份：自动保存的定时器可能在生成写回
+        // 之前就排上了队，拿旧快照整份 PUT 会把刚写回的 videoResourceId 覆盖回去。
+        const doc0 = docArg ?? canvasRef.current;
         if (!doc0 || !id) return;
         setSaving(true);
         try {
             const overlay = collectEditOverlay(doc0);
             let saved = false;
             let lastRevision: number | undefined;
-            for (let attempt = 0; attempt < 3 && !saved; attempt++) {
-                const fresh = attempt === 0
-                    ? { project: doc0 }
-                    : await http.get<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`);
-                const doc = fresh.project;
-                const nodes = applyEditOverlay(doc.nodes, overlay);
-                try {
-                    const res = await http.put<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`, { project: { ...doc, nodes }, assets: [] });
-                    lastRevision = res.project?.revision;
-                    saved = true;
-                } catch { /* revision 冲突，重拉 */ }
-            }
+            await serializeCanvasWrite(async () => {
+                for (let attempt = 0; attempt < 4 && !saved; attempt++) {
+                    if (attempt > 0) await writeRetryDelay(attempt);
+                    const fresh = attempt === 0
+                        ? { project: doc0 }
+                        : await http.get<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`);
+                    const doc = fresh.project;
+                    const nodes = applyEditOverlay(doc.nodes, overlay);
+                    try {
+                        const res = await http.put<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`, { project: { ...doc, nodes }, assets: [] });
+                        lastRevision = res.project?.revision;
+                        saved = true;
+                    } catch { /* revision 冲突，重拉 */ }
+                }
+            });
             if (!saved) throw new Error("连续冲突");
             if (typeof lastRevision === "number") {
                 const rev = lastRevision;
@@ -181,6 +432,7 @@ export default function DigitalHumanBookPage() {
             setSaving(false);
         }
     }, [canvas, id, message]);
+    saveRef.current = save;
 
     // ---------- 历史栈（与绘本成书同款） ----------
     useEffect(() => {
@@ -333,7 +585,7 @@ export default function DigitalHumanBookPage() {
         canvasRef.current = next;
         setDirty(true);
         setSegIndex(Math.max(0, Math.min(afterIndex + 1, segments.length)));
-        setRightTab("script");
+        setDrawer({ type: "script" });
         await saveStructural(next, (nodes) => (nodes.some((n) => n.id === node.id) ? nodes : [...nodes, node]));
     }, [config, current?.sceneKey, editLocked, geo, saveStructural, scenes, segments, withConfig]);
 
@@ -384,7 +636,7 @@ export default function DigitalHumanBookPage() {
             height: 540,
             createdAt: now,
             updatedAt: now,
-            metadata: imageGenMeta(`${config.imageChannel}::qwen-image-2.1`, `${promptEn.trim()}, no people, no human figures, empty scene ready for a presenter`, `${geo.width}x${geo.height}`, {
+            metadata: imageGenMeta(`${config.imageChannel}::qwen-image-2.1`, sceneImagePrompt(promptEn.trim(), persona?.style, aspect).prompt, `${geo.width}x${geo.height}`, {
                 sceneKey: key,
                 sceneName: name,
                 promptEn: promptEn.trim(),
@@ -441,6 +693,23 @@ export default function DigitalHumanBookPage() {
         setDirty(true);
     }, []);
 
+    /**
+     * 剪辑：只记入点/出点（非破坏性），预览和成片都按这个区间取用。
+     * 传 null 表示"用整段"，会把字段删掉，回到按配音长度自动收尾的默认行为。
+     */
+    const setSegmentTrim = useCallback((segId: string, startMs: number, endMs: number | null) => {
+        pendingKeyRef.current = `trim:${segId}`;
+        setCanvas((prev) => (prev ? withNodeMeta(prev, `seg-${segId}`, (md) => {
+            const next = { ...md };
+            if (startMs > 0) next.videoTrimStartMs = Math.round(startMs);
+            else delete next.videoTrimStartMs;
+            if (endMs && endMs > 0) next.videoTrimEndMs = Math.round(endMs);
+            else delete next.videoTrimEndMs;
+            return next;
+        }) : prev));
+        setDirty(true);
+    }, []);
+
     const updateSceneMeta = useCallback((sceneKey: string, patch: Record<string, unknown>) => {
         pendingKeyRef.current = `scene:${sceneKey}`;
         setCanvas((prev) => (prev ? withNodeMeta(prev, `scene-${sceneKey}`, (md) => ({ ...md, ...patch })) : prev));
@@ -468,6 +737,36 @@ export default function DigitalHumanBookPage() {
         setDirty(true);
     }, []);
 
+    const bgmInputRef = useRef<HTMLInputElement | null>(null);
+    /** 素材库里的音频（配乐候选） */
+    const audioAssets = useAssetStore((state) => state.assets).filter((asset) => asset.kind === "audio");
+
+    /** 换配乐：保留已有的音量/淡入淡出偏好 */
+    const applyBgm = useCallback((patch: Partial<DigitalHumanBgm> & { resourceId: string; title: string }) => {
+        updateConfig((cfg) => {
+            cfg.bgm = { volume: 0.12, fadeInMs: 800, fadeOutMs: 1500, loop: true, ...(cfg.bgm ?? {}), ...patch };
+        });
+    }, [updateConfig]);
+
+    const patchBgm = useCallback((patch: Partial<DigitalHumanBgm>) => {
+        updateConfig((cfg) => { if (cfg.bgm) cfg.bgm = { ...cfg.bgm, ...patch }; });
+    }, [updateConfig]);
+
+    const clearBgm = useCallback(() => {
+        updateConfig((cfg) => { delete cfg.bgm; });
+    }, [updateConfig]);
+
+    const uploadBgm = useCallback(async (file: File) => {
+        try {
+            const resource = await uploadResourceFile(file, "audio");
+            const durationMs = await probeMediaDurationMs(file).catch(() => 0);
+            applyBgm({ resourceId: resource.id, storageKey: `resource:${resource.id}`, title: file.name, ...(durationMs ? { durationMs } : {}) });
+            message.success("背景音乐已设置");
+        } catch (error) {
+            message.error(`配乐上传失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+    }, [applyBgm, message]);
+
     /** 段落排序：交换 segmentOrder 相邻两项，选中态跟随移动的段 */
     const moveSegment = useCallback((index: number, dir: 1 | -1) => {
         const to = index + dir;
@@ -483,6 +782,20 @@ export default function DigitalHumanBookPage() {
         });
         setSegIndex(to);
     }, [segments, updateConfig]);
+
+    /** 拖拽调序：把 from 段插到 to 位置，其余顺移（segmentOrder 是唯一事实来源） */
+    const reorderSegment = useCallback((from: number, to: number) => {
+        if (from === to || editLocked) return;
+        if (from < 0 || to < 0 || from >= segments.length || to >= segments.length) return;
+        updateConfig((cfg) => {
+            const order = [...(cfg.segmentOrder?.length ? cfg.segmentOrder : segments.map((s) => s.id))];
+            const [moved] = order.splice(from, 1);
+            if (moved == null) return;
+            order.splice(to, 0, moved);
+            cfg.segmentOrder = order;
+        });
+        setSegIndex(to);
+    }, [editLocked, segments, updateConfig]);
 
     // ---------- 生成：状态与取消 ----------
     const setGen = (key: string, taskId: string | null) => {
@@ -514,7 +827,9 @@ export default function DigitalHumanBookPage() {
         if (!doc) return;
         const overlay = collectEditOverlay(doc);
         const rid = result.resourceId;
-        for (let attempt = 0; attempt < 3; attempt++) {
+        await serializeCanvasWrite(async () => {
+        for (let attempt = 0; attempt < 4; attempt++) {
+            if (attempt > 0) await writeRetryDelay(attempt);
             const fresh = await http.get<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(projectId)}`);
             const assetId = "generation_" + Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
             const now = new Date().toISOString();
@@ -554,8 +869,16 @@ export default function DigitalHumanBookPage() {
                 tags: [],
             };
             try {
-                const res = await http.put<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(projectId)}/generated-assets`, { project: { ...fresh.project, nodes }, assets: [asset] });
+                // 后端已退役 PUT /canvas-projects/:id/generated-assets（原子通道），
+                // 现行合同是两步：先把素材登记为账号名下 asset（媒体节点必须带 assetId
+                // 才能过画布素材归属校验），再写画布文档。
+                await http.put(`/assets/${encodeURIComponent(assetId)}`, { asset });
+                const res = await http.put<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(projectId)}`, { project: { ...fresh.project, nodes }, assets: [] });
                 const rev = res.project?.revision;
+                // 同步更新 ref：写回成功后如果还有一次"带旧快照"的保存排队等着，
+                // collectEditOverlay 会从 state 里取到旧 videoResourceId 再覆盖回来。
+                const written = { ...fresh.project, nodes, ...(typeof rev === "number" ? { revision: rev } : {}) };
+                canvasRef.current = written;
                 setCanvas((prev) => {
                     if (!prev) return prev;
                     const localNodes = prev.nodes.map((n) => (n.id === nodeId ? { ...n, metadata: { ...(n.metadata ?? {}), ...mediaPatch } } : n));
@@ -565,6 +888,7 @@ export default function DigitalHumanBookPage() {
             } catch { /* revision 冲突，拉最新重试 */ }
         }
         throw new Error("画布写入连续冲突（画布可能正在同步），请稍后再试");
+        });
     }, [id]);
 
     // ---------- 配音 ----------
@@ -691,9 +1015,60 @@ export default function DigitalHumanBookPage() {
     }, [generatePlacementFrame, generateSceneImage]);
 
     // ---------- 段视频 ----------
+    /**
+     * 生成前的服务预检：ComfyUI 网关（8765）与 ComfyUI（8188）不在后端进程里，
+     * 它们挂掉时任务会在建连阶段直接失败，用户看到的就是"点了没反应"。
+     * 这里先探活，没起来就让后端拉起来，拉不起来就明确报错，绝不让点击静默失败。
+     */
+    const ensureVideoService = useCallback(async (): Promise<boolean> => {
+        if (videoServiceHealthyUntil > Date.now()) return true;
+        try {
+            const state = await getLocalService("video-stack");
+            if (state.running) {
+                videoServiceHealthyUntil = Date.now() + 30_000;
+                return true;
+            }
+        } catch {
+            // 状态接口本身失败不阻断后面的一次拉起尝试
+        }
+        const key = "dh-video-service";
+        message.loading({ content: "视频服务未启动，正在自动拉起…", key, duration: 0 });
+        try {
+            const started = await startLocalService("video-stack");
+            message.destroy(key);
+            if (started.running) {
+                videoServiceHealthyUntil = Date.now() + 30_000;
+                message.success({ content: "视频服务已启动，继续生成", duration: 3 });
+                return true;
+            }
+            throw new Error(started.message || "服务没有在预期时间内就绪");
+        } catch (error) {
+            message.destroy(key);
+            videoServiceHealthyUntil = 0;
+            const text = error instanceof Error ? error.message : String(error);
+            modal.error({
+                title: "视频服务没有启动",
+                width: 520,
+                content: (
+                    <div style={{ fontSize: 12, lineHeight: 1.9 }}>
+                        <div>{text}</div>
+                        <div style={{ marginTop: 8, opacity: 0.7 }}>可以手动启动：</div>
+                        <pre style={{ margin: "6px 0", padding: 8, borderRadius: 6, background: "rgba(127,127,127,.12)", whiteSpace: "pre-wrap" }}>
+                            {`cd local/comfy-video-gateway && bun gateway.ts`}
+                        </pre>
+                        <div style={{ opacity: 0.7 }}>或先启动 ComfyUI（8188）再启动网关（8765）。启动后端前设置 CANVAS_COMFYUI_DIR，可以把 ComfyUI 也纳入自动拉起。</div>
+                    </div>
+                ),
+                okText: "知道了",
+            });
+            return false;
+        }
+    }, [message, modal]);
+
     const generateSegmentVideo = useCallback(async (segId: string): Promise<boolean> => {
         const doc = canvasRef.current;
         if (!doc || !config || !persona || !id) return false;
+        if (!(await ensureVideoService())) return false;
         const seg = parseDigitalHumanCanvas(doc).segments.find((s) => s.id === segId);
         if (!seg) return false;
         const scene = parseDigitalHumanCanvas(doc).scenes.get(seg.sceneKey) ?? [...parseDigitalHumanCanvas(doc).scenes.values()][0];
@@ -736,10 +1111,17 @@ export default function DigitalHumanBookPage() {
             setGen(key, "task");
             // 每次渲染都记入候选列表（抽卡）：切换候选时无需重渲
             const existingTakes = finalSeg.takes ?? [];
+            const frameKeyAtRender = (() => {
+                const liveDoc = canvasRef.current;
+                if (!liveDoc) return "";
+                return parseDigitalHumanCanvas(liveDoc).scenes.get(finalSeg.sceneKey)?.frameStorageKey ?? "";
+            })();
             const nextTakes = [...existingTakes, {
                 resourceId: result.resourceId,
                 ...(result.durationMs ? { durationMs: result.durationMs } : {}),
                 lineHash: storybookLineHash(finalSeg.line),
+                sceneKey: finalSeg.sceneKey,
+                ...(frameKeyAtRender ? { frameKey: frameKeyAtRender } : {}),
                 createdAt: new Date().toISOString(),
             }].slice(-8);
             await writeBackMedia(
@@ -750,6 +1132,8 @@ export default function DigitalHumanBookPage() {
                 {
                     videoResourceId: result.resourceId,
                     videoLineHash: storybookLineHash(finalSeg.line),
+                    videoSceneKey: finalSeg.sceneKey,
+                    ...(frameKeyAtRender ? { videoFrameKey: frameKeyAtRender } : {}),
                     ...(result.durationMs ? { videoDurationMs: result.durationMs } : {}),
                     takes: nextTakes,
                 },
@@ -757,7 +1141,14 @@ export default function DigitalHumanBookPage() {
             if (!batchStopRef.current && !batch) message.success(`${segId} 口播视频已生成`);
             return true;
         } catch (error) {
-            if (!batchStopRef.current) message.error(`${segId} 视频失败：${error instanceof Error ? error.message : String(error)}`);
+            const text = error instanceof Error ? error.message : String(error);
+            lastVideoFailureRef.current = text;
+            if (!batchStopRef.current) {
+                message.error({
+                    content: `${segId} 视频失败：${text}${looksLikeUpstreamDown(text) ? "（本地视频服务未就绪：8765 网关 / 8188 ComfyUI）" : ""}`,
+                    duration: looksLikeUpstreamDown(text) ? 8 : 4,
+                });
+            }
             return false;
         } finally {
             setGen(key, null);
@@ -784,6 +1175,8 @@ export default function DigitalHumanBookPage() {
             await writeBackMedia(`seg-${segId}`, { resourceId: rid, url: resourceFileUrl(rid) }, "video", `${segId} 口播段`, {
                 videoResourceId: rid,
                 videoLineHash: take.lineHash ?? storybookLineHash(seg.line),
+                videoSceneKey: take.sceneKey ?? seg.sceneKey,
+                ...(take.frameKey ? { videoFrameKey: take.frameKey } : {}),
                 ...(take.durationMs ? { videoDurationMs: take.durationMs } : {}),
             });
             message.success("已切换候选");
@@ -1130,8 +1523,10 @@ export default function DigitalHumanBookPage() {
         const doc = canvasRef.current;
         if (!doc) return;
         const parsedNow = parseDigitalHumanCanvas(doc);
-        const targets = parsedNow.segments.filter((s) => segmentVideoStale(s));
+        // 用刚解析出来的文档算首帧指纹：批量开始时场景可能还没备好，不能用 React state 里那份
+        const targets = parsedNow.segments.filter((s) => segmentVideoStale(s, parsedNow.scenes.get(s.sceneKey)?.frameStorageKey ?? ""));
         if (!targets.length) { message.info("没有待生成的段视频"); return; }
+        if (!(await ensureVideoService())) return;
         batchStopRef.current = false;
         const sceneKeys = [...new Set(targets.map((s) => s.sceneKey).filter(Boolean))];
         setBatch({ label: "视频", done: 0, total: targets.length, current: "场景准备", perItemMs: 15 * 60_000 });
@@ -1142,13 +1537,23 @@ export default function DigitalHumanBookPage() {
         let ok = 0;
         let fail = 0;
         let stopped = false;
+        let upstreamDown = false;
         for (let i = 0; i < targets.length; i++) {
             if (batchStopRef.current) { stopped = true; break; }
             setBatch({ label: "视频", done: i, total: targets.length, current: targets[i].id, perItemMs: 15 * 60_000 });
-            if (await generateSegmentVideo(targets[i].id)) ok++; else fail++;
+            if (await generateSegmentVideo(targets[i].id)) { ok++; continue; }
+            fail++;
+            // 第一段就"连不上上游"时继续跑剩下的段毫无意义：每段都会同样失败，
+            // 只是让进度条闪一遍。直接停，并把真正的原因说清楚。
+            if (looksLikeUpstreamDown(lastVideoFailureRef.current)) { upstreamDown = true; break; }
         }
         setBatch(null);
-        if (stopped) message.info(`已停止（完成 ${ok} 段视频）`);
+        if (upstreamDown) {
+            message.error({
+                content: `视频服务连不上，已停止批量（完成 ${ok} 段）。请确认本地视频服务已启动（8765 网关 / 8188 ComfyUI），或稍后重试。原始错误：${lastVideoFailureRef.current.slice(0, 80)}`,
+                duration: 12,
+            });
+        } else if (stopped) message.info(`已停止（完成 ${ok} 段视频）`);
         else if (fail) message.warning(`批量完成：成功 ${ok} 段，失败 ${fail} 段`);
         else {
             message.success(`全部段视频已生成（${ok} 段）`);
@@ -1251,7 +1656,7 @@ export default function DigitalHumanBookPage() {
         const stale: string[] = [];
         for (const s of segments) {
             if (!s.videoStorageKey || !s.videoResourceId) missing.push(s.id);
-            else if (segmentVideoStale(s)) stale.push(s.id);
+            else if (videoStale(s)) stale.push(s.id);
         }
         if (!missing.length && !stale.length) return true;
         const issues: string[] = [];
@@ -1282,11 +1687,17 @@ export default function DigitalHumanBookPage() {
                     resourceId: s.videoResourceId ?? "",
                     durationMs: s.videoDurationMs ?? (s.audio ? segmentSecondsFor(s.audio.durationMs) * 1000 + 170 : estimateSegmentSeconds(s.line) * 1000),
                     speechMs: s.audio?.speechMs ?? (s.audio?.durationMs ?? 0),
+                    // 配音总长：成片按它剪掉"配音结束后模型自由发挥"的噪声尾巴
+                    ...(s.audio?.durationMs ? { narrationMs: s.audio.durationMs } : {}),
+                    // 手动剪辑的入点/出点（审片时拖过就按用户的来）
+                    ...(s.videoTrimStartMs ? { trimStartMs: s.videoTrimStartMs } : {}),
+                    ...(s.videoTrimEndMs ? { trimEndMs: s.videoTrimEndMs } : {}),
                     ...(cards.length ? { cards } : {}),
                 };
             }).filter((s) => s.resourceId);
             if (!composeSegments.length) { message.error("没有可合成的段视频"); return; }
-            // 信息卡 → 透明 PNG → 渲染叠加层；时间窗与字幕同源（按各段配音时长均分轮播）
+            // 信息卡 → 透明 PNG → 渲染叠加层；时间窗与字幕同源（按各段配音时长均分轮播）。
+            // 内容指纹缓存资源：同一张卡多次合成不重复上传。
             const overlays: Array<{ sourceId: string; startMs: number; durationMs: number; x: number; y: number; w: number; h: number }> = [];
             let overlayCursorMs = 0;
             let cardCount = 0;
@@ -1295,16 +1706,22 @@ export default function DigitalHumanBookPage() {
                 if (s.cards?.length) {
                     const windowMs = Math.max(600, Math.round((s.speechMs || s.durationMs) / s.cards.length));
                     for (let i = 0; i < s.cards.length; i++) {
-                        const { blob, box } = await renderCardPng(s.cards[i], geo);
-                        const uploaded = await uploadResourceFile(blob, "image", { fileName: `card-${s.id}-${i + 1}.png` });
+                        const cacheKey = cardCacheKey(s.cards[i], geo);
+                        let entry = getCachedCardResource(cacheKey);
+                        if (!entry) {
+                            const { blob, box } = await renderCardPng(s.cards[i], geo);
+                            const uploaded = await uploadResourceFile(blob, "image", { fileName: `card-${s.id}-${i + 1}.png` });
+                            entry = { resourceId: uploaded.id, box };
+                            setCachedCardResource(cacheKey, entry);
+                        }
                         overlays.push({
-                            sourceId: uploaded.id,
+                            sourceId: entry.resourceId,
                             startMs: overlayCursorMs + 300 + i * windowMs,
                             durationMs: windowMs,
-                            x: box.x,
-                            y: box.y,
-                            w: box.w / geo.width,
-                            h: box.h / geo.height,
+                            x: entry.box.x,
+                            y: entry.box.y,
+                            w: entry.box.w / geo.width,
+                            h: entry.box.h / geo.height,
                         });
                         cardCount++;
                     }
@@ -1315,14 +1732,16 @@ export default function DigitalHumanBookPage() {
                 projectId: id,
                 segments: composeSegments,
                 aspect,
+                ...(config?.bgm?.resourceId ? { bgm: config.bgm } : {}),
                 ...(overlays.length ? { overlays } : {}),
                 onTaskUpdate: (t) => setComposing({ percent: Math.round(((t as { progress?: number }).progress ?? 0) * 100) }),
             });
-            composeFingerprintRef.current = composeSegments.map((s) => s.resourceId).join("|");
+            composeFingerprintRef.current = composeSignature(segments) + bgmSignature(config?.bgm);
             setComposeResult(result);
-            setRightTab("export");
+            setDrawer({ type: "export" });
             message.success(overlays.length ? `成片已合成（含 ${cardCount} 张信息卡）` : "成片已合成");
         } catch (error) {
+            clearCardResourceCache(); // 叠加资源可能已被清理，清缓存让下次合成重新渲染上传
             message.error(`合成失败：${error instanceof Error ? error.message : String(error)}`);
         } finally {
             setComposing(null);
@@ -1344,10 +1763,13 @@ export default function DigitalHumanBookPage() {
         resumedRef.current = true;
         (async () => {
             try {
+                // 只看"还在跑"的。已完成的不在这里补：历史任务数很多，按 resourceId 去重时
+                // 只要资源被后续替换过，就会把旧图/旧片重新写回去，覆盖当前素材。
                 const tasks = await listGenerationTasks(50, { projectId: id, activeOnly: true });
                 let resumed = 0;
                 for (const t of tasks) {
                     const nodeId = ((t.clientContext ?? {}) as { nodeId?: string }).nodeId ?? "";
+                    if (t.status === "failed" || t.status === "cancelled") continue;
                     if (t.type === "canvas_video" && nodeId.startsWith("seg-")) {
                         const segId = nodeId.slice(4);
                         const key = `video:${segId}`;
@@ -1362,10 +1784,13 @@ export default function DigitalHumanBookPage() {
                                 const doc = canvasRef.current;
                                 const seg = doc ? parseDigitalHumanCanvas(doc).segments.find((s) => s.id === segId) : undefined;
                                 if (!seg) throw new Error("段落已不存在");
-                                const nextTakes = [...(seg.takes ?? []), { resourceId: rid, ...(video?.durationMs ? { durationMs: video.durationMs } : {}), lineHash: storybookLineHash(seg.line), createdAt: new Date().toISOString() }].slice(-8);
+                                const frameKeyNow = doc ? parseDigitalHumanCanvas(doc).scenes.get(seg.sceneKey)?.frameStorageKey ?? "" : "";
+                                const nextTakes = [...(seg.takes ?? []), { resourceId: rid, ...(video?.durationMs ? { durationMs: video.durationMs } : {}), lineHash: storybookLineHash(seg.line), sceneKey: seg.sceneKey, ...(frameKeyNow ? { frameKey: frameKeyNow } : {}), createdAt: new Date().toISOString() }].slice(-8);
                                 await writeBackMedia(`seg-${segId}`, { resourceId: rid, url: resourceFileUrl(rid) }, "video", `${segId} 口播段`, {
                                     videoResourceId: rid,
                                     videoLineHash: storybookLineHash(seg.line),
+                                    videoSceneKey: seg.sceneKey,
+                                    ...(frameKeyNow ? { videoFrameKey: frameKeyNow } : {}),
                                     ...(video?.durationMs ? { videoDurationMs: video.durationMs } : {}),
                                     takes: nextTakes,
                                 });
@@ -1511,6 +1936,7 @@ export default function DigitalHumanBookPage() {
     // ---------- 键盘 / 离开防护 ----------
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape" && canvasFocus) { setCanvasFocus(false); return; }
             if (!segments.length) return;
             const target = e.target instanceof HTMLElement ? e.target : null;
             const inEditor = !!target?.closest("input, textarea, select, [contenteditable='true']");
@@ -1525,7 +1951,7 @@ export default function DigitalHumanBookPage() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [redo, segments.length, undo]);
+    }, [canvasFocus, redo, segments.length, undo]);
     useEffect(() => {
         const onBeforeUnload = (e: BeforeUnloadEvent) => {
             if (dirty || busy) e.preventDefault();
@@ -1562,94 +1988,60 @@ export default function DigitalHumanBookPage() {
     }
 
     const sceneOptions = [...scenes.values()].map((s) => ({ value: s.key, label: s.key === current?.sceneKey ? `${s.name}（当前）` : s.name }));
-    const currentScene = current ? (scenes.get(current.sceneKey) ?? [...scenes.values()][0]) : undefined;
     const videoUrl = current?.videoResourceId ? `/api/resources/${current.videoResourceId}/file` : null;
     const frameUrl = currentScene?.frameStorageKey ? `/api/resources/${currentScene.frameStorageKey.replace(/^resource:/, "")}/file` : null;
     const audioIsStale = current ? segmentAudioStale(current.audio, current.line, persona?.voice) : false;
-    const videoIsStale = current ? segmentVideoStale(current) : false;
+    const videoIsStale = current ? videoStale(current) : false;
     /** 成片过期：合成后段视频有增删/重摇，旧成片不包含最新内容 */
-    const composeStale = !!composeResult && composeFingerprintRef.current !== segments.map((s) => s.videoResourceId ?? "").filter(Boolean).join("|");
+    const composeStale = !!composeResult && composeFingerprintRef.current !== composeSignature(segments) + bgmSignature(config?.bgm);
 
-    /** 本段镜头流水线：把画布里的节点连线翻译成"这个镜头需要什么、还缺什么" */
-    const portraitMissing = !persona?.portraitStorageKey;
-    const pipelineSteps: PipelineStep[] = !current ? [] : [
-        {
-            key: "line",
-            label: "台词",
-            icon: <EditOutlined />,
-            status: current.line.trim() ? "done" : "todo",
-            statusText: current.line.trim() ? `${current.line.replace(/\s/g, "").length} 字` : "未写",
-            tooltip: "本段口播台词，是后面所有环节的上游；在下方「台词」里编辑。改台词后配音和视频会标记过期。",
-        },
-        {
-            key: "audio",
-            label: "配音",
-            icon: <AudioOutlined />,
-            status: audioIsStale ? (current.audio ? "stale" : "todo") : "done",
-            statusText: !current.audio ? "未生成" : audioIsStale ? "已过期" : `${(current.audio.durationMs / 1000).toFixed(1)}s`,
-            tooltip: audioIsStale
-                ? `台词或音色已变。点此用数字人音色（${persona?.voice ?? ""}）重新合成——先进底部草稿条试听，满意再落库。`
-                : `数字人音色 ${persona?.voice ?? ""} 朗读本段台词。点此试听。`,
-            loading: generating.has(`audio:${current.id}`),
-            onAction: () => {
-                if (current.audio && !audioIsStale) void playAudio(current.audio.storageKey);
-                else void draftSegAudio(current.id);
-            },
-        },
-        {
-            key: "sceneImage",
-            label: "场景图",
-            icon: <PictureOutlined />,
-            status: currentScene?.imageStorageKey ? "done" : "todo",
-            statusText: !currentScene ? "无场景" : currentScene.imageStorageKey ? currentScene.name : "未生成",
-            tooltip: currentScene?.imageStorageKey
-                ? `本段挂在场景「${currentScene.name}」的底图上（同一场景跨段复用）。点此到「场景与形象」看大图。`
-                : "场景的英文描述先生成无人物底图（同一场景跨段复用）。点此生成，先进底部草稿条预览。",
-            loading: !!currentScene && generating.has(`scene:${currentScene.key}`),
-            onAction: () => {
-                if (!currentScene || currentScene.imageStorageKey) { setRightTab("scene"); return; }
-                void draftSceneImage(currentScene.key);
-            },
-        },
-        {
-            key: "frame",
-            label: "站位首帧",
-            icon: <UserSwitchOutlined />,
-            status: !currentScene?.imageStorageKey || portraitMissing ? "blocked" : (currentScene.frameStorageKey ? "done" : "todo"),
-            statusText: currentScene?.frameStorageKey ? "就绪" : !currentScene?.imageStorageKey ? "待场景图" : portraitMissing ? "缺人物稿" : "未生成",
-            tooltip: !currentScene?.imageStorageKey
-                ? "站位首帧 = 把数字人放进场景图的构图帧，是段视频的起幅。需要先有场景图——点此先把场景图生成出来。"
-                : portraitMissing
-                    ? "缺数字人人物稿（身份参考图）。点此到「场景与形象」生成人物形象。"
-                    : currentScene.frameStorageKey
-                        ? "数字人已放进场景，作为段视频的首尾帧。点此到「场景与形象」看大图。"
-                        : "把数字人人物稿合成进场景图（场景第 1 参考、人物第 2 参考）。点此生成，先进底部草稿条预览。",
-            loading: !!currentScene && generating.has(`frame:${currentScene.key}`),
-            onAction: () => {
-                if (!currentScene) { setRightTab("scene"); return; }
-                if (!currentScene.imageStorageKey) { void draftSceneImage(currentScene.key); return; }
-                if (portraitMissing || currentScene.frameStorageKey) { setRightTab("scene"); return; }
-                void draftPlacementFrame(currentScene.key);
-            },
-        },
-        {
-            key: "video",
-            label: "段视频",
-            icon: <VideoCameraOutlined />,
-            status: portraitMissing ? "blocked" : videoIsStale ? (current.videoResourceId ? "stale" : "todo") : "done",
-            statusText: portraitMissing ? "缺人物稿" : !current.videoResourceId ? "未生成" : videoIsStale ? "已过期" : `${((current.videoDurationMs ?? 0) / 1000).toFixed(1)}s`,
-            tooltip: portraitMissing
-                ? "缺数字人人物稿。点此到「场景与形象」生成人物形象。"
-                : videoIsStale
-                    ? "点此生成本段口播视频——配音、场景图、站位首帧缺什么会自动补齐，然后 H3 按配音驱动口型。"
-                    : "本段口播视频已就绪，中栏可预览；不满意可重摇或切换候选（抽卡）。",
-            loading: generating.has(`video:${current.id}`),
-            onAction: () => {
-                if (portraitMissing) { setRightTab("scene"); return; }
-                void generateSegmentVideo(current.id);
-            },
-        },
-    ];
+    /** 右栏画布 = 段画布文档原样上屏（与画布库 / 原生画布同一份数据，单一事实源）。
+     *  早期这里曾页面派生一套伪节点，和真画布重复两份——已删除；只把"进行中"的生成
+     *  状态叠加到真节点上（文档按指纹同步，感知不到正在跑的任务）。 */
+    const segNodeId = current ? `seg-${current.id}` : "";
+    const segmentLiveNodes: CanvasNodeData[] = (() => {
+        if (!segmentDoc) return [];
+        const patched = segmentDoc.nodes.map((node) => {
+            let status: string | null = null;
+            if (current) {
+                if (node.id === "wf-voice" && generating.has(`audio:${current.id}`)) status = "loading";
+                if (node.id === "wf-persona" && generating.has("portrait")) status = "loading";
+                if (node.id === `seg-${current.id}` && generating.has(`video:${current.id}`)) status = "loading";
+            }
+            if (currentScene) {
+                if (node.id === `scene-${currentScene.key}` && generating.has(`scene:${currentScene.key}`)) status = "loading";
+                if (node.id === "wf-frame" && generating.has(`frame:${currentScene.key}`)) status = "loading";
+            }
+            if (!status) return node;
+            return { ...node, metadata: { ...(node.metadata ?? {}), status } as CanvasNodeData["metadata"] };
+        });
+        // 窄栏用紧凑排版（否则 12% 缩放下标题看不见）；沉浸画布有空间，用文档真实坐标
+        return canvasFocus ? patched : compactSegmentLayout(patched);
+    })();
+    const segmentLiveConnections = (segmentDoc?.connections ?? []).map((c) => ({ id: c.id, from: c.fromNodeId, to: c.toNodeId }));
+    /** 去画布：定位到某一段的某个节点。步骤条、右栏节点、中间列按钮都走这一条路径，
+     *  保证「调参数」只有一个落点（原生画布里的节点面板）。 */
+    const openInCanvas = (segId: string, nodeId?: string) => {
+        if (!id) return;
+        void (async () => {
+            if (dirty) await save().catch(() => undefined);
+            const params = new URLSearchParams({ fit: "1" });
+            if (nodeId) {
+                params.set("node", nodeId);
+                // 台词/信息卡在画布里是文本节点，编辑入口是"双击进编辑器"而不是提示词面板，
+                // 所以带上 edit=1 让画布直接把文本编辑器打开。
+                if (segmentDoc?.nodes.find((n) => n.id === nodeId)?.type === "text") params.set("edit", "1");
+            }
+            navigate(`/canvas/${encodeURIComponent(segmentCanvasId(id, segId))}?${params.toString()}`);
+        })();
+    };
+
+    /** 点节点 = 跳进原生画布（同一份段画布文档）：那里点节点才是原生弹参数面板的
+     *  完整体验。右栏只做只读总览，不再自己开抽屉/快捷生成——避免两套"点节点"行为。 */
+    const onCanvasNodeSelect = (nodeId: string) => {
+        if (!current || !segmentDoc) return;
+        openInCanvas(current.id, nodeId);
+    };
 
     const genButton = (key: string, runningText: string) => {
         const tid = generating.get(key);
@@ -1663,24 +2055,31 @@ export default function DigitalHumanBookPage() {
     };
 
     return (
-        <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+        <div className="dhb-page" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
             {/* 顶栏 */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--user-border, var(--border))", flexWrap: "wrap" }}>
+            <div className="dhb-topbar" style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", borderBottom: "1px solid var(--user-border, var(--border))", flexWrap: "wrap" }}>
                 <Button icon={<ArrowLeftOutlined />} onClick={goBack} />
                 <span style={{ fontWeight: 700, fontSize: 16 }}>{config.title}</span>
-                <Tag>{persona?.name ?? "未绑定数字人"}</Tag>
-                <Tag>{geo.label}</Tag>
+                <Tag className="dhb-tag-persona">{persona?.name ?? "未绑定数字人"}</Tag>
+                <Tag className="dhb-tag-geo">{geo.label}</Tag>
                 <Tag color={audioReady >= segments.length ? "green" : "orange"}><AudioOutlined /> 配音 {audioReady}/{segments.length}</Tag>
                 <Tag color={videoReady >= segments.length ? "green" : "orange"}><VideoCameraOutlined /> 视频 {videoReady}/{segments.length}</Tag>
+                <Tooltip title="已配音段按真实音频时长统计，未配音段按台词估算">
+                    <Tag className="tabular-nums"><ClockCircleOutlined /> 全长 {totalLabel}</Tag>
+                </Tooltip>
                 <div style={{ flex: 1 }} />
-                <Tooltip title="撤销 (Ctrl+Z)"><Button icon={<UndoOutlined />} disabled={historyRef.current.ptr <= 0 || busy} onClick={undo} /></Tooltip>
-                <Tooltip title="重做 (Ctrl+Shift+Z)"><Button icon={<RedoOutlined />} disabled={historyRef.current.ptr + 1 >= historyRef.current.stack.length || busy} onClick={redo} /></Tooltip>
+                <Tooltip title="撤销 (Ctrl+Z)"><Button className="dhb-optional" icon={<UndoOutlined />} disabled={historyRef.current.ptr <= 0 || busy} onClick={undo} /></Tooltip>
+                <Tooltip title="重做 (Ctrl+Shift+Z)"><Button className="dhb-optional" icon={<RedoOutlined />} disabled={historyRef.current.ptr + 1 >= historyRef.current.stack.length || busy} onClick={redo} /></Tooltip>
                 <Button icon={<AudioOutlined />} loading={batch?.label === "配音"} disabled={busy} onClick={() => void batchGenerateAudio()}>生成缺音频</Button>
-                <Button type="primary" icon={<ThunderboltOutlined />} loading={batch?.label === "视频"} disabled={busy} onClick={() => void batchGenerateVideos()}>生成缺视频</Button>
+                <Tooltip title="逐段补齐：没生成过、以及台词/场景/首帧改过导致过期的镜头都会重出（串行，可随时停止）">
+                    <Button type="primary" icon={<ThunderboltOutlined />} loading={batch?.label === "视频"} disabled={busy} onClick={() => void batchGenerateVideos()}>
+                        {segments.some((s) => s.videoResourceId && videoStale(s)) ? "补生成缺/过期视频" : "生成缺视频"}
+                    </Button>
+                </Tooltip>
                 {composeStale ? <Tooltip title="段视频有变化（重摇/增删/换候选），旧成片不含最新内容"><Tag color="orange">成片已过期</Tag></Tooltip> : null}
                 <Button icon={<PlayCircleOutlined />} loading={!!composing} disabled={busy} onClick={() => void compose()}>{composeResult ? "重新合成成片" : "合成成片"}</Button>
                 <Tooltip title={saving ? "正在保存…" : dirty ? "有未保存修改（2.5 秒后自动保存）" : "已自动保存"}>
-                    <Button icon={<SaveOutlined />} loading={saving} onClick={() => void save()}>{saving ? "保存中…" : dirty ? "保存 •" : "已保存"}</Button>
+                    <Button className="dhb-optional" icon={<SaveOutlined />} loading={saving} onClick={() => void save()}>{saving ? "保存中…" : dirty ? "保存 •" : "已保存"}</Button>
                 </Tooltip>
                 {batch ? (
                     <div style={{ minWidth: 240 }}>
@@ -1700,28 +2099,33 @@ export default function DigitalHumanBookPage() {
                 {batch || composing ? <Button icon={<StopOutlined />} onClick={stopBatch}>停止</Button> : null}
             </div>
 
-            {/* 流程步骤条：全局进度自动高亮"当前该做什么"，点击直达 */}
+            {/* 流程步骤条：全局进度自动高亮"当前该做什么"。点步骤 = 跳到该段画布的对应节点，
+                在原生画布里弹参数面板——和点画布节点是同一条路，不再另开一套抽屉。 */}
             {(() => {
                 const sceneReady = segments.length > 0 && [...scenes.values()].length > 0 && [...scenes.values()].every((s) => !!s.frameStorageKey);
-                const steps: Array<{ label: string; done: boolean; tab: RightTab; jump?: () => void }> = [
-                    { label: "① 台词分镜", done: segments.length > 0 && segments.every((s) => s.line.trim().length > 0), tab: "script" },
-                    { label: "② 配音", done: segments.length > 0 && audioReady >= segments.length, tab: "material" },
-                    { label: "③ 场景首帧", done: sceneReady, tab: "scene" },
+                const fallbackSeg = current ?? segments[0];
+                const staleSeg = segments.find((s) => videoStale(s));
+                const steps: Array<{ label: string; done: boolean; run: () => void }> = [
+                    { label: "① 台词分镜", done: segments.length > 0 && segments.every((s) => s.line.trim().length > 0), run: () => fallbackSeg && openInCanvas(fallbackSeg.id, "wf-script") },
+                    { label: "② 配音", done: segments.length > 0 && audioReady >= segments.length, run: () => fallbackSeg && openInCanvas(fallbackSeg.id, "wf-voice") },
+                    { label: "③ 场景首帧", done: sceneReady, run: () => fallbackSeg && openInCanvas(fallbackSeg.id, "wf-frame") },
                     {
-                        label: "④ 段视频", done: segments.length > 0 && videoReady >= segments.length, tab: "script",
-                        jump: () => { const i = segments.findIndex((s) => segmentVideoStale(s)); if (i >= 0) setSegIndex(i); },
+                        label: "④ 段视频", done: segments.length > 0 && videoReady >= segments.length,
+                        // 有缺口就直接送到第一个还没出片的镜头
+                        run: () => { const target = staleSeg ?? fallbackSeg; if (target) openInCanvas(target.id, `seg-${target.id}`); },
                     },
-                    { label: "⑤ 合成发布", done: !!composeResult, tab: "export" },
+                    // 合成发布是册级动作（不是某个画布节点），只有它还走抽屉
+                    { label: "⑤ 合成发布", done: !!composeResult, run: () => setDrawer({ type: "export" }) },
                 ];
                 const currentStep = steps.findIndex((s) => !s.done);
                 return (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderBottom: "1px solid var(--user-border, var(--border))", background: "var(--card, #1a1d22)", flexWrap: "wrap" }} aria-label="制作进度">
+                    <div className="dhb-steps" style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderBottom: "1px solid var(--user-border, var(--border))", background: "var(--card, #1a1d22)", flexWrap: "wrap" }} aria-label="制作进度">
                         <span style={{ fontSize: 12, opacity: 0.55, marginRight: 2 }}>进度</span>
                         {steps.map((s, i) => (
-                            <Tooltip key={s.label} title={s.done ? "已完成" : i === currentStep ? "当前步骤——点这里去处理" : "待处理"}>
+                            <Tooltip key={s.label} title={s.done ? "已完成 · 点开画布调整" : i === currentStep ? "当前步骤——点这里去画布处理" : "待处理 · 点这里去画布处理"}>
                                 <button
                                     type="button"
-                                    onClick={() => { setRightTab(s.tab); s.jump?.(); }}
+                                    onClick={s.run}
                                     aria-current={i === currentStep || undefined}
                                     style={{
                                         display: "inline-flex", alignItems: "center", gap: 4, border: "1px solid", borderRadius: 999, padding: "2px 10px", fontSize: 12, cursor: "pointer",
@@ -1740,49 +2144,120 @@ export default function DigitalHumanBookPage() {
                     </div>
                 );
             })()}
-            <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-                {/* 左：段导航 */}
-                <div style={{ width: 190, borderRight: "1px solid var(--user-border, var(--border))", overflowY: "auto", padding: 8 }}>
-                    {!segments.length ? <div style={{ fontSize: 12, opacity: 0.5, padding: "8px 4px" }}>还没有口播段</div> : null}
-                    {segments.map((seg, i) => {
-                        const staleA = segmentAudioStale(seg.audio, seg.line, persona?.voice);
-                        const staleV = segmentVideoStale(seg);
+            <div className="dhb-body" style={{ display: "flex", flex: 1, minHeight: 0 }}>
+                {/* 左：段导航（顶部状态过滤，段多时快速定位缺口） */}
+                <div className="dhb-rail" style={{ width: 190, borderRight: "1px solid var(--user-border, var(--border))", overflowY: "auto", padding: 8 }}>
+                    {(() => {
+                        const noAudioCount = segments.filter((s) => segmentAudioStale(s.audio, s.line, persona?.voice)).length;
+                        const noVideoCount = segments.filter((s) => !s.videoResourceId).length;
+                        const staleCount = segments.filter((s) => s.videoResourceId && videoStale(s)).length;
+                        const filters = [
+                            { key: "all" as const, label: "全部", count: segments.length },
+                            { key: "noAudio" as const, label: "缺配音", count: noAudioCount },
+                            { key: "noVideo" as const, label: "缺视频", count: noVideoCount },
+                            { key: "stale" as const, label: "已过期", count: staleCount },
+                        ];
+                        const match = (seg: typeof segments[number]) => {
+                            if (segFilter === "noAudio") return segmentAudioStale(seg.audio, seg.line, persona?.voice);
+                            if (segFilter === "noVideo") return !seg.videoResourceId;
+                            if (segFilter === "stale") return !!seg.videoResourceId && videoStale(seg);
+                            return true;
+                        };
+                        const visible = segments.map((seg, i) => ({ seg, i })).filter(({ seg }) => match(seg));
                         return (
-                            <button
-                                key={seg.id}
-                                type="button"
-                                onClick={() => setSegIndex(i)}
-                                aria-pressed={i === segIndex}
-                                style={{
-                                    display: "block", width: "100%", textAlign: "left", padding: "7px 9px", marginBottom: 4, borderRadius: 8, cursor: "pointer",
-                                    border: i === segIndex ? "1px solid var(--ant-color-primary, #4f7cff)" : "1px solid transparent",
-                                    background: i === segIndex ? "var(--user-fill, rgba(128,128,128,.12))" : "transparent",
-                                }}
-                            >
-                                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                                    <span style={{ opacity: 0.6 }}>{seg.id}</span>
-                                    {/* 三态：灰=未生成，橙=已生成但过期（改过台词/换过音色），绿=就绪 */}
-                                    <Tooltip title={!seg.audio ? "未配音" : staleA ? "配音过期（台词/音色已变）" : "配音就绪"}>
-                                        <span>{!seg.audio ? <AudioOutlined style={{ opacity: 0.3 }} /> : staleA ? <AudioOutlined style={{ color: "#faad14" }} /> : <AudioOutlined style={{ color: "#52c41a" }} />}</span>
-                                    </Tooltip>
-                                    <Tooltip title={!seg.videoResourceId ? "未生成视频" : staleV ? "视频过期（台词已改）" : "视频就绪"}>
-                                        <span>{!seg.videoResourceId ? <VideoCameraOutlined style={{ opacity: 0.3 }} /> : staleV ? <VideoCameraOutlined style={{ color: "#faad14" }} /> : <VideoCameraOutlined style={{ color: "#52c41a" }} />}</span>
-                                    </Tooltip>
-                                    <span style={{ marginLeft: "auto", opacity: 0.5 }}>~{seg.secondsHint}s</span>
-                                    <Tooltip title="上移本段"><button type="button" aria-label={`上移 ${seg.id}`} disabled={editLocked || i <= 0} onClick={(e) => { e.stopPropagation(); moveSegment(i, -1); }} style={{ border: "none", background: "transparent", color: "inherit", opacity: 0.45, cursor: "pointer", padding: "0 1px", fontSize: 10, lineHeight: 1 }}>▲</button></Tooltip>
-                                    <Tooltip title="下移本段"><button type="button" aria-label={`下移 ${seg.id}`} disabled={editLocked || i >= segments.length - 1} onClick={(e) => { e.stopPropagation(); moveSegment(i, 1); }} style={{ border: "none", background: "transparent", color: "inherit", opacity: 0.45, cursor: "pointer", padding: "0 1px", fontSize: 10, lineHeight: 1 }}>▼</button></Tooltip>
+                            <>
+                                <div style={{ display: "flex", gap: 3, marginBottom: 6, flexWrap: "wrap" }}>
+                                    {filters.map((f) => (
+                                        <button
+                                            key={f.key}
+                                            type="button"
+                                            aria-pressed={segFilter === f.key}
+                                            onClick={() => setSegFilter(f.key)}
+                                            style={{
+                                                border: "1px solid", borderRadius: 999, padding: "1px 7px", fontSize: 11, cursor: "pointer",
+                                                background: segFilter === f.key ? "var(--ant-color-primary, #4f7cff)" : "transparent",
+                                                color: segFilter === f.key ? "#fff" : "var(--muted, #8b929e)",
+                                                borderColor: segFilter === f.key ? "transparent" : "var(--user-border, var(--border))",
+                                            }}
+                                        >
+                                            {f.label} {f.count}
+                                        </button>
+                                    ))}
                                 </div>
-                                <div style={{ fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: 0.8 }} title={seg.line}>{seg.line || "（空）"}</div>
-                            </button>
+                                {!visible.length ? <div style={{ fontSize: 12, opacity: 0.5, padding: "6px 2px" }}>没有匹配的段</div> : null}
+                                {visible.map(({ seg, i }) => {
+                                    const staleA = segmentAudioStale(seg.audio, seg.line, persona?.voice);
+                                    const staleV = videoStale(seg);
+                                    const dropTarget = dragOverIndex === i && dragIndex !== null && dragIndex !== i;
+                                    return (
+                                        <div
+                                            key={seg.id}
+                                            role="button"
+                                            className="dhb-seg"
+                                            tabIndex={0}
+                                            draggable={!editLocked}
+                                            onClick={() => setSegIndex(i)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSegIndex(i); }
+                                            }}
+                                            aria-pressed={i === segIndex}
+                                            onDragStart={(e) => {
+                                                if (editLocked) return;
+                                                e.dataTransfer.effectAllowed = "move";
+                                                e.dataTransfer.setData("text/plain", String(i));
+                                                setDragIndex(i);
+                                            }}
+                                            onDragOver={(e) => {
+                                                if (dragIndex === null) return;
+                                                e.preventDefault();
+                                                e.dataTransfer.dropEffect = "move";
+                                                if (dragOverIndex !== i) setDragOverIndex(i);
+                                            }}
+                                            onDrop={(e) => {
+                                                e.preventDefault();
+                                                const raw = Number(e.dataTransfer.getData("text/plain"));
+                                                const from = Number.isFinite(raw) && e.dataTransfer.getData("text/plain") !== "" ? raw : dragIndex;
+                                                if (from !== null) reorderSegment(from, i);
+                                                setDragIndex(null);
+                                                setDragOverIndex(null);
+                                            }}
+                                            onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                                            style={{
+                                                display: "block", width: "100%", textAlign: "left", padding: "7px 9px", marginBottom: 4, borderRadius: 8, cursor: editLocked ? "pointer" : "grab",
+                                                border: dropTarget ? "1px dashed var(--ant-color-primary, #4f7cff)" : i === segIndex ? "1px solid var(--ant-color-primary, #4f7cff)" : "1px solid transparent",
+                                                background: i === segIndex ? "var(--user-fill, rgba(128,128,128,.12))" : dropTarget ? "var(--user-fill, rgba(128,128,128,.08))" : "transparent",
+                                                opacity: dragIndex === i ? 0.45 : 1,
+                                            }}
+                                        >
+                                            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                                                <span style={{ opacity: 0.6 }}>{seg.id}</span>
+                                                {/* 三态：灰=未生成，橙=已生成但过期（改过台词/换过音色/换过场景），绿=就绪 */}
+                                                <Tooltip title={!seg.audio ? "未配音" : staleA ? "配音过期（台词/音色已变）" : "配音就绪"}>
+                                                    <span>{!seg.audio ? <AudioOutlined style={{ opacity: 0.3 }} /> : staleA ? <AudioOutlined style={{ color: "#faad14" }} /> : <AudioOutlined style={{ color: "#52c41a" }} />}</span>
+                                                </Tooltip>
+                                                <Tooltip title={!seg.videoResourceId ? "未生成视频" : staleV ? "视频过期（台词/场景已改）" : "视频就绪"}>
+                                                    <span>{!seg.videoResourceId ? <VideoCameraOutlined style={{ opacity: 0.3 }} /> : staleV ? <VideoCameraOutlined style={{ color: "#faad14" }} /> : <VideoCameraOutlined style={{ color: "#52c41a" }} />}</span>
+                                                </Tooltip>
+                                                <span style={{ marginLeft: "auto", opacity: 0.5 }}>~{seg.secondsHint}s</span>
+                                                <Tooltip title="上移本段"><button type="button" aria-label={`上移 ${seg.id}`} disabled={editLocked || i <= 0} onClick={(e) => { e.stopPropagation(); moveSegment(i, -1); }} style={{ border: "none", background: "transparent", color: "inherit", opacity: 0.45, cursor: "pointer", padding: "0 1px", fontSize: 10, lineHeight: 1 }}>▲</button></Tooltip>
+                                                <Tooltip title="下移本段"><button type="button" aria-label={`下移 ${seg.id}`} disabled={editLocked || i >= segments.length - 1} onClick={(e) => { e.stopPropagation(); moveSegment(i, 1); }} style={{ border: "none", background: "transparent", color: "inherit", opacity: 0.45, cursor: "pointer", padding: "0 1px", fontSize: 10, lineHeight: 1 }}>▼</button></Tooltip>
+                                            </div>
+                                            <div style={{ fontSize: 12, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: 0.8 }} title={seg.line}>{seg.line || "（空）"}</div>
+                                        </div>
+                                    );
+                                })}
+                                <div style={{ fontSize: 11, opacity: 0.45, margin: "2px 2px 6px" }}>拖拽段可调整顺序（▲▼ 微调）</div>
+                                <Button block size="small" type="dashed" icon={<PlusOutlined />} disabled={editLocked} onClick={() => void insertSegment(segments.length - 1)}>
+                                    新增段
+                                </Button>
+                            </>
                         );
-                    })}
-                    <Button block size="small" type="dashed" icon={<PlusOutlined />} disabled={editLocked} onClick={() => void insertSegment(segments.length - 1)}>
-                        新增段
-                    </Button>
+                    })()}
                 </div>
 
-                {/* 中：预览 + 单段二次编辑（重摇/抽卡/切换候选） */}
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, overflow: "auto" }}>
+                {/* 中：预览 + 单段二次编辑（重摇/抽卡/切换候选）；沉浸画布时整块让给工作流 */}
+                {canvasFocus ? null : (
+                <div className="dhb-main" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, overflow: "auto" }}>
                     <div style={{ position: "relative", aspectRatio: `${geo.width} / ${geo.height}`, width: "100%", maxWidth: `calc(68vh * ${geo.width} / ${geo.height})`, maxHeight: "68vh", borderRadius: 12, overflow: "hidden", border: "1px solid var(--user-border, var(--border))", background: "#000", display: "grid", placeItems: "center" }}>
                         <Tooltip title="全屏预览">
                             <button type="button" aria-label="全屏预览视频" onClick={() => videoUrl && setLightbox(videoUrl)} disabled={!videoUrl}
@@ -1803,7 +2278,26 @@ export default function DigitalHumanBookPage() {
                                 <div style={{ fontSize: 12, opacity: 0.7 }}>或回到列表「新建口播」，让 AI 按主题拆书生成分镜</div>
                             </div>
                         ) : videoUrl ? (
-                            <video key={videoUrl} src={videoUrl} controls style={{ width: "100%", height: "100%" }} />
+                            <video
+                                key={videoUrl}
+                                src={videoUrl}
+                                controls
+                                style={{ width: "100%", height: "100%" }}
+                                // 预览按剪辑区间播放：起播跳到入点，播到出点自动停。
+                                // 出点默认是配音结束（模型多出来的那截没有音频条件，是电流噪声）。
+                                onLoadedMetadata={(event) => {
+                                    if (trimRange[0] > 0) event.currentTarget.currentTime = trimRange[0] / 1000;
+                                }}
+                                onPlay={(event) => {
+                                    const el = event.currentTarget;
+                                    const t = el.currentTime * 1000;
+                                    if (t < trimRange[0] - 50 || t >= trimRange[1]) el.currentTime = trimRange[0] / 1000;
+                                }}
+                                onTimeUpdate={(event) => {
+                                    const el = event.currentTarget;
+                                    if (el.currentTime * 1000 >= trimRange[1] && !el.paused) el.pause();
+                                }}
+                            />
                         ) : frameUrl ? (
                             <Image src={frameUrl} alt="站位首帧" preview={{ mask: "放大" }} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
                         ) : (
@@ -1857,6 +2351,56 @@ export default function DigitalHumanBookPage() {
                                     ))}
                                 </div>
                             ) : null}
+                            {current.videoResourceId && currentVideoMs > 0 ? (
+                                <div style={{ width: "100%", border: "1px solid var(--user-border, var(--border))", borderRadius: 10, padding: "4px 10px 2px", background: "var(--card, #16181d)" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                        <span style={{ fontSize: 12, opacity: 0.7, whiteSpace: "nowrap" }}>剪辑</span>
+                                        <Slider
+                                            range
+                                            min={0}
+                                            max={currentVideoMs}
+                                            step={10}
+                                            value={trimRange}
+                                            disabled={busy}
+                                            style={{ flex: 1, margin: 0 }}
+                                            tooltip={{ formatter: (value) => `${((value ?? 0) / 1000).toFixed(2)}s` }}
+                                            // 拖动中只更新草稿，松手才落库：否则每拖一格都会触发一次段画布同步
+                                            onChange={(value) => {
+                                                if (!current) return;
+                                                setTrimDraft({ segId: current.id, range: value as [number, number] });
+                                            }}
+                                            onChangeComplete={(value) => {
+                                                if (!current) return;
+                                                const next = value as [number, number];
+                                                // 贴着两端就当作"没剪"，删掉字段回到自动收尾
+                                                setSegmentTrim(
+                                                    current.id,
+                                                    next[0] > 0 ? next[0] : 0,
+                                                    next[1] < currentVideoMs - 20 ? next[1] : null,
+                                                );
+                                                setTrimDraft(null);
+                                            }}
+                                        />
+                                        <Tooltip title="恢复整段（0 → 配音结束，自动剪掉尾巴）">
+                                            <Button
+                                                size="small"
+                                                type="text"
+                                                icon={<UndoOutlined />}
+                                                disabled={busy || !trimActive}
+                                                aria-label="恢复整段"
+                                                onClick={() => { if (current) { setSegmentTrim(current.id, 0, null); setTrimDraft(null); } }}
+                                            />
+                                        </Tooltip>
+                                    </div>
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, opacity: 0.55 }} className="tabular-nums">
+                                        <span>
+                                            {(trimRange[0] / 1000).toFixed(2)}s → {(trimRange[1] / 1000).toFixed(2)}s
+                                            {" · 用 "}{(Math.max(0, trimRange[1] - trimRange[0]) / 1000).toFixed(2)}s
+                                        </span>
+                                        <span>原片 {(currentVideoMs / 1000).toFixed(2)}s{trimActive ? " · 已手动剪" : " · 自动剪掉尾巴"}</span>
+                                    </div>
+                                </div>
+                            ) : null}
                             <Space wrap>
                                 <Tooltip title="上一段（←）"><Button icon={<ArrowLeftOutlined />} disabled={segIndex <= 0} onClick={() => setSegIndex((i) => Math.max(0, i - 1))} aria-label="上一段" /></Tooltip>
                                 <Button type="primary" icon={<ThunderboltOutlined />} loading={generating.has(`video:${current.id}`)} disabled={busy} onClick={() => void generateSegmentVideo(current.id)}>
@@ -1874,8 +2418,10 @@ export default function DigitalHumanBookPage() {
                         </div>
                     ) : null}
                 </div>
+                )}
 
                 {/* 可拖拽分隔条：左右拉宽预览区或编辑区 */}
+                {canvasFocus ? null : (
                 <div
                     role="separator"
                     aria-label="调整预览区宽度"
@@ -1886,7 +2432,7 @@ export default function DigitalHumanBookPage() {
                         const startWidth = rightWidth;
                         let latest = startWidth;
                         const move = (ev: PointerEvent) => {
-                            latest = Math.min(720, Math.max(300, startWidth + (startX - ev.clientX)));
+                            latest = Math.min(900, Math.max(320, startWidth + (startX - ev.clientX)));
                             setRightWidth(latest);
                         };
                         const up = (ev: PointerEvent) => {
@@ -1902,29 +2448,81 @@ export default function DigitalHumanBookPage() {
                 >
                     <div style={{ width: 3, height: 48, borderRadius: 2, background: "var(--user-border, var(--border))" }} />
                 </div>
+                )}
 
-                {/* 右：编辑面板 */}
-                <div style={{ width: rightWidth, flex: "none", borderLeft: "1px solid var(--user-border, var(--border))", overflowY: "auto", padding: 12 }}>
-                    <Segmented
-                        block
-                        value={rightTab}
-                        onChange={(v) => setRightTab(v as RightTab)}
-                        options={[
-                            { value: "script", label: "台词" },
-                            { value: "material", label: "配音·素材" },
-                            { value: "scene", label: "场景与形象" },
-                            { value: "export", label: "成片" },
-                        ]}
-                        style={{ marginBottom: 12 }}
-                    />
-                    {current ? (
-                        <SegmentPipeline
-                            title="本段流水线"
-                            hint="段视频 = 站位首帧 + 数字人人物稿 + 配音 → H3 口型渲染；点灰色/橙色步骤直接补齐"
-                            steps={pipelineSteps}
+                {/* 右：镜头画布——每个镜头一张节点图，点节点开管理抽屉；沉浸模式下吃满预览区 */}
+                <div className={canvasFocus ? "dhb-canvas dhb-canvas-focus" : "dhb-canvas"} style={{
+                    flex: canvasFocus ? 1 : "none",
+                    width: canvasFocus ? undefined : rightWidth,
+                    minWidth: 0,
+                    borderLeft: "1px solid var(--user-border, var(--border))",
+                    overflowY: canvasFocus ? "hidden" : "auto",
+                    padding: 12,
+                    display: "flex", flexDirection: "column",
+                }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, fontWeight: 700 }}>镜头画布 · {current?.id ?? "—"}</span>
+                        {currentScene ? <Tag style={{ fontSize: 11 }}>{currentScene.name}</Tag> : null}
+                        <div style={{ flex: 1 }} />
+                        <Tooltip title="在完整画布里打开这一镜头（可移动/连线/删除节点，点节点弹参数面板）">
+                            <Button
+                                size="small"
+                                type="primary"
+                                ghost
+                                icon={<EditOutlined />}
+                                onClick={() => { if (current) openInCanvas(current.id); }}
+                            >
+                                打开本段画布
+                            </Button>
+                        </Tooltip>
+                        {/* 画布面板做不了的段级参数（音色工坊、景别/表情/动作、信息卡结构化）收在这一个入口，
+                            不再从步骤条分散打开，避免"两套调参" */}
+                        <Dropdown
+                            trigger={["click"]}
+                            menu={{
+                                items: [
+                                    { key: "script", label: "台词 · 景别/表情/动作" },
+                                    { key: "audio", label: "配音 · 换音色 / 音色工坊" },
+                                    { key: "scene", label: "场景与站位首帧" },
+                                    { key: "cards", label: "信息卡（结构化编辑）" },
+                                    { key: "persona", label: "数字人形象与音色" },
+                                ],
+                                onClick: ({ key }) => setDrawer({ type: key as WorkflowPanel }),
+                            }}
+                        >
+                            <Button size="small" type="text" icon={<SettingOutlined />}>参数</Button>
+                        </Dropdown>
+                        {canvasFocus ? null : (
+                            <Tooltip title="沉浸画布：把中间预览区让给工作流（Esc 退出）">
+                                <Button size="small" type="text" icon={<ExpandAltOutlined />} aria-label="沉浸画布" onClick={() => setCanvasFocus(true)} />
+                            </Tooltip>
+                        )}
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.55, marginBottom: 8 }}>
+                        {segmentDoc
+                            ? "只读总览 · 点节点（或悬停「画布」）进原生画布调参数；这里不提供编辑"
+                            : "正在同步本段画布…"}
+                    </div>
+                    <div style={{ flex: 1, minHeight: 320, display: "flex" }}>
+                        <SegmentCanvasView
+                            nodes={segmentLiveNodes}
+                            connections={segmentLiveConnections}
+                            onSelect={onCanvasNodeSelect}
+                            onOpenNode={onCanvasNodeSelect}
+                            // 画布吃掉面板剩余高度：固定 430px 时 9:16 竖屏节点会被缩到 12%，等于看不见
+                            height="100%"
+                            focus={canvasFocus}
+                            onToggleFocus={() => setCanvasFocus((v) => !v)}
                         />
-                    ) : null}
-                    {rightTab === "script" && current ? (
+                    </div>
+                    <AppDrawer
+                        open={!!drawer}
+                        onClose={() => setDrawer(null)}
+                        width={Math.min(460, typeof window !== "undefined" ? window.innerWidth - 40 : 420)}
+                        title={drawerTitle(drawer)}
+                        placement="right"
+                    >
+                    {drawer?.type === "script" && current ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                             <div>
                                 <div style={{ fontSize: 13, marginBottom: 4 }}>台词（改后配音/视频会标记过期）</div>
@@ -1965,14 +2563,18 @@ export default function DigitalHumanBookPage() {
                                     ),
                                 }]}
                             />
-                            <div style={{ borderTop: "1px solid var(--user-border, var(--border))", paddingTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                    <span style={{ fontSize: 13, fontWeight: 600 }}>信息卡（讲到重点时浮出画面）</span>
-                                    <Tooltip title="让 AI 从本段台词提炼 1-3 张重点卡；也可手动添加">
-                                        <Button size="small" icon={<ThunderboltOutlined />} loading={generating.has(`cards:${current.id}`)} disabled={busy || !config?.textModel} onClick={() => void aiExtractCards(current)}>AI 提取</Button>
-                                    </Tooltip>
-                                    <Button size="small" type="dashed" icon={<PlusOutlined />} disabled={editLocked} onClick={() => updateCards(current.id, [...(current.cards ?? []), { id: `c-${Date.now().toString(36)}`, title: "" }])} style={{ marginLeft: "auto" }}>添加</Button>
-                                </div>
+                        </div>
+                    ) : null}
+
+                    {drawer?.type === "cards" && current ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 13, fontWeight: 600 }}>信息卡（讲到重点时浮出画面）</span>
+                                <Tooltip title="让 AI 从本段台词提炼 1-3 张重点卡；也可手动添加">
+                                    <Button size="small" icon={<ThunderboltOutlined />} loading={generating.has(`cards:${current.id}`)} disabled={busy || !config?.textModel} onClick={() => void aiExtractCards(current)}>AI 提取</Button>
+                                </Tooltip>
+                                <Button size="small" type="dashed" icon={<PlusOutlined />} disabled={editLocked} onClick={() => updateCards(current.id, [...(current.cards ?? []), { id: `c-${Date.now().toString(36)}`, title: "" }])} style={{ marginLeft: "auto" }}>添加</Button>
+                            </div>
                                 {(current.cards ?? []).map((card, ci) => (
                                     <div key={card.id} style={{ border: "1px solid var(--user-border, var(--border))", borderRadius: 10, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -1995,16 +2597,10 @@ export default function DigitalHumanBookPage() {
                                 {!current.cards?.length ? (
                                     <div style={{ fontSize: 12, opacity: 0.5 }}>还没有信息卡。添加或 AI 提取后，合成成片时卡片会按配音节奏浮在画面左上。</div>
                                 ) : null}
-                            </div>
-                            <div style={{ display: "flex", gap: 8, borderTop: "1px solid var(--user-border, var(--border))", paddingTop: 10 }}>
-                                <Tooltip title="在当前段之后插入空段，写好台词即可配音"><Button size="small" icon={<PlusOutlined />} disabled={editLocked} onClick={() => void insertSegment(segIndex)}>下方插入新段</Button></Tooltip>
-                                <Tooltip title="复制当前段的分镜与表演（不带配音/视频）"><Button size="small" icon={<CopyOutlined />} disabled={editLocked} onClick={() => void insertSegment(segIndex, current)}>复制本段</Button></Tooltip>
-                                <Tooltip title="移除本段及其配音/视频引用（资源保留在资产库）"><Button size="small" danger icon={<DeleteOutlined />} disabled={editLocked} onClick={() => deleteSegment(current.id)}>删除本段</Button></Tooltip>
-                            </div>
                         </div>
                     ) : null}
 
-                    {rightTab === "material" && current ? (
+                    {drawer?.type === "audio" && current ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                             <div style={{ border: "1px solid var(--user-border, var(--border))", borderRadius: 10, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -2067,6 +2663,22 @@ export default function DigitalHumanBookPage() {
                                 <Button icon={<PlusOutlined />} disabled={editLocked} onClick={() => setPicker({ target: "segAudio", key: current.id })}>选择/上传配音</Button>
                                 {genButton(`audio:${current.id}`, "配音中")}
                             </Space>
+                        </div>
+                    ) : null}
+
+                    {drawer?.type === "video" && current ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                            <Alert type="info" showIcon message="段视频 = 站位首帧 + 人物稿 + 配音 → H3 口型渲染；点「生成本段视频」缺什么会自动补齐。" />
+                            <Space wrap>
+                                <Button type="primary" icon={<ThunderboltOutlined />} loading={generating.has(`video:${current.id}`)} disabled={busy} onClick={() => void generateSegmentVideo(current.id)}>
+                                    {videoIsStale ? "用新台词重摇" : current.videoResourceId ? "重摇本段" : "生成本段视频"}
+                                </Button>
+                                <Button icon={<ReloadOutlined />} disabled={busy} onClick={() => void regenTakes(current.id, 2)}>再抽 2 张</Button>
+                                {generating.has(`video:${current.id}`) ? <Button icon={<StopOutlined />} onClick={() => cancelGen(`video:${current.id}`)}>取消</Button> : null}
+                            </Space>
+                            <div style={{ fontSize: 12, opacity: 0.6 }}>
+                                候选抽卡：中栏视频下方切换/删除候选；当前 {current.takes?.length ?? (current.videoResourceId ? 1 : 0)} 张。
+                            </div>
                             <div style={{ borderTop: "1px solid var(--user-border, var(--border))", paddingTop: 10 }}>
                                 <div style={{ fontSize: 13, marginBottom: 6, fontWeight: 600 }}>参考图（生成时排在人物稿之后）</div>
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -2089,7 +2701,7 @@ export default function DigitalHumanBookPage() {
                         </div>
                     ) : null}
 
-                    {rightTab === "scene" ? (
+                    {drawer?.type === "persona" ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                             <div>
                                 <div style={{ fontSize: 13, marginBottom: 6, fontWeight: 600 }}>数字人（建册时快照绑定）</div>
@@ -2138,9 +2750,21 @@ export default function DigitalHumanBookPage() {
                                             生成形象（预览）
                                         </Button>
                                     </Space>
-                                    <div style={{ fontSize: 11, opacity: 0.55 }}>换形象/换音色只影响之后的生成；已生成的段不变，需要时重摇即可。音色试听与设计在「配音·素材」页签。</div>
+                                    <div style={{ fontSize: 11, opacity: 0.55 }}>换形象/换音色只影响之后的生成；已生成的段不变，需要时重摇即可。音色试听与设计见画布「配音」节点。</div>
                                 </div>
                             </div>
+                        </div>
+                    ) : null}
+
+                    {drawer?.type === "scene" || drawer?.type === "frame" ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                            {current ? (
+                                <div>
+                                    <div style={{ fontSize: 13, marginBottom: 4 }}>本段挂载场景</div>
+                                    <Select value={current.sceneKey} onChange={(v) => updateSegMeta(current.id, { sceneKey: v })} disabled={editLocked} style={{ width: "100%" }} options={sceneOptions} />
+                                    <div style={{ fontSize: 11, opacity: 0.55, marginTop: 2 }}>换场景只影响本段；场景图/站位首帧跨段复用，缺什么生成什么。</div>
+                                </div>
+                            ) : null}
                             <div>
                                 <div style={{ fontSize: 13, marginBottom: 6, fontWeight: 600 }}>场景（场景图 → 站位首帧，跨段复用）</div>
                                 {[...scenes.values()].map((scene) => (
@@ -2193,9 +2817,73 @@ export default function DigitalHumanBookPage() {
                         </div>
                     ) : null}
 
-                    {rightTab === "export" ? (
+                    {drawer?.type === "export" ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                             <Alert type="info" showIcon message={<span>服务端合成：全部段视频顺序拼接 + 逐段台词烧录字幕（{geo.width}×{geo.height} · 24fps）</span>} />
+                            {/* 背景音乐：只存引用 + 混音参数，音频本身在资源库；合成时混在人声下面 */}
+                            <div style={{ border: "1px solid var(--user-border, var(--border))", borderRadius: 10, padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 600 }}>背景音乐</span>
+                                    <Tag style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>{config?.bgm?.title ?? "未配置"}</Tag>
+                                    <div style={{ flex: 1 }} />
+                                    {config?.bgm ? <Button size="small" type="text" danger disabled={editLocked} onClick={clearBgm}>移除</Button> : null}
+                                </div>
+                                {config?.bgm ? (
+                                    <>
+                                        <audio controls preload="metadata" src={resourceFileUrl(config.bgm.resourceId)} style={{ width: "100%", height: 34 }} />
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                                            <span style={{ width: 52, opacity: 0.7 }}>音量</span>
+                                            <Slider
+                                                style={{ flex: 1, margin: 0 }}
+                                                min={0} max={0.6} step={0.01}
+                                                value={config.bgm.volume}
+                                                disabled={editLocked}
+                                                tooltip={{ formatter: (value) => `${Math.round((value ?? 0) * 100)}%` }}
+                                                onChange={(value) => patchBgm({ volume: value as number })}
+                                            />
+                                            <span style={{ width: 40, textAlign: "right" }} className="tabular-nums">{Math.round(config.bgm.volume * 100)}%</span>
+                                        </div>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                                            <span style={{ width: 52, opacity: 0.7 }}>淡入</span>
+                                            <Slider style={{ flex: 1, margin: 0 }} min={0} max={4000} step={100} value={config.bgm.fadeInMs} disabled={editLocked}
+                                                tooltip={{ formatter: (value) => `${((value ?? 0) / 1000).toFixed(1)}s` }} onChange={(value) => patchBgm({ fadeInMs: value as number })} />
+                                            <span style={{ width: 34, textAlign: "right" }} className="tabular-nums">{(config.bgm.fadeInMs / 1000).toFixed(1)}s</span>
+                                        </div>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                                            <span style={{ width: 52, opacity: 0.7 }}>淡出</span>
+                                            <Slider style={{ flex: 1, margin: 0 }} min={0} max={4000} step={100} value={config.bgm.fadeOutMs} disabled={editLocked}
+                                                tooltip={{ formatter: (value) => `${((value ?? 0) / 1000).toFixed(1)}s` }} onChange={(value) => patchBgm({ fadeOutMs: value as number })} />
+                                            <span style={{ width: 34, textAlign: "right" }} className="tabular-nums">{(config.bgm.fadeOutMs / 1000).toFixed(1)}s</span>
+                                        </div>
+                                        <Checkbox checked={config.bgm.loop} disabled={editLocked} onChange={(event) => patchBgm({ loop: event.target.checked })}>
+                                            曲长不够时循环铺满（首尾只淡一次）
+                                        </Checkbox>
+                                    </>
+                                ) : null}
+                                <Space wrap>
+                                    <Button size="small" icon={<UploadOutlined />} disabled={editLocked} onClick={() => bgmInputRef.current?.click()}>上传音频</Button>
+                                    <Select
+                                        size="small"
+                                        style={{ minWidth: 190 }}
+                                        placeholder="从素材库选音频"
+                                        showSearch
+                                        optionFilterProp="label"
+                                        disabled={editLocked}
+                                        value={undefined}
+                                        options={audioAssets.map((asset) => ({ value: asset.id, label: asset.title || asset.id }))}
+                                        onChange={(value) => {
+                                            const asset = audioAssets.find((item) => item.id === value);
+                                            if (!asset) return;
+                                            const key = String((asset.data as { storageKey?: string } | undefined)?.storageKey ?? "");
+                                            const rid = key.startsWith("resource:") ? key.slice("resource:".length) : key;
+                                            if (!rid) { message.warning("这条素材没有可用的音频资源"); return; }
+                                            applyBgm({ resourceId: rid, storageKey: key, title: asset.title || "背景音乐", ...((asset.data as { durationMs?: number } | undefined)?.durationMs ? { durationMs: (asset.data as { durationMs?: number }).durationMs } : {}) });
+                                        }}
+                                    />
+                                </Space>
+                                <input ref={bgmInputRef} type="file" accept="audio/*" style={{ display: "none" }} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void uploadBgm(file); }} />
+                                <div style={{ fontSize: 11, opacity: 0.5 }}>配乐只垫底，建议音量 10–15%；换曲/调音量后需要重新合成才生效。</div>
+                            </div>
                             <Button type="primary" icon={<ScissorOutlined />} loading={!!composing} disabled={busy} onClick={() => void compose()}>
                                 {composeResult ? "重新合成" : "合成成片"}
                             </Button>
@@ -2273,6 +2961,14 @@ export default function DigitalHumanBookPage() {
                                 </Button>
                                 {!composeResult ? <div style={{ fontSize: 12, opacity: 0.55 }}>合成成片后可导出。</div> : null}
                             </div>
+                        </div>
+                    ) : null}
+                    </AppDrawer>
+                    {current ? (
+                        <div style={{ display: "flex", gap: 6, borderTop: "1px solid var(--user-border, var(--border))", paddingTop: 10, flexWrap: "wrap" }}>
+                            <Tooltip title="在当前段之后插入空段，写好台词即可配音"><Button size="small" icon={<PlusOutlined />} disabled={editLocked} onClick={() => void insertSegment(segIndex)}>插入新段</Button></Tooltip>
+                            <Tooltip title="复制当前段的分镜与表演（不带配音/视频）"><Button size="small" icon={<CopyOutlined />} disabled={editLocked} onClick={() => void insertSegment(segIndex, current)}>复制本段</Button></Tooltip>
+                            <Tooltip title="移除本段及其配音/视频引用（资源保留在资产库）"><Button size="small" danger icon={<DeleteOutlined />} disabled={editLocked} onClick={() => deleteSegment(current.id)}>删除本段</Button></Tooltip>
                         </div>
                     ) : null}
                 </div>

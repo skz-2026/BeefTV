@@ -220,6 +220,10 @@ func Open(_ context.Context, raw Config) (result *Runtime, openErr error) {
 	api := router.Group("/api")
 	status := newSystemStatus(db, svc, true)
 	registerSystemStatusRoutes(api, status)
+	// 本地视频服务（ComfyUI 与 8765 网关）不在后端进程内，挂掉时页面只会看到连接被拒绝。
+	// 这里给页面一个"检测 + 拉起"的本机接口，避免用户只能自己开终端。
+	canvasHandler.RegisterLocalServiceRoutes(api, canvasHandler.NewLocalServiceLauncher())
+	canvasHandler.RegisterRemoteAccessRoutes(api)
 	canvasHandler.RegisterDesktopCanvasAPIWithDependencies(api, svc, canvasHandler.RuntimeDependencies{
 		RequestCoordinator: localKernel,
 		ProviderConfig:     localRoot.ProviderConfig,

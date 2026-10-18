@@ -94,15 +94,20 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc *app.Service, clients *agentops
 			return
 		}
 		provider, reason := host.ResolveProvider()
-		if reason != "" {
+		acp := host.ACPRuntime()
+		if reason != "" && !acp {
 			unavailable(c, reason)
 			return
 		}
 		modelInfo := gin.H{"id": provider.Model, "channelId": provider.ChannelID, "channelName": provider.ChannelName}
 		health := host.Probe(c.Request.Context())
+		if acp && health.Model != "" {
+			// ACP 的模型由外部 agent 决定，不能用 BeefTV 渠道模型冒充。
+			modelInfo = gin.H{"id": health.Model, "channelId": "acp", "channelName": "ACP"}
+		}
 		state := host.State()
 		if health.OK {
-			if state.Fingerprint != "" && state.Fingerprint != provider.Fingerprint() {
+			if !acp && state.Fingerprint != "" && state.Fingerprint != provider.Fingerprint() {
 				if health.Busy {
 					ok(c, gin.H{"available": false, "reason": "host_busy", "model": gin.H{"id": health.Model}})
 					return
@@ -157,7 +162,7 @@ func RegisterAgentProxyRoutes(r gin.IRouter, svc *app.Service, clients *agentops
 			return
 		}
 		provider, reason := host.ResolveProvider()
-		if reason != "" {
+		if reason != "" && !host.ACPRuntime() {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "reason": reason,
 				"msg": "助手模型或凭据还没准备好"})
 			return

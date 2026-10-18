@@ -77,7 +77,7 @@ func RegisterAgentHostLifecycleRoutes(r gin.IRouter, svc *app.Service, host *ass
 		// 请求本来就落在后端自己身上：用请求的 Host 推导操作层基址，避免猜端口；
 		// 桌面形态下把请求自带的启动令牌转交给宿主。
 		provider, reason := host.ResolveProvider()
-		if reason != "" {
+		if reason != "" && !host.ACPRuntime() {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"code": http.StatusServiceUnavailable, "reason": reason,
 				"msg": "助手模型或凭据还没准备好"})
 			return

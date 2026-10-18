@@ -35,6 +35,8 @@ type Props = {
     permissionMode?: AssistantPermissionMode;
     permissionLocked?: boolean;
     onPermissionChange?: (mode: AssistantPermissionMode) => void;
+    /** ACP 模式下外部 agent 的真实模型；有值时不再显示 BeefTV 渠道模型选择器。 */
+    runtimeModel?: string;
 };
 
 export function CanvasAssistantComposer({
@@ -61,6 +63,7 @@ export function CanvasAssistantComposer({
     permissionMode = "canvas",
     permissionLocked,
     onPermissionChange,
+    runtimeModel,
 }: Props) {
     const [contentHeight, setContentHeight] = useState(LINE_HEIGHT);
     const fileInput = useRef<HTMLInputElement>(null);
@@ -108,7 +111,9 @@ export function CanvasAssistantComposer({
             </div>
             <div className="canvas-assistant-composer-footer">
                 <div className="canvas-assistant-composer-settings">
-                <CanvasAssistantModelPicker busy={disabled || streaming || Boolean(modelBusy)} />
+                {runtimeModel
+                    ? <span className="canvas-assistant-runtime" title={`外部 agent 运行时：${runtimeModel}`}>ACP · {runtimeModel}</span>
+                    : <CanvasAssistantModelPicker busy={disabled || streaming || Boolean(modelBusy)} />}
                 {onPermissionChange ? <Tooltip title={permissionLocked ? "本轮权限已固定，结束后可更改" : "选择助手可访问和修改的范围"}>
                     <Select className="canvas-assistant-permission" size="small" variant="borderless" aria-label="助手权限" value={permissionMode} disabled={disabled || permissionLocked}
                         placement="topRight" popupMatchSelectWidth={false} onChange={onPermissionChange} options={[

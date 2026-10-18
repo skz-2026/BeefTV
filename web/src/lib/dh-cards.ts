@@ -152,3 +152,23 @@ export async function renderCardPng(card: SegmentCard, geo: { width: number; hei
     if (!blob) throw new Error("信息卡渲染失败");
     return { blob, box };
 }
+
+// 信息卡资源缓存：内容+画幅指纹 → 已上传资源。同一张卡多次合成不重复上传；
+// 资源被清理导致合成失败时由调用方清空缓存重试。
+const cardResourceCache = new Map<string, { resourceId: string; box: CardBox }>();
+
+export function cardCacheKey(card: SegmentCard, geo: { width: number; height: number }): string {
+    return JSON.stringify([card.title, card.highlight ?? "", (card.lines ?? []).map((l) => [l.text, l.gold === true]), geo.width, geo.height]);
+}
+
+export function getCachedCardResource(key: string): { resourceId: string; box: CardBox } | undefined {
+    return cardResourceCache.get(key);
+}
+
+export function setCachedCardResource(key: string, value: { resourceId: string; box: CardBox }): void {
+    cardResourceCache.set(key, value);
+}
+
+export function clearCardResourceCache(): void {
+    cardResourceCache.clear();
+}

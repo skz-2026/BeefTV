@@ -23,7 +23,7 @@ import copyToClipboard from "copy-to-clipboard";
 import { nanoid } from "nanoid";
 import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, resolveCanvasAppearance, writeCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
-import { persistCanvasMediaPerformanceMode, readCanvasMediaPerformanceMode } from "@/lib/canvas/canvas-performance-mode";
+import { isTouchFirstDevice, persistCanvasMediaPerformanceMode, readCanvasMediaPerformanceMode } from "@/lib/canvas/canvas-performance-mode";
 import { summarizeCanvasContext } from "@/lib/canvas/canvas-context-summary";
 import { DEFAULT_DRAWING_ENGINE } from "@/lib/canvas/canvas-drawing-engine";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -33,7 +33,7 @@ import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { useCanvasThemeStore, useCanvasThemeScope } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { App, Button } from "antd";
-import { ArrowLeftRight } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight } from "lucide-react";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { CanvasDeleteConfirmation } from "@/components/canvas/canvas-delete-confirmation";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
@@ -102,7 +102,7 @@ import { CanvasRefreshShell } from "./canvas-refresh-shell";
 import type { CanvasImageEmotionPayload } from "@/components/canvas/canvas-node-emotion-panel";
 import { CanvasEmotionWorkspace } from "@/components/canvas/canvas-emotion-workspace";
 import { removeCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
-import { persistCanvasTimeline, refreshLocalCanvasProjectIfChanged } from "@/services/local-workspace-repository";
+import { hydrateLocalCanvasProjectsFromBackend, persistCanvasTimeline, refreshLocalCanvasProjectIfChanged } from "@/services/local-workspace-repository";
 import { CanvasUploadModal } from "@/components/canvas/canvas-upload-modal";
 import { syncLocalCanvasSnapshot } from "@/services/local-workspace-sync";
 import { useCanvasConnectionController } from "./use-canvas-connection-controller";
@@ -212,10 +212,15 @@ function InfiniteCanvasPage() {
     );
     const workspaceProject = workspaceCanvases[0] || null;
     const canvasProjects = useMemo(
-        () => workspaceCanvases.map((project, index) => ({
-            id: project.id,
-            title: project.canvasTitle?.trim() || `画布 ${index + 1}`,
-        })),
+        () => {
+            // 组的根（id == workspaceProjectId）是项目主画布，给它一个明确的默认名，
+            // 否则子画布切换器里会显示成没意义的"画布 1"。
+            const rootId = workspaceCanvases.length ? canvasWorkspaceProjectId(workspaceCanvases[0]) : "";
+            return workspaceCanvases.map((project, index) => ({
+                id: project.id,
+                title: project.canvasTitle?.trim() || (project.id === rootId ? "总览" : `画布 ${index + 1}`),
+            }));
+        },
         [workspaceCanvases],
     );
     const directorOnboardingScope = useUserStore((state) => state.user?.id?.trim() || "");
@@ -447,6 +452,70 @@ function InfiniteCanvasPage() {
     });
 
     const fixtureAppliedRef = useRef<string | null>(null);
+    // ?fit=1：打开时把整张图放进视口（分镜/镜头类画布都是"看图多过改图"，
+    // 默认 k=1 只会露出左上角一角，用户得先自己缩小才能看到全貌）。
+    const fitOnOpenRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!projectLoaded || readOnly || searchParams.get("fit") !== "1") return;
+        if (fitOnOpenRef.current === projectId || !nodes.length) return;
+        fitOnOpenRef.current = projectId;
+        const minX = Math.min(...nodes.map((node) => node.position.x));
+        const minY = Math.min(...nodes.map((node) => node.position.y));
+        const maxX = Math.max(...nodes.map((node) => node.position.x + node.width));
+        const maxY = Math.max(...nodes.map((node) => node.position.y + node.height));
+        const width = Math.max(320, size.width || window.innerWidth);
+        const height = Math.max(320, size.height || window.innerHeight - 56);
+        const pad = 32;
+        const spanX = Math.max(1, maxX - minX);
+        const spanY = Math.max(1, maxY - minY);
+        const scale = Math.min(1, Math.max(0.1, Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY)));
+        const next = {
+            x: (width - spanX * scale) / 2 - minX * scale,
+            y: (height - spanY * scale) / 2 - minY * scale,
+            k: scale,
+        };
+        viewportRef.current = next;
+        setViewport(next);
+    }, [nodes, projectId, projectLoaded, readOnly, searchParams, setViewport, size.height, size.width]);
+    // 子画布：直接打开某一份子画布（例如生产页"打开本段画布"）时，这次会话的 store 里
+    // 可能只加载了这一份，顶栏切换器就只剩一项。发现当前画布有归属但兄弟还没进来时，
+    // 补一次水合（只补一次，避免循环）。
+    const siblingHydrationRef = useRef(false);
+    useEffect(() => {
+        if (!projectLoaded || siblingHydrationRef.current) return;
+        const currentCanvas = storedCanvasProjects.find((canvas) => canvas.id === projectId);
+        const owner = currentCanvas?.workspaceProjectId?.trim();
+        if (!owner) return;
+        const loadedSiblings = storedCanvasProjects.filter((canvas) => (canvas.workspaceProjectId?.trim() || canvas.id) === owner).length;
+        if (loadedSiblings > 1) return;
+        siblingHydrationRef.current = true;
+        void hydrateLocalCanvasProjectsFromBackend().catch(() => undefined);
+    }, [projectId, projectLoaded, storedCanvasProjects]);
+    // ?node=<id>：打开时定位并选中该节点，媒体节点直接弹它的生成面板
+    //（数字人生产页右栏"点节点进画布"就靠它：跳到原生画布后点哪个节点看哪个）。
+    const focusNodeOnOpenRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!projectLoaded || readOnly) return;
+        const targetId = searchParams.get("node");
+        if (!targetId || focusNodeOnOpenRef.current === `${projectId}:${targetId}`) return;
+        const node = nodes.find((n) => n.id === targetId);
+        if (!node) return;
+        focusNodeOnOpenRef.current = `${projectId}:${targetId}`;
+        selectedNodeIdsRef.current = new Set([targetId]);
+        setSelectedNodeIds(new Set([targetId]));
+        // 文本节点（台词/信息卡）的正确编辑入口是文本编辑器，不是提示词面板：
+        // ?edit=1 时直接打开编辑器（生产页点"台词"节点走这条）。
+        const wantTextEditor = searchParams.get("edit") === "1" && node.type === CanvasNodeType.Text;
+        if (wantTextEditor) setTextEditorNodeId(targetId);
+        else if (canOpenCanvasNodePromptPanel(node)) setDialogNodeId(targetId);
+        // 不再占用 URL 里的 node 参数（重复打开同一段时不清零就不生效）
+        if (searchParams.get("node")) {
+            const next = new URLSearchParams(searchParams);
+            next.delete("node");
+            next.delete("edit");
+            setSearchParams(next, { replace: true });
+        }
+    }, [nodes, projectId, projectLoaded, readOnly, searchParams, setDialogNodeId, setSearchParams, setSelectedNodeIds, selectedNodeIdsRef, setTextEditorNodeId]);
     const focusFixtureOnNarrowViewport = useCallback((fixtureNodes: CanvasNodeData[]) => {
         if (typeof window === "undefined" || window.innerWidth >= 768) return;
         const target = fixtureNodes.find((node) => node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Audio || node.type === CanvasNodeType.Text);
@@ -895,6 +964,21 @@ function InfiniteCanvasPage() {
         setDialogNodeId,
         setToolbarNodeId,
     });
+
+    // 手机/平板首次打开一张已有内容的画布时自动适配：窄屏只露出一角等于没法用。
+    // 桌面不触发，也不改写桌面保存的观看位置。依赖会在尺寸测量时变化，所以只有
+    // 定时器真正跑完才记 projectId，避免被清理后永远不再触发。
+    const didTouchAutoFitRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!projectLoaded || readOnly || !isTouchFirstDevice()) return;
+        if (didTouchAutoFitRef.current === projectId || nodes.length === 0) return;
+        const timer = window.setTimeout(() => {
+            if (didTouchAutoFitRef.current === projectId) return;
+            didTouchAutoFitRef.current = projectId;
+            fitCanvasContent();
+        }, 600);
+        return () => window.clearTimeout(timer);
+    }, [fitCanvasContent, nodes.length, projectId, projectLoaded, readOnly]);
 
     // Pan only the viewport (never the node) when a newly connected target
     // crosses the visible canvas safe area, including under the Agent dock.
@@ -1706,6 +1790,14 @@ function InfiniteCanvasPage() {
     useCanvasMentionNormalize(mentionReferencesByNodeId, setNodes);
     const dialogNodeCandidate = dialogNodeId ? nodeById.get(dialogNodeId) || null : null;
     const dialogNode = canOpenCanvasNodePromptPanel(dialogNodeCandidate) ? dialogNodeCandidate : null;
+    // 段画布（`dh-note` 上记着归属）给一条回生产页的路径：从生产页点节点跳进来之后，
+    // 不能只靠浏览器后退——用户在这里改完还得回去看整册进度。
+    const dhOrigin = useMemo(() => {
+        const note = nodes.find((node) => node.id === "dh-note");
+        const bookId = String(note?.metadata?.dhBookId ?? "").trim();
+        if (!bookId) return null;
+        return { bookId, segmentId: String(note?.metadata?.dhSegmentId ?? "").trim() };
+    }, [nodes]);
     // dragPreview is published on the same pointer-down frame as isNodeDragging.
     // Treat either signal as moving so floating editors disappear before the
     // first preview transform is painted and never affect drag layout.
@@ -2638,6 +2730,16 @@ function InfiniteCanvasPage() {
 
                         <div className="relative flex min-h-0 min-w-0 flex-1">
                             <div className="relative min-w-0 flex-1 overflow-hidden">
+                                {dhOrigin && !focusMode ? (
+                                    <Link
+                                        to={`/digital-human-book/${encodeURIComponent(dhOrigin.bookId)}${dhOrigin.segmentId ? `?seg=${encodeURIComponent(dhOrigin.segmentId)}` : ""}`}
+                                        title={`返回生产页${dhOrigin.segmentId ? `（${dhOrigin.segmentId}）` : ""}`}
+                                        className="absolute left-3 top-14 z-[var(--z-dialog-popover)] inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-black/70 px-3 py-1.5 text-[11px] font-medium text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:bg-black/85"
+                                    >
+                                        <ArrowLeft className="size-3.5" />
+                                        返回生产页{dhOrigin.segmentId ? ` · ${dhOrigin.segmentId}` : ""}
+                                    </Link>
+                                ) : null}
                                 <InfiniteCanvas
                                     interactive={!versions.preview && !readOnly}
                                     containerRef={containerRef}

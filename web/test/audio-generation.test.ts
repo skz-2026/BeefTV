@@ -125,3 +125,23 @@ describe("enterprise MiniMax speech settings", () => {
         expect(source).not.toContain('summaryOverride={localOnly ? "中文');
     });
 });
+
+describe("channel-defined voices", () => {
+    test("local IndexTTS2 preset voice is passed through instead of falling back to alloy", () => {
+        expect(normalizeAudioVoiceValue("xiaozhi-girl", "tts-local::indextts2")).toBe("xiaozhi-girl");
+        expect(normalizeAudioVoiceValue("_sys_中文女", "indextts2")).toBe("_sys_中文女");
+        expect(normalizeAudioVoiceValue("cloned-voice-abc", "my-gateway::gpt-sovits")).toBe("cloned-voice-abc");
+        expect(
+            buildAudioSpeechRequest(
+                { model: "indextts2", audioVoice: "xiaozhi-girl", audioFormat: "wav", audioInstructions: "元气少女" },
+                "你好",
+            ),
+        ).toEqual({ model: "indextts2", input: "你好", voice: "xiaozhi-girl", response_format: "wav", speed: 1, instructions: "元气少女" });
+    });
+
+    test("official OpenAI TTS still corrects unknown voices, empty falls back to the default", () => {
+        expect(normalizeAudioVoiceValue("xiaozhi-girl", "gpt-4o-mini-tts")).toBe("alloy");
+        expect(normalizeAudioVoiceValue("nova", "tts-1-hd")).toBe("nova");
+        expect(normalizeAudioVoiceValue("", "tts-local::indextts2")).toBe("alloy");
+    });
+});

@@ -141,7 +141,7 @@ func (h *Host) Start(opsURL, desktopToken string) error {
 		return nil
 	}
 	provider, reason := h.ResolveProvider()
-	if reason != "" {
+	if reason != "" && !h.ACPRuntime() {
 		return nil
 	}
 	return h.startOwned(config, provider, opsURL, desktopToken)

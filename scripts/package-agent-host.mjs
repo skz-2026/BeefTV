@@ -10,7 +10,7 @@ const targets = { 'darwin/arm64': ['darwin', 'arm64'], 'darwin/amd64': ['darwin'
 const runtimeModules = ['session-identity.mjs', 'canvas-turn.mjs', 'request-budget.mjs', 'durable-request-budget.mjs',
   'durable-session-owner.mjs', 'durable-turn-budget.mjs', 'media-content.mjs', 'native-part-store.mjs', 'native-history.mjs', 'skill-resource.mjs',
   'operation-bridge.mjs', 'canvas-read-view.mjs', 'session-owner.mjs', 'system-prompt.mjs', 'model-stream-idle.mjs'];
-const sourceFiles = ['server.mjs', ...runtimeModules, 'package.json', 'bun.lock'];
+const sourceFiles = ['server.mjs', ...runtimeModules, 'package.json', 'bun.lock', 'ACP'];
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 180000 });
@@ -41,7 +41,7 @@ export function packageAgentHost({ runtime, target, destination, source = path.j
   }
   const stage = mkdtempSync(path.join(tmpdir(), 'beeftv agent host '));
   try {
-    for (const name of sourceFiles) cpSync(path.join(source, name), path.join(stage, name));
+    for (const name of sourceFiles) cpSync(path.join(source, name), path.join(stage, name), { recursive: true });
     // Install from the committed lock into a clean tree, never from developer node_modules.
     run(process.execPath, ['install', '--production', '--frozen-lockfile', '--backend', 'copyfile', '--os', targets[target][0], '--cpu', targets[target][1]], stage);
     const nodeRelative = target.startsWith('windows/') ? 'runtime/node.exe' : 'runtime/bin/node';

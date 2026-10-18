@@ -53,7 +53,11 @@ func writeMediaPart(writer *multipart.Writer, field string, media Media) error {
 	}
 	filename := mediaFilename(media, mimeType)
 	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": field, "filename": filename}))
+	// 必须强制给 filename/name 加引号：mime.FormatMediaType 会把 "scene-1.png" 这类
+	// 值当作合法 token（"." 不在 tspecials 里）而输出 filename=scene-1.png，
+	// 部分上游（本机 Bun 网关、若干 Node 系服务）的 multipart 解析器只认带引号的
+	// filename，直接回 400 —— 表现为"图片编辑全部失败、文生图正常"。
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, quoteDispositionValue(field), quoteDispositionValue(filename)))
 	header.Set("Content-Type", mimeType)
 	part, err := writer.CreatePart(header)
 	if err != nil {
@@ -61,6 +65,11 @@ func writeMediaPart(writer *multipart.Writer, field string, media Media) error {
 	}
 	_, err = part.Write(raw)
 	return err
+}
+
+// quoteDispositionValue 转义 header 参数里的引号与反斜杠（RFC 7578 §4.2）。
+func quoteDispositionValue(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
 }
 
 func mediaFilename(media Media, mimeType string) string {

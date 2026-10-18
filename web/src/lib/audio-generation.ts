@@ -133,16 +133,30 @@ export function audioSpeechProfile(model = ""): AudioSpeechProfile {
     };
 }
 
+/** 真正的 OpenAI 官方 TTS 模型：只有它们才有一套固定音色白名单 */
+const OPENAI_SPEECH_MODELS = new Set(["tts-1", "tts-1-hd", "gpt-4o-mini-tts", "gpt-4o-tts"]);
+
+function isOfficialOpenAISpeech(model?: string) {
+    const id = audioModelId(model ?? "");
+    return OPENAI_SPEECH_MODELS.has(id);
+}
+
 export function normalizeAudioVoiceValue(value: string, model?: string) {
     const profile = audioSpeechProfile(model);
     if (!profile.showVoice) return "";
     const trimmed = String(value || "").trim();
+    if (!trimmed) return profile.defaultVoice;
     if (profile.voices.some((item) => item.value === trimmed)) return trimmed;
     if (profile.kind === "minimax-speech") {
-        if (!trimmed || OPENAI_SPEECH_VOICES.has(trimmed) || trimmed === "中文") return profile.defaultVoice;
+        if (OPENAI_SPEECH_VOICES.has(trimmed) || trimmed === "中文") return profile.defaultVoice;
         return trimmed;
     }
-    return OPENAI_SPEECH_VOICES.has(trimmed) ? trimmed : profile.defaultVoice;
+    // 自建 / 本地 / 中转渠道的音色是渠道自己定义的 id（本地 IndexTTS2 的 xiaozhi-girl、
+    // voiceforge、克隆音色…），不在 OpenAI 白名单里必须原样透传。以前这里一律回落到
+    // alloy，上游解析不到就改用默认参考音色，听感变成"绑定的声音不对劲"。
+    // 只有官方 OpenAI TTS 模型才按白名单纠正，避免真把 alloy/nova 之类的旧值写错。
+    if (isOfficialOpenAISpeech(model)) return OPENAI_SPEECH_VOICES.has(trimmed) ? trimmed : profile.defaultVoice;
+    return trimmed;
 }
 
 export function normalizeAudioFormatValue(value: string, model?: string) {

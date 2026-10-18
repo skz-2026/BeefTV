@@ -2,6 +2,7 @@ import { requestStreamingChatCompletion } from "@/services/api/image-streaming";
 import { http } from "@/services/api/request";
 import type { AiConfig } from "@/stores/use-config-store";
 import { DIGITAL_HUMAN_ASPECTS, estimateSegmentSeconds, personaPortraitPrompt, type DigitalHumanAspect, type DigitalHumanStyleId, type PersonaSnapshot } from "./digital-human-doc";
+import { sceneImagePrompt } from "./digital-human-media";
 
 // 数字人口播拆分器：主题或既有文稿 → 逐段口播分镜（台词/表情/微动作/景别/场景）
 // → 英文表演提示词 → 建口播画布。与绘本拆分器（storybook-split.ts）同构：
@@ -70,7 +71,7 @@ async function llmJSON(config: AiConfig, model: string, system: string, user: st
 const outlineSystem = (mode: "idea" | "text", durationSec: number) => `你是一位短视频口播编剧兼分镜师，为固定的数字人主播写一期口播视频。${mode === "idea" ? "根据用户的主题原创完整口播稿" : "把用户给定的文稿改编为口播稿，忠于原意，不得虚构主线"}。创作铁律：
 1. 每段是一句完整的口播台词（line）：口语化、有情绪、直接对观众说话；6-48 个汉字（约 1.5-12 秒），一段一镜；
 2. 结构：前 2 段强钩子（提问/反常识/冲突），中段递进讲透，最后 1-2 段结论或行动号召；台词总量约 ${Math.round(durationSec * 4)} 字（对应约 ${durationSec} 秒）；
-3. 场景 1-3 个（scenes）：每场给英文场景描述 promptEn（环境/机位视角/光线/氛围，禁止出现任何人物），分镜时用 sceneKey 指定每段场景；
+3. 场景 1-3 个（scenes）：每场给英文场景描述 promptEn（环境/机位视角/光线/氛围，禁止出现任何人物）。场景必须是"主播站得住"的空房间：**画面下半部（前景）留空，不要放正对镜头的主桌椅、沙发等大件家具**，真正要出现的家具靠后靠墙——否则首帧合成时主播无处可站，会生成一把多余的椅子、人像像贴上去的；分镜时用 sceneKey 指定每段场景；
 4. 表演只做微动作（点头、挑眉、轻微手势、身体前倾），禁止走动/转身/大动作；camera 只从 close-up / medium close-up / medium shot 里选；
 5. 只输出 JSON。
 
@@ -106,7 +107,12 @@ export function buildSegmentVideoPrompt(segment: Pick<SplitSegment, "line" | "ca
         `<Picture 3> is the character reference: the presenter (${personaName}) keeps the exact same face, hairstyle and outfit as this reference throughout.`,
         "</subject_definitions>",
         performance.replace(/\s*\n+\s*/g, " ").trim(),
-        `The presenter speaks to camera in ${segment.camera} framing: <d>[Mandarin]${segment.line}</d>`,
+        // 取景完全交给 <Picture 1>，提示词里**不写任何景别词**。真机教训有两层：
+        // ① 写 "medium close-up framing" 会和 "<Picture 1> 保持构图" 打架，H3 折中推镜；
+        // ② 写成 "keeping the framing of <Picture 1> (medium close-up shot)" 更糟——首帧
+        //    一旦是中景站姿，括号里的景别就和画面自相矛盾，H3 会按括号重画，直接从
+        //    人物参考图（<Picture 3>，近景书桌）里"重建"出一个完全不同房间的镜头。
+        `The presenter speaks to camera keeping the framing, distance, background and lighting of <Picture 1> exactly, without changing the shot size: <d>[Mandarin]${segment.line}</d>`,
         "Lip movements and performance are driven by <Audio 1>: synchronize mouth shapes exactly to the Mandarin speech, with natural eye contact, subtle head nods and hand gestures while talking.",
     ].join(" ");
 }
@@ -273,10 +279,11 @@ export async function createDigitalHumanCanvas(opts: {
     ].join("\n");
     node("script", "text", "剧本·用法", 100, 100, 560, 480, { content: usage, nodeRole: "resource" });
 
-    // 场景节点：场景图本体（t2i 直出，无人物）
+    // 场景节点：场景图本体（t2i 直出，无人物）。提示词与生产页共用同一份拼装函数，
+    // 避免"画布上点生成"和"页内生成"写出两种措辞。
     episode.scenes.forEach((scene, i) => {
         node(`scene-${scene.key}`, "image", `场景·${scene.name}`, 720, 100 + i * 560, 405, 540,
-            imageGenMeta(T2I, `${scene.promptEn}, no people, no human figures, empty scene ready for a presenter`, size, {
+            imageGenMeta(T2I, sceneImagePrompt(scene.promptEn, persona.style, aspect).prompt, size, {
                 sceneKey: scene.key,
                 sceneName: scene.name,
                 promptEn: scene.promptEn,

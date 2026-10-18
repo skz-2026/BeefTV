@@ -1,0 +1,104 @@
+/* 手机上的数字人生产页：左栏改成顶部横向条，画布/预览吃满宽度。
+   组件里的尺寸多数是 inline style，所以这里用 !important 覆盖，作用域限定在 .dhb-* 内。 */
+@media (max-width: 767px) {
+    .dhb-topbar {
+        padding: 8px 10px !important;
+        gap: 6px !important;
+    }
+    .dhb-topbar > span:first-of-type {
+        font-size: 14px !important;
+    }
+    /* 竖屏比例和人设标签在手机上挤掉标题，先隐藏；信息仍可从步骤条和抽屉查看。 */
+    .dhb-tag-persona,
+    .dhb-tag-geo {
+        display: none !important;
+    }
+    /* 撤销/重做/保存状态在手机上优先级低，隐藏后顶栏少两行。 */
+    .dhb-optional {
+        display: none !important;
+    }
+
+    .dhb-steps {
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+        padding: 6px 10px !important;
+        scrollbar-width: none;
+    }
+    .dhb-steps::-webkit-scrollbar {
+        display: none;
+    }
+    /* 步骤按钮保持单行，超出部分横向滚动，避免被挤成三行的大圆圈。 */
+    .dhb-steps button {
+        white-space: nowrap;
+        flex: 0 0 auto;
+    }
+    .dhb-steps > span:last-child {
+        display: none !important;
+    }
+
+    .dhb-body {
+        flex-direction: column !important;
+        overflow-y: auto !important;
+    }
+
+    .dhb-rail {
+        width: 100% !important;
+        max-height: 118px;
+        flex: 0 0 auto;
+        display: flex !important;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 8px !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        border-right: 0 !important;
+        border-bottom: 1px solid var(--user-border, var(--border));
+    }
+    .dhb-rail > div:first-child {
+        flex: 0 0 auto;
+        flex-wrap: nowrap !important;
+        margin-bottom: 0 !important;
+    }
+    /* 末尾的“拖拽可调整顺序”提示在横条里没有意义，隐藏。 */
+    .dhb-rail > div:last-of-type {
+        display: none !important;
+    }
+    .dhb-rail > .ant-btn {
+        flex: 0 0 auto;
+        width: auto !important;
+    }
+    .dhb-seg {
+        width: 150px !important;
+        min-width: 150px;
+        margin-bottom: 0 !important;
+    }
+    /* 顶栏按钮收紧一点，尽量让两个主操作排进同一行。 */
+    .dhb-topbar .ant-btn {
+        padding-inline: 9px;
+    }
+
+    .dhb-main {
+        padding: 8px !important;
+        justify-content: flex-start !important;
+        flex: 0 0 auto !important;
+    }
+    /* 9:16 预览在手机上一屏放不下，限制高度；点击可全屏看。 */
+    .dhb-main > div:first-child {
+        max-height: 36vh !important;
+    }
+    .dhb-canvas {
+        width: 100% !important;
+        flex: 0 0 auto !important;
+        min-height: 460px;
+        padding: 8px !important;
+        border-left: 0 !important;
+    }
+    .dhb-canvas-focus {
+        flex: 1 1 auto !important;
+        min-height: 0;
+    }
+    /* 只读总览的长说明在手机上占三行，隐藏；画布顶部仍有标题与操作。 */
+    .dhb-canvas > div:nth-child(2) {
+        display: none !important;
+    }
+}

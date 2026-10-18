@@ -277,6 +277,7 @@ export function CanvasAssistantSidebar(props: Props) {
                 selectionAttached={selectionAttached}
                 onDetachSelection={() => setSelectionAttached(false)}
                 modelBusy={assistant.modelBusy}
+                runtimeModel={assistant.status?.model?.channelId === "acp" ? assistant.status.model.id : undefined}
                 canSupplement={assistant.canSupplement}
                 supplementBusy={assistant.supplementBusy}
                 hasAttachments={inputReady && attachments.length > 0}
